@@ -19,7 +19,7 @@
 
 VNDB Kana v2
 
-myGalgame
+muyueGalgame
 
 Steam
 
