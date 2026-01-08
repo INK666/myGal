@@ -1,6 +1,7 @@
 适合一堆游戏文件、游戏压缩包一股脑扔进某一文件夹的囤积虫，特别是奇怪后缀名的压缩包也会被作为游戏文件并进行刮削，比如.JPG的压缩文件 哈哈。
 基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削封面。
-![Uploading 首页.png…]()
+<img width="896" height="590" alt="首页" src="https://github.com/user-attachments/assets/89d53a80-b751-4737-a5fb-69cc5e184bf1" />
+
 
 ## 主要功能
 
