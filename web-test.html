@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN" charset="UTF-8">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>游戏管理 - GameManage</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #1e1e3f; }
+    ::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 4px; }
+    .game-card { transition: all 0.3s ease; }
+    .game-card:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+    .modal-overlay { animation: fadeIn 0.2s ease; }
+    .modal-content { animation: slideIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-gray-800 min-h-screen text-gray-200">
+  <div id="app">
+    <header class="bg-gray-800 border-b border-gray-700">
+      <div class="container mx-auto px-6 py-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+              </svg>
+            </div>
+            <div>
+              <h1 class="text-xl font-bold text-white">游戏管理</h1>
+              <p class="text-xs text-gray-400">GameManage</p>
+            </div>
+          </div>
+          <div class="flex-1 max-w-xl mx-8">
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input type="text" id="searchInput" placeholder="搜索游戏..." 
+                class="w-full bg-gray-700 border border-gray-600 rounded-lg py-2 pl-10 pr-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                oninput="handleSearch(this.value)">
+            </div>
+          </div>
+          <button onclick="openSettings()" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            设置
+          </button>
+        </div>
+      </div>
+    </header>
+    
+    <main class="container mx-auto px-6 py-8">
+      <div id="welcomeSection" class="flex flex-col items-center justify-center h-96">
+        <div class="text-center">
+          <h2 class="text-3xl font-bold text-white mb-4">欢迎使用游戏管理</h2>
+          <p class="text-gray-400 mb-8">请先设置游戏根目录来导入您的游戏</p>
+          <button onclick="openSettings()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-lg">
+            设置根目录
+          </button>
+        </div>
+      </div>
+      
+      <div id="gameSection" style="display:none;">
+        <div class="flex items-center justify-between mb-8">
+          <div class="flex items-center gap-4">
+            <h1 class="text-2xl font-bold text-white">我的游戏</h1>
+            <span class="text-gray-400" id="gameCount">(0 个游戏)</span>
+          </div>
+          <button onclick="refreshGames()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-6 rounded-lg flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            刷新游戏列表
+          </button>
+        </div>
+        
+        <div id="tagFilter" class="flex flex-wrap gap-2 mb-8"></div>
+        
+        <div id="gameGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settingsModal" class="modal-overlay fixed inset-0 bg-black/70 flex items-center justify-center z-50" style="display:none;">
+    <div class="modal-content bg-gray-800 rounded-2xl w-full max-w-lg mx-4 border border-gray-700">
+      <div class="p-6 border-b border-gray-700">
+        <h2 class="text-xl font-bold text-white">设置</h2>
+        <p class="text-gray-400 text-sm mt-1">配置游戏根目录</p>
+      </div>
+      <div class="p-6">
+        <label class="block text-sm font-medium text-gray-300 mb-2">游戏根目录</label>
+        <p class="text-xs text-gray-500 mb-3">该目录下的所有子文件夹将被识别为游戏</p>
+        <div class="flex gap-2">
+          <input type="text" id="rootPathInput" placeholder="选择或输入目录路径" 
+            class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <button onclick="selectFolder()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            选择
+          </button>
+        </div>
+      </div>
+      <div class="p-6 border-t border-gray-700 flex justify-end gap-3">
+        <button onclick="closeSettings()" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-6 rounded-lg">取消</button>
+        <button onclick="saveSettings()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-6 rounded-lg">保存并导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游戏详情弹窗 -->
+  <div id="gameDetailModal" class="modal-overlay fixed inset-0 bg-black/70 flex items-center justify-center z-50" style="display:none;">
+    <div class="modal-content bg-gray-800 rounded-2xl w-full max-w-2xl mx-4 border border-gray-700 max-h-[90vh] overflow-y-auto">
+      <div id="gameDetailContent"></div>
+    </div>
+  </div>
+
+  <script>
+    // 数据存储
+    let settings = {};
+    let games = [];
+    let tags = [];
+    let allTags = [];
+    
+    // 初始化
+    async function init() {
+      try {
+        // 使用Electron API获取设置
+        if (window.electronAPI) {
+          const savedSettings = await window.electronAPI.getSettings();
+          settings = savedSettings;
+        } else {
+          settings = JSON.parse(localStorage.getItem('gameManageSettings') || '{}');
+        }
+        
+        if (settings.rootPath) {
+          showGameSection();
+          await loadGames();
+        }
+      } catch (error) {
+        console.error('初始化失败:', error);
+      }
+    }
+    
+    // 加载游戏
+    async function loadGames() {
+      if (!settings.rootPath) return;
+      
+      try {
+        // 使用Electron API获取游戏列表
+        if (window.electronAPI) {
+          // 首先导入游戏
+          await window.electronAPI.importGames(settings.rootPath);
+          // 然后获取游戏列表
+          games = await window.electronAPI.getGames();
+        } else {
+          // 浏览器环境下使用模拟数据
+          games = [
+            { id: 1, name: '游戏1', path: `${settings.rootPath}/游戏1`, cover_path: null, tags: ['动作', '冒险'] },
+            { id: 2, name: '游戏2', path: `${settings.rootPath}/游戏2`, cover_path: null, tags: ['策略', '模拟'] },
+            { id: 3, name: '游戏3', path: `${settings.rootPath}/游戏3`, cover_path: null, tags: ['角色扮演'] },
+            { id: 4, name: '游戏4', path: `${settings.rootPath}/游戏4`, cover_path: null, tags: ['射击', '多人'] }
+          ];
+        }
+        
+        // 处理标签数据
+        allTags = [];
+        games.forEach(game => {
+          game.tags.forEach(tag => {
+            if (!allTags.includes(tag)) {
+              allTags.push(tag);
+            }
+          });
+        });
+        
+        renderGames();
+        renderTags();
+      } catch (error) {
+        console.error('加载游戏失败:', error);
+        alert('加载游戏失败，请检查目录权限或重新设置根目录');
+      }
+    }
+    
+    // 渲染游戏列表
+    function renderGames(filterTags = []) {
+      const grid = document.getElementById('gameGrid');
+      let filteredGames = games;
+      
+      if (filterTags.length > 0) {
+        filteredGames = games.filter(game => 
+          filterTags.some(tag => game.tags.includes(tag))
+        );
+      }
+      
+      document.getElementById('gameCount').textContent = `(${filteredGames.length} 个游戏)`;
+      
+      if (filteredGames.length === 0) {
+        grid.innerHTML = `
+          <div class="col-span-full flex flex-col items-center justify-center h-64">
+            <svg class="w-16 h-16 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+            </svg>
+            <p class="text-gray-400 text-lg">没有找到游戏</p>
+            <p class="text-gray-500 text-sm mt-2">请检查根目录设置或刷新游戏列表</p>
+          </div>
+        `;
+        return;
+      }
+      
+      grid.innerHTML = filteredGames.map(game => `
+        <div onclick="showGameDetail(${game.id})" class="game-card bg-gray-800 rounded-xl overflow-hidden cursor-pointer border border-gray-700 hover:border-indigo-500">
+          <div class="aspect-video relative overflow-hidden">
+            ${game.cover_path ? 
+              `<img src="${game.cover_path}" alt="${game.name}" class="w-full h-full object-cover">` :
+              `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-indigo-900 to-purple-900">
+                <svg class="w-12 h-12 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+                </svg>
+              </div>`
+            }
+          </div>
+          <div class="p-4">
+            <h3 class="text-white font-semibold truncate" title="${game.name}">${game.name}</h3>
+            ${game.tags.length > 0 ? `
+              <div class="flex flex-wrap gap-1 mt-2">
+                ${game.tags.slice(0, 3).map(tag => `
+                  <span class="px-2 py-0.5 bg-indigo-600/50 text-indigo-200 text-xs rounded-full">${tag}</span>
+                `).join('')}
+                ${game.tags.length > 3 ? `<span class="px-2 py-0.5 bg-gray-700 text-gray-400 text-xs rounded-full">+${game.tags.length - 3}</span>` : ''}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    // 渲染标签筛选
+    function renderTags() {
+      const container = document.getElementById('tagFilter');
+      container.innerHTML = `
+        <button onclick="filterByTag('')" class="px-4 py-2 rounded-full text-sm font-medium bg-indigo-600 text-white">全部</button>
+        ${allTags.map(tag => `
+          <button onclick="filterByTag('${tag}')" class="px-4 py-2 rounded-full text-sm font-medium bg-gray-700 text-gray-300 hover:bg-gray-600">${tag}</button>
+        `).join('')}
+      `;
+    }
+    
+    // 搜索
+    function handleSearch(query) {
+      if (!query.trim()) {
+        renderGames();
+        return;
+      }
+      
+      const filtered = games.filter(game => 
+        game.name.toLowerCase().includes(query.toLowerCase())
+      );
+      
+      const grid = document.getElementById('gameGrid');
+      document.getElementById('gameCount').textContent = `(${filtered.length} 个游戏)`;
+      
+      if (filtered.length === 0) {
+        grid.innerHTML = `
+          <div class="col-span-full flex flex-col items-center justify-center h-64">
+            <p class="text-gray-400 text-lg">没有找到匹配的游戏</p>
+          </div>
+        `;
+        return;
+      }
+      
+      grid.innerHTML = filtered.map(game => `
+        <div onclick="showGameDetail(${game.id})" class="game-card bg-gray-800 rounded-xl overflow-hidden cursor-pointer border border-gray-700 hover:border-indigo-500">
+          <div class="aspect-video relative overflow-hidden">
+            ${game.cover_path ? 
+              `<img src="${game.cover_path}" alt="${game.name}" class="w-full h-full object-cover">` :
+              `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-indigo-900 to-purple-900">
+                <svg class="w-12 h-12 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+                </svg>
+              </div>`
+            }
+          </div>
+          <div class="p-4">
+            <h3 class="text-white font-semibold truncate" title="${game.name}">${game.name}</h3>
+            ${game.tags.length > 0 ? `
+              <div class="flex flex-wrap gap-1 mt-2">
+                ${game.tags.slice(0, 3).map(tag => `
+                  <span class="px-2 py-0.5 bg-indigo-600/50 text-indigo-200 text-xs rounded-full">${tag}</span>
+                `).join('')}
+                ${game.tags.length > 3 ? `<span class="px-2 py-0.5 bg-gray-700 text-gray-400 text-xs rounded-full">+${game.tags.length - 3}</span>` : ''}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    // 筛选标签
+    function filterByTag(tag) {
+      if (!tag) {
+        renderGames();
+      } else {
+        renderGames([tag]);
+      }
+    }
+    
+    // 刷新游戏列表
+    function refreshGames() {
+      loadGames();
+    }
+    
+    // 打开设置
+    function openSettings() {
+      document.getElementById('rootPathInput').value = settings.rootPath || '';
+      document.getElementById('settingsModal').style.display = 'flex';
+    }
+    
+    // 关闭设置
+    function closeSettings() {
+      document.getElementById('settingsModal').style.display = 'none';
+    }
+    
+    // 选择文件夹
+    async function selectFolder() {
+      if (window.electronAPI) {
+        // 使用Electron API选择文件夹
+        const selectedPath = await window.electronAPI.selectDirectory();
+        if (selectedPath) {
+          document.getElementById('rootPathInput').value = selectedPath;
+        }
+      } else {
+        // 浏览器环境下使用标准文件输入
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.webkitdirectory = true;
+        input.onchange = (e) => {
+          if (e.target.files && e.target.files[0]) {
+            const path = e.target.files[0].path;
+            document.getElementById('rootPathInput').value = path;
+          }
+        };
+        input.click();
+      }
+    }
+    
+    // 保存设置
+    async function saveSettings() {
+      const path = document.getElementById('rootPathInput').value.trim();
+      if (!path) return;
+      
+      try {
+        settings.rootPath = path;
+        
+        if (window.electronAPI) {
+          // 使用Electron API保存设置
+          await window.electronAPI.saveSetting('rootPath', path);
+        } else {
+          // 浏览器环境下使用本地存储
+          localStorage.setItem('gameManageSettings', JSON.stringify(settings));
+        }
+        
+        closeSettings();
+        showGameSection();
+        await loadGames();
+      } catch (error) {
+        console.error('保存设置失败:', error);
+        alert('保存设置失败，请重试');
+      }
+    }
+    
+    // 显示游戏区域
+    function showGameSection() {
+      document.getElementById('welcomeSection').style.display = 'none';
+      document.getElementById('gameSection').style.display = 'block';
+    }
+    
+    // 显示游戏详情
+    function showGameDetail(gameId) {
+      const game = games.find(g => g.id == gameId);
+      if (!game) return;
+      
+      const modal = document.getElementById('gameDetailModal');
+      const content = document.getElementById('gameDetailContent');
+      
+      content.innerHTML = `
+        <div class="relative">
+          <div class="h-48 bg-gradient-to-br from-indigo-900 to-purple-900 overflow-hidden">
+            ${game.coverPath ? 
+              `<img src="${game.coverPath}" alt="${game.name}" class="w-full h-full object-cover">` :
+              `<div class="w-full h-full flex items-center justify-center">
+                <svg class="w-24 h-24 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+                </svg>
+              </div>`
+            }
+          </div>
+          <button onclick="closeGameDetail()" class="absolute top-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <div class="absolute -bottom-12 left-6">
+            <h2 class="text-2xl font-bold text-white drop-shadow-lg">${game.name}</h2>
+          </div>
+        </div>
+        <div class="pt-16 p-6">
+          <div class="grid md:grid-cols-2 gap-6 mb-6">
+            <div>
+              <h3 class="text-sm font-medium text-gray-400 mb-3">封面设置</h3>
+              <div class="flex gap-2">
+                <button onclick="selectCover('${game.id}')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-2 px-4 rounded-lg flex items-center gap-2">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  选择封面
+                </button>
+                ${game.coverPath ? `<button onclick="removeCover('${game.id}')" class="bg-red-600 hover:bg-red-700 text-white text-sm py-2 px-4 rounded-lg">移除</button>` : ''}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-sm font-medium text-gray-400 mb-3">游戏操作</h3>
+              <div class="flex gap-2">
+                <button onclick="openGameFolder('${game.path}')" class="bg-gray-700 hover:bg-gray-600 text-white text-sm py-2 px-4 rounded-lg flex items-center gap-2">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  打开文件夹
+                </button>
+                <button onclick="deleteGame('${game.id}')" class="bg-red-600 hover:bg-red-700 text-white text-sm py-2 px-4 rounded-lg">删除</button>
+              </div>
+            </div>
+          </div>
+          <div class="mb-6">
+            <h3 class="text-sm font-medium text-gray-400 mb-3">标签</h3>
+            <div class="flex flex-wrap gap-2 mb-3">
+              ${game.tags.map(tag => `
+                <span class="px-3 py-1 rounded-full text-sm font-medium text-white bg-indigo-600 flex items-center gap-2">
+                  ${tag}
+                  <button onclick="removeTag('${game.id}', '${tag}')" class="hover:text-red-200">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </span>
+              `).join('')}
+            </div>
+            <div class="flex gap-2">
+              <input type="text" id="newTagInput" placeholder="添加标签" 
+                class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                onkeypress="if(event.key==='Enter')addTag('${game.id}')">
+              <button onclick="addTag('${game.id}')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-2 px-4 rounded-lg">添加</button>
+            </div>
+          </div>
+          <div class="p-4 bg-gray-700/50 rounded-lg">
+            <h3 class="text-sm font-medium text-gray-400 mb-2">游戏路径</h3>
+            <p class="text-sm text-gray-300 break-all">${game.path}</p>
+          </div>
+        </div>
+      `;
+      
+      modal.style.display = 'flex';
+    }
+    
+    // 关闭游戏详情
+    function closeGameDetail() {
+      document.getElementById('gameDetailModal').style.display = 'none';
+    }
+    
+    // 选择封面
+    function selectCover(gameId) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const game = games.find(g => g.id == gameId);
+            if (game) {
+              game.coverPath = event.target.result;
+              saveGames();
+              showGameDetail(gameId);
+              renderGames();
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+      input.click();
+    }
+    
+    // 移除封面
+    function removeCover(gameId) {
+      const game = games.find(g => g.id == gameId);
+      if (game) {
+        game.coverPath = null;
+        saveGames();
+        showGameDetail(gameId);
+        renderGames();
+      }
+    }
+    
+    // 打开游戏文件夹
+    function openGameFolder(gamePath) {
+      alert(`将在资源管理器中打开: ${gamePath}\n\n注意: 由于浏览器安全限制，需要手动打开此文件夹。`);
+    }
+    
+    // 删除游戏
+    function deleteGame(gameId) {
+      if (confirm('确定要从列表中删除此游戏吗？这不会删除游戏文件。')) {
+        games = games.filter(g => g.id != gameId);
+        saveGames();
+        closeGameDetail();
+        renderGames();
+        renderTags();
+      }
+    }
+    
+    // 添加标签
+    function addTag(gameId) {
+      const input = document.getElementById('newTagInput');
+      const tagName = input.value.trim();
+      if (!tagName) return;
+      
+      const game = games.find(g => g.id == gameId);
+      if (game && !game.tags.includes(tagName)) {
+        game.tags.push(tagName);
+        saveGames();
+        showGameDetail(gameId);
+        renderGames();
+        renderTags();
+      }
+      input.value = '';
+    }
+    
+    // 移除标签
+    function removeTag(gameId, tagName) {
+      const game = games.find(g => g.id == gameId);
+      if (game) {
+        game.tags = game.tags.filter(t => t !== tagName);
+        saveGames();
+        showGameDetail(gameId);
+        renderGames();
+        renderTags();
+      }
+    }
+    
+    // 保存游戏数据
+    function saveGames() {
+      const data = games.map(g => ({
+        path: g.path,
+        coverPath: g.coverPath,
+        tags: g.tags
+      }));
+      localStorage.setItem('gameManageGames', JSON.stringify(data));
+    }
+    
+    // 初始化
+    init();
+  </script>
+</body>
+</html>

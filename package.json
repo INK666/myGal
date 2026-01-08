@@ -1,0 +1,49 @@
+{
+  "name": "gamemanage",
+  "version": "1.0.2",
+  "description": "游戏资源管理工具",
+  "main": "main.js",
+  "scripts": {
+    "dev": "start /b vite && electron . --dev --user-data-dir=./electron-data",
+    "start": "electron . --user-data-dir=./electron-data",
+    "electron": "electron . --dev --user-data-dir=./electron-data",
+    "electron-prod": "electron . --user-data-dir=./electron-data",
+    "build": "vite build && electron-builder",
+    "build:vite": "vite build"
+  },
+  "keywords": [
+    "game",
+    "manager",
+    "electron"
+  ],
+  "author": "GameManage",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.2",
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.16",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "electron-rebuild": "^3.2.9",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.4.0",
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.2.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "sharp": "^0.34.5"
+  },
+  "build": {
+    "appId": "com.gamemanage.app",
+    "productName": "myGal",
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    }
+  }
+}
