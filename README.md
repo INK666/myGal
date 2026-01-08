@@ -16,9 +16,10 @@
 - **封面管理**
   - 手动选择封面文件更新
   - 刮削源：
+
 VNDB Kana v2
 
-月幕Galgame
+myGalgame
 
 Steam
 
