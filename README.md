@@ -15,6 +15,23 @@
 
 - **封面管理**
   - 手动选择封面文件更新
+  - 刮削源：
+VNDB Kana v2
+
+月幕Galgame
+
+Steam
+
+Bangumi
+
+SteamGridDB（需要 Key）未测试
+
+IGDB（需要 Client ID/Secret）未测试
+
+VNDB（需要 Token）未测试
+
+DLsite（RJ/VJ 号）未测试
+
   - **批量刮削封面**：对缺失封面的游戏进行自动抓取
   - **刮削范围配置**：可选择“哪些根目录参与批量刮削”，新增根目录默认勾选
 
