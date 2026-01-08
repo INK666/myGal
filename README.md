@@ -1,4 +1,4 @@
-适合一堆游戏文件、游戏压缩包一股脑扔进某一文件夹的囤积虫，特别是奇怪后缀名的压缩包也会被作为游戏文件并进行刮削，比如.JPG的压缩文件 哈哈。
+适合一堆游戏文件、游戏未知后缀压缩包一股脑扔进某一文件夹的囤积虫。根目录下次级文件全部作为游戏项目导入，刮削文件名时会清洗掉 [] 内容、 .号后跟着的字符，最后再将原名称和清洗后名称进行匹配刮削。
 基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削封面。
 <img width="896" height="590" alt="首页" src="https://github.com/user-attachments/assets/89d53a80-b751-4737-a5fb-69cc5e184bf1" />
 
@@ -6,7 +6,7 @@
 ## 主要功能
 
 - **根目录管理**
-  - 添加/删除多个游戏根目录
+  - 添加/删除多个游戏根目录，将根目录下次级文件全部作为游戏项目导入。
   - 一键刷新导入（扫描根目录并更新库内数据）
 
 - **游戏库浏览**
@@ -20,27 +20,27 @@
   - 增加截屏并作为封面按钮
   - 刮削源：
 
-VNDB Kana v2
+    VNDB Kana v2
 
-muyueGalgame
+    muyueGalgame
 
-Steam
+    Steam
 
-Bangumi
+    Bangumi
 
-SteamGridDB（需要 Key）未测试
+    SteamGridDB（需要 Key）未测试
 
-IGDB（需要 Client ID/Secret）未测试
+    IGDB（需要 Client ID/Secret）未测试
 
-VNDB（需要 Token）未测试
+    VNDB（需要 Token）未测试
 
-DLsite（RJ/VJ 号）未测试
+    DLsite（RJ/VJ 号）未测试
 
   - **批量刮削封面**：对缺失封面的游戏进行自动抓取
   - **刮削范围配置**：可选择“哪些根目录参与批量刮削”，新增根目录默认勾选
 
 - **外观**
-  - 支持导入项目背景图（jpg/png）
+  - 支持自定义项目背景图（jpg/png）
   - 可清除背景恢复默认
 
 - **常用操作**
