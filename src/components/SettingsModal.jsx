@@ -203,6 +203,24 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
     try {
       const result = await window.electronAPI.addRootPath(newPath);
       if (result.success) {
+        const newRootId = Number.parseInt(String(result.id), 10);
+        if (Number.isFinite(newRootId)) {
+          try {
+            const scopeKey = 'bulkScrapeScopeRootPathIds';
+            const settings = await window.electronAPI.getSettings?.();
+            const raw = settings?.[scopeKey];
+            if (!(raw === null || raw === undefined || String(raw).trim() === '')) {
+              const parsed = JSON.parse(String(raw));
+              if (Array.isArray(parsed)) {
+                const normalized = [...new Set(parsed.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
+                if (!normalized.includes(newRootId)) {
+                  const next = [...normalized, newRootId].sort((a, b) => a - b);
+                  await window.electronAPI.saveSetting(scopeKey, JSON.stringify(next));
+                }
+              }
+            }
+          } catch {}
+        }
         setNewPath('');
         showStatus('success', '根目录添加成功');
         onSave();
@@ -294,7 +312,7 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
                   </svg>
                 </button>
                 <div className="pointer-events-none absolute right-0 top-full mt-2 w-[320px] rounded-xl border border-gray-700/80 bg-gray-900/95 px-3 py-2 text-xs text-gray-200 opacity-0 shadow-2xl transition-opacity duration-200 group-hover:opacity-100">
-                  开源项目 https://github.com/INK666/ 项目名暂定
+                  开源项目 https://github.com/INK666/myGal
                 </div>
               </div>
               <button

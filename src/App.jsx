@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import GameGrid from './components/GameGrid';
 import SettingsModal from './components/SettingsModal';
@@ -78,6 +78,13 @@ if (!window.electronAPI) {
     removeTagFromGame: async () => true,
     getGameTags: async () => [],
     openFolder: async () => true,
+    openExternal: async (url) => {
+      window.open(url, '_blank', 'noreferrer');
+      return { success: true };
+    },
+    getAppVersion: async () => ({ success: true, version: 'dev' }),
+    scanExecutables: async () => ({ success: true, items: [] }),
+    launchExecutable: async () => ({ success: false, error: 'browser mock' }),
     captureScreenCover: async () => ({ success: false, error: 'browser mock' })
   };
 }
@@ -91,6 +98,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
   const [tags, setTags] = useState([]);
+  const [tagFilterOpen, setTagFilterOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -106,6 +114,10 @@ function App() {
   const [bulkScrapeLoading, setBulkScrapeLoading] = useState(false);
   const [bulkScrapeProgress, setBulkScrapeProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState({ type: '', message: '' });
+  const [appVersion, setAppVersion] = useState('');
+  const bulkScrapeRunIdRef = useRef(0);
+  const bulkScrapeCancelRef = useRef(false);
+  const tagFilterPopoverRef = useRef(null);
 
   useEffect(() => {
     if (status.message) {
@@ -124,6 +136,48 @@ function App() {
     loadRootPaths();
     loadTags();
   }, []);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const api = window.electronAPI;
+        if (!api?.getAppVersion) return;
+        const result = await api.getAppVersion();
+        if (result && typeof result === 'object') {
+          if (result.success && result.version) {
+            setAppVersion(String(result.version));
+          }
+          return;
+        }
+        if (typeof result === 'string') {
+          setAppVersion(result);
+        }
+      } catch {}
+    };
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!tagFilterOpen) return;
+
+    const handleMouseDown = (event) => {
+      const el = tagFilterPopoverRef.current;
+      if (!el) return;
+      if (el.contains(event.target)) return;
+      setTagFilterOpen(false);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setTagFilterOpen(false);
+    };
+
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tagFilterOpen]);
 
   useEffect(() => {
     setCurrentPage(1); // 重置到第一页
@@ -158,17 +212,14 @@ function App() {
         if (Array.isArray(parsed)) {
           const normalized = [...new Set(parsed.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
           const currentRootIds = paths.map((rp) => rp.id);
-          const normalizedSet = new Set(normalized);
-          const missingRootIds = currentRootIds.filter((id) => !normalizedSet.has(id));
-          if (missingRootIds.length > 0) {
-            const next = [...new Set([...normalized, ...missingRootIds])].sort((a, b) => a - b);
+          const currentRootIdSet = new Set(currentRootIds);
+          const filtered = normalized.filter((id) => currentRootIdSet.has(id)).sort((a, b) => a - b);
+          if (filtered.length !== normalized.length) {
             try {
-              await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(next));
+              await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(filtered));
             } catch {}
-            setBulkScrapeScopeRootPathIds(next);
-          } else {
-            setBulkScrapeScopeRootPathIds(normalized);
           }
+          setBulkScrapeScopeRootPathIds(filtered);
         } else {
           setBulkScrapeScopeRootPathIds(null);
         }
@@ -199,6 +250,7 @@ function App() {
     ? `${toFileUrlForCss(projectBackgroundPath)}?t=${projectBackgroundNonce || 0}`
     : '';
   const hasProjectBackground = !!projectBackgroundPath;
+  const selectedTagInfo = selectedTag ? tags.find((tag) => tag.name === selectedTag) : null;
 
   const loadTags = async () => {
     const allTags = await window.electronAPI.getAllTags();
@@ -341,12 +393,26 @@ function App() {
     if (bulkScrapeLoading || loading) return;
     if (!window.electronAPI || !window.electronAPI.scrapeGameCover) return;
 
+    const runId = bulkScrapeRunIdRef.current + 1;
+    bulkScrapeRunIdRef.current = runId;
+    bulkScrapeCancelRef.current = false;
+
     setStatus({ type: '', message: '' });
     setBulkScrapeLoading(true);
     setBulkScrapeProgress({ current: 0, total: 0 });
 
     try {
       const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const sleepCancellable = async (ms) => {
+        let remaining = ms;
+        while (remaining > 0) {
+          if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return false;
+          const chunk = Math.min(remaining, 150);
+          await sleep(chunk);
+          remaining -= chunk;
+        }
+        return !(bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current);
+      };
       const settings = await window.electronAPI.getSettings?.();
       const parsedIntervalMs = Number.parseInt(String(settings?.bulkScrapeIntervalMs || '').trim(), 10);
       const intervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 1200;
@@ -354,6 +420,7 @@ function App() {
       const maxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
 
       const allGames = await fetchAllGames();
+      if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
       const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds)
         ? bulkScrapeScopeRootPathIds
         : rootPaths.map((rp) => rp.id);
@@ -376,6 +443,7 @@ function App() {
         return;
       }
 
+      if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
       setBulkScrapeProgress({ current: 0, total: targets.length });
 
       let failedCount = 0;
@@ -394,7 +462,9 @@ function App() {
         })()
           .finally(() => {
             completedCount += 1;
-            setBulkScrapeProgress({ current: completedCount, total: targets.length });
+            if (bulkScrapeRunIdRef.current === runId && !bulkScrapeCancelRef.current) {
+              setBulkScrapeProgress({ current: completedCount, total: targets.length });
+            }
             inFlight.delete(task);
           });
         inFlight.add(task);
@@ -402,26 +472,43 @@ function App() {
 
       let idx = 0;
       while (idx < targets.length || inFlight.size > 0) {
+        if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
         while (idx < targets.length && inFlight.size < maxConcurrent) {
+          if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
           const waitMs = Math.max(0, nextStartAt - Date.now());
-          if (waitMs > 0) await sleep(waitMs);
+          if (waitMs > 0) {
+            const ok = await sleepCancellable(waitMs);
+            if (!ok) return;
+          }
           startOne(targets[idx].id);
           idx += 1;
           nextStartAt = Date.now() + intervalMs;
         }
         if (inFlight.size > 0) {
+          if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
           await Promise.race(inFlight);
         }
       }
 
+      if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
       await handleGameUpdate();
+      if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
       showStatus(
         failedCount > 0 ? 'error' : 'success',
         failedCount > 0 ? `批量刮削完成，失败 ${failedCount} 个` : '批量刮削完成'
       );
     } finally {
-      setBulkScrapeLoading(false);
+      if (bulkScrapeRunIdRef.current === runId) {
+        setBulkScrapeLoading(false);
+      }
     }
+  };
+
+  const handleStopBulkScrape = () => {
+    if (!bulkScrapeLoading) return;
+    bulkScrapeCancelRef.current = true;
+    setBulkScrapeLoading(false);
+    showStatus('success', '已停止批量刮削');
   };
 
   const totalPages = Math.ceil(totalGames / pageSize);
@@ -439,8 +526,8 @@ function App() {
     const [scrapeEnabled, setScrapeEnabled] = useState({
       VNDBv2: true,
       Ymgal: true,
-      Steam: true,
       Bangumi: true,
+      Steam: false,
       SteamGridDB: false,
       IGDB: false,
       VNDB: false,
@@ -450,14 +537,13 @@ function App() {
 
     useEffect(() => {
       const currentRootIds = rootPaths.map((rp) => rp.id);
-      setDraftIds((prev) => {
-        const prevIds = Array.isArray(prev) ? prev : [];
-        const prevSet = new Set(prevIds);
-        const missing = currentRootIds.filter((id) => !prevSet.has(id));
-        if (missing.length === 0) return prevIds;
-        return [...prevIds, ...missing];
-      });
-    }, [rootPaths]);
+      const currentRootIdSet = new Set(currentRootIds);
+      if (Array.isArray(bulkScrapeScopeRootPathIds)) {
+        setDraftIds(bulkScrapeScopeRootPathIds.filter((id) => currentRootIdSet.has(id)));
+      } else {
+        setDraftIds(currentRootIds);
+      }
+    }, [rootPaths, bulkScrapeScopeRootPathIds]);
 
     const toEnabled = (raw, defaultValue = true) => {
       if (raw === null || raw === undefined || raw === '') return defaultValue;
@@ -474,8 +560,8 @@ function App() {
           setScrapeEnabled({
             VNDBv2: toEnabled(settings?.scrapeEnableVNDBv2, true),
             Ymgal: toEnabled(settings?.scrapeEnableYmgal, true),
-            Steam: toEnabled(settings?.scrapeEnableSteam, true),
             Bangumi: toEnabled(settings?.scrapeEnableBangumi, true),
+            Steam: toEnabled(settings?.scrapeEnableSteam, false),
             SteamGridDB: toEnabled(settings?.scrapeEnableSteamGridDB, false),
             IGDB: toEnabled(settings?.scrapeEnableIGDB, false),
             VNDB: toEnabled(settings?.scrapeEnableVNDB, false),
@@ -575,7 +661,10 @@ function App() {
 
             <div className="pt-2">
               <div className="flex items-center justify-between gap-3 mb-2">
-                <div className="text-xs text-gray-400">刮削源开关</div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刮削源开关</div>
+                  <div className="text-xs text-gray-500 truncate">过多刮削源会影响速度</div>
+                </div>
                 <button
                   type="button"
                   onClick={() => setScrapeSourceExpanded(v => !v)}
@@ -598,8 +687,8 @@ function App() {
                   {[
                     { key: 'VNDBv2', label: 'VNDB Kana v2' },
                     { key: 'Ymgal', label: '月幕Galgame' },
-                    { key: 'Steam', label: 'Steam' },
                     { key: 'Bangumi', label: 'Bangumi' },
+                    { key: 'Steam', label: 'steam（裸连容易超时）' },
                     { key: 'SteamGridDB', label: 'SteamGridDB（需要 Key）' },
                     { key: 'IGDB', label: 'IGDB（需要 Client ID/Secret）' },
                     { key: 'VNDB', label: 'VNDB（需要 Token）' },
@@ -677,6 +766,7 @@ function App() {
         onOpenSettings={() => setShowSettings(true)}
         rootPaths={rootPaths}
         hasBackground={hasProjectBackground}
+        sticky={!showSettings && !selectedGame}
       />
       
       <main className="container mx-auto px-6 py-8">
@@ -700,11 +790,13 @@ function App() {
                 <span className="text-gray-400 bg-gray-800 px-3 py-1 rounded-full text-sm">({totalGames} 个游戏)</span>
               </div>
               {tags.length > 0 && (
-                <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar whitespace-nowrap py-1 min-w-0">
+                <div ref={tagFilterPopoverRef} className="relative min-w-0">
+                  <div className="flex items-center gap-2 py-1 min-w-0">
                   <button
                     onClick={() => {
                       setSelectedTag('');
                       setSearchQuery('');
+                      setTagFilterOpen(false);
                     }}
                     className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 shrink-0 ${
                       selectedTag || searchQuery
@@ -714,26 +806,72 @@ function App() {
                   >
                     全部
                   </button>
-                  {tags.map(tag => (
-                    <button
-                      key={tag.id}
-                      onClick={() => {
-                        setSelectedTag(tag.name);
-                        setSearchQuery('');
-                      }}
-                      className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 shrink-0 ${
-                        selectedTag === tag.name && !searchQuery
-                          ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
-                          : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
-                      }`}
-                      style={{
-                        backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
-                        border: selectedTag === tag.name && !searchQuery ? `1px solid ${tag.color}` : undefined
-                      }}
-                    >
-                      {tag.name}
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setTagFilterOpen((prev) => !prev)}
+                    className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
+                      selectedTag && !searchQuery
+                        ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
+                        : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                    }`}
+                    style={{
+                      backgroundColor: selectedTag && !searchQuery ? selectedTagInfo?.color : undefined,
+                      border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid ${selectedTagInfo.color}` : undefined
+                    }}
+                    aria-expanded={tagFilterOpen ? 'true' : 'false'}
+                    aria-label="展开标签筛选"
+                  >
+                    <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
+                    <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  </div>
+
+                  {tagFilterOpen && (
+                    <div className="absolute left-0 top-full mt-2 z-50 w-[min(720px,calc(100vw-3rem))] rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <div className="text-sm font-medium text-gray-200">标签</div>
+                        <button
+                          type="button"
+                          onClick={() => setTagFilterOpen(false)}
+                          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                          aria-label="收起标签筛选"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+
+                      <div className="max-h-[50vh] overflow-auto pr-1">
+                        <div className="flex flex-wrap gap-2">
+                          {tags.map(tag => (
+                            <button
+                              key={tag.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedTag(tag.name);
+                                setSearchQuery('');
+                                setTagFilterOpen(false);
+                              }}
+                              className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 whitespace-nowrap ${
+                                selectedTag === tag.name && !searchQuery
+                                  ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
+                                  : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                              }`}
+                              style={{
+                                backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
+                                border: selectedTag === tag.name && !searchQuery ? `1px solid ${tag.color}` : undefined
+                              }}
+                            >
+                              {tag.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -743,6 +881,16 @@ function App() {
                   <div className="text-xs text-gray-200 font-medium whitespace-nowrap">
                     {bulkScrapeProgress.current}/{bulkScrapeProgress.total}
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleStopBulkScrape}
+                    className="p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/30 text-red-100 transition-all"
+                    title="停止"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                    </svg>
+                  </button>
                   <div className="w-40 h-2 bg-gray-800/80 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-gradient-to-r from-indigo-600 to-purple-600"
@@ -824,6 +972,16 @@ function App() {
       )}
 
       {showBulkScrapeScope && <BulkScrapeScopeModal />}
+
+      {appVersion ? (
+        <div
+          className={`fixed bottom-3 right-4 z-[40] text-xs pointer-events-none select-none ${
+            hasProjectBackground ? 'text-gray-100/70' : 'text-gray-300/70'
+          }`}
+        >
+          v{appVersion}
+        </div>
+      ) : null}
     </div>
   );
 }

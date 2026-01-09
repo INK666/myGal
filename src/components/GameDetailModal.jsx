@@ -10,7 +10,11 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [aliasValue, setAliasValue] = useState('');
+  const [exeItems, setExeItems] = useState([]);
+  const [exeLoading, setExeLoading] = useState(false);
+  const [exeExpanded, setExeExpanded] = useState(false);
   const editTagInputRef = useRef(null);
+  const exeRequestIdRef = useRef(0);
 
   // 3秒后自动清除状态消息
   useEffect(() => {
@@ -34,9 +38,95 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     setAliasValue(game.alias ?? '');
   }, [game.id, game.alias]);
 
+  useEffect(() => {
+    setExeExpanded(false);
+    setExeItems([]);
+    setExeLoading(false);
+  }, [game.id]);
+
   const loadGameTags = async () => {
     const tags = await window.electronAPI.getGameTags(game.id);
     setGameTags(tags);
+  };
+
+  const loadExecutables = async () => {
+    const requestId = ++exeRequestIdRef.current;
+    const paths = (game.paths && game.paths.length > 0)
+      ? game.paths
+      : (game.path ? [game.path] : []);
+
+    if (!paths.length) {
+      setExeItems([]);
+      return;
+    }
+    if (!window.electronAPI?.scanExecutables) {
+      setExeItems([]);
+      return;
+    }
+
+    setExeLoading(true);
+    try {
+      const result = await window.electronAPI.scanExecutables(paths);
+      if (requestId !== exeRequestIdRef.current) return;
+      if (result && result.success && Array.isArray(result.items)) {
+        setExeItems(result.items);
+      } else {
+        setExeItems([]);
+      }
+    } catch {
+      if (requestId !== exeRequestIdRef.current) return;
+      setExeItems([]);
+    } finally {
+      if (requestId !== exeRequestIdRef.current) return;
+      setExeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!exeExpanded) return;
+    loadExecutables();
+  }, [exeExpanded]);
+
+  const handleLaunchExe = async (exePath) => {
+    const paths = (game.paths && game.paths.length > 0)
+      ? game.paths
+      : (game.path ? [game.path] : []);
+
+    if (!exePath) return;
+    if (!window.electronAPI?.launchExecutable) {
+      showStatus('error', '当前环境不支持运行');
+      return;
+    }
+
+    try {
+      const result = await window.electronAPI.launchExecutable(exePath, paths);
+      if (result && result.success) {
+        if (result.needsUserConfirm) {
+          showStatus('success', '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”');
+        } else {
+          showStatus('success', '已启动');
+        }
+        return;
+      }
+      const detail = result?.details ? `（${result.details}）` : '';
+      showStatus('error', '启动失败：' + (result?.error || '未知错误') + detail);
+    } catch (error) {
+      showStatus('error', '启动失败：' + (error?.message || String(error)));
+    }
+  };
+
+  const handleRevealExeInFolder = async (exePath) => {
+    if (!exePath) return;
+    if (window.electronAPI?.showItemInFolder) {
+      const ok = await window.electronAPI.showItemInFolder(exePath);
+      if (ok) {
+        showStatus('success', '已在资源管理器中定位，可右键使用系统工具');
+        return;
+      }
+      showStatus('error', '定位失败：文件不存在或路径无效');
+      return;
+    }
+    showStatus('error', '当前环境不支持在资源管理器定位');
   };
 
   const handleOpenFolder = async () => {
@@ -111,7 +201,9 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     try {
       const result = await window.electronAPI.scrapeGameCover(game.id);
       if (result && result.success) {
-        showStatus('success', `封面已刮削（${result.provider || '未知来源'}）`);
+        const vendorTags = Array.isArray(result?.vendorTags) ? result.vendorTags : [];
+        const vendorText = vendorTags.length > 0 ? `，厂商：${vendorTags.join(' / ')}` : '';
+        showStatus('success', `封面已刮削（${result.provider || '未知来源'}）${vendorText}`);
         onUpdate();
       } else {
         const query = result?.query || (Array.isArray(result?.queries) ? result.queries[0] : '');
@@ -286,7 +378,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                 }
               }}
               placeholder=""
-              className="w-full bg-black/30 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300"
+              className="w-full bg-black/5 border border-white/5 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300"
             />
           </div>
 
@@ -402,9 +494,6 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                   </button>
                 </span>
               ))}
-              {gameTags.length === 0 && (
-                <p className="text-gray-500 text-sm">暂无标签，点击上方添加</p>
-              )}
             </div>
           </div>
 
@@ -426,6 +515,74 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
               ))}
             </div>
           </div>
+
+          {(game.path || (game.paths && game.paths.length > 0)) && (
+            <div className="bg-gray-850/80 backdrop-blur-sm rounded-xl p-3 border border-gray-800/80">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <h3 className="text-sm font-medium text-gray-400">可执行文件</h3>
+                <div className="flex items-center gap-2">
+                  {exeExpanded && (
+                    <button
+                      type="button"
+                      onClick={loadExecutables}
+                      disabled={exeLoading || !window.electronAPI?.scanExecutables}
+                      className="text-indigo-400 hover:text-indigo-300 text-sm transition-colors duration-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {exeLoading ? '扫描中...' : '重新扫描'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setExeExpanded((v) => !v)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-400 hover:text-gray-200 bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all"
+                    aria-expanded={exeExpanded}
+                  >
+                    {exeExpanded ? '收起' : '展开'}
+                    <svg
+                      className={`w-4 h-4 transition-transform ${exeExpanded ? 'rotate-180' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              {exeExpanded ? (
+                !window.electronAPI?.scanExecutables ? (
+                  <p className="text-gray-500 text-sm">当前环境不支持扫描</p>
+                ) : exeItems.length === 0 ? (
+                  <p className="text-gray-500 text-sm">{exeLoading ? '正在扫描...' : '未找到 exe 文件'}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {exeItems.map((item) => (
+                      <button
+                        key={item.path}
+                        type="button"
+                        onClick={() => handleLaunchExe(item.path)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleRevealExeInFolder(item.path);
+                        }}
+                        className="w-full text-left bg-gray-900/50 hover:bg-gray-900/70 border border-gray-800/80 rounded-lg px-3 py-2 transition-all duration-300"
+                        title="点击运行"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-200 truncate">{item.name}</div>
+                            <div className="text-xs text-gray-500 break-all font-mono">{item.relativePath || item.path}</div>
+                          </div>
+                          <div className="shrink-0 text-xs text-indigo-300">运行</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )
+              ) : null}
+            </div>
+          )}
 
           <div className="bg-black/30 backdrop-blur-md border border-white/10 rounded-2xl p-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

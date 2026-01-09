@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, protocol, screen, desktopCapturer, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
 
@@ -353,7 +354,7 @@ const tryVndbV2Cover = async (title) => {
     },
     body: JSON.stringify({
       filters: ['search', '=', title],
-      fields: 'title,image.url',
+      fields: 'title,image.url,developers.name',
       results: 5
     })
   }, 15000);
@@ -365,7 +366,10 @@ const tryVndbV2Cover = async (title) => {
   const url = first?.image?.url;
   if (!url) return null;
 
-  return { provider: 'VNDBv2', url };
+  const devs = Array.isArray(first?.developers) ? first.developers : [];
+  const vendors = uniqCaseInsensitive(devs.map((d) => (typeof d === 'string' ? d : d?.name)).filter(Boolean));
+
+  return { provider: 'VNDBv2', url, vendors };
 };
 
 const tryYmgalCover = async (title) => {
@@ -437,7 +441,7 @@ const tryVndbCover = async (title) => {
       },
       body: JSON.stringify({
         filters: ['search', '=', title],
-        fields: 'title,image.url',
+        fields: 'title,image.url,developers.name',
         results: 5
       })
     }, 15000);
@@ -456,7 +460,32 @@ const tryVndbCover = async (title) => {
   const url = first?.image?.url;
   if (!url) return null;
 
-  return { provider: 'VNDB', url };
+  const devs = Array.isArray(first?.developers) ? first.developers : [];
+  const vendors = uniqCaseInsensitive(devs.map((d) => (typeof d === 'string' ? d : d?.name)).filter(Boolean));
+
+  return { provider: 'VNDB', url, vendors };
+};
+
+const tryVndbV2Vendors = async (title) => {
+  const res = await fetchWithTimeout('https://api.vndb.org/kana/vn', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'GameManage/1.0'
+    },
+    body: JSON.stringify({
+      filters: ['search', '=', title],
+      fields: 'title,developers.name',
+      results: 5
+    })
+  }, 15000);
+  if (!res.ok) return [];
+
+  const json = await res.json();
+  const results = Array.isArray(json?.results) ? json.results : [];
+  const first = results.find(r => Array.isArray(r?.developers) && r.developers.length > 0) || null;
+  const devs = Array.isArray(first?.developers) ? first.developers : [];
+  return uniqCaseInsensitive(devs.map((d) => (typeof d === 'string' ? d : d?.name)).filter(Boolean));
 };
 
 const pickBestSteamApp = (apps, title) => {
@@ -466,6 +495,50 @@ const pickBestSteamApp = (apps, title) => {
   const starts = apps.find(a => String(a?.name || '').toLowerCase().startsWith(norm));
   if (starts) return starts;
   return apps[0] || null;
+};
+
+function normalizeVendorName(value) {
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (!s) return '';
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function uniqCaseInsensitive(values) {
+  const out = [];
+  const seen = new Set();
+  for (const v of values) {
+    const s = normalizeVendorName(v);
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
+const fetchSteamVendors = async (appid) => {
+  const fetchDetails = async (lang) => {
+    const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(appid)}&l=${encodeURIComponent(lang)}`;
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'GameManage/1.0' } }, 15000);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const data = json?.[appid]?.data;
+    if (!data) return null;
+    const devs = Array.isArray(data?.developers) ? data.developers : [];
+    const pubs = Array.isArray(data?.publishers) ? data.publishers : [];
+    const merged = uniqCaseInsensitive([...devs, ...pubs]);
+    return merged.length > 0 ? merged : null;
+  };
+
+  for (const lang of ['schinese', 'english']) {
+    try {
+      const vendors = await fetchDetails(lang);
+      if (vendors && vendors.length > 0) return vendors;
+    } catch {}
+  }
+
+  return [];
 };
 
 const resolveSteamAppId = async (title) => {
@@ -522,7 +595,11 @@ const trySteamCover = async (title) => {
   for (const url of candidates) {
     const imgRes = await fetchWithTimeout(url, { method: 'GET', headers: { 'User-Agent': 'GameManage/1.0' } }, 15000);
     if (imgRes.ok && String(imgRes.headers.get('content-type') || '').startsWith('image/')) {
-      return { provider: 'Steam', url };
+      let vendors = [];
+      try {
+        vendors = await fetchSteamVendors(appid);
+      } catch {}
+      return { provider: 'Steam', url, vendors, appid };
     }
   }
 
@@ -538,15 +615,20 @@ const trySteamCover = async (title) => {
     if (!out) return null;
     const check = await fetchWithTimeout(out, { method: 'GET', headers: { 'User-Agent': 'GameManage/1.0' } }, 15000);
     if (check.ok && String(check.headers.get('content-type') || '').startsWith('image/')) {
-      return out;
+      const devs = Array.isArray(data?.developers) ? data.developers : [];
+      const pubs = Array.isArray(data?.publishers) ? data.publishers : [];
+      const vendors = uniqCaseInsensitive([...devs, ...pubs]);
+      return { imageUrl: out, vendors };
     }
     return null;
   };
 
   for (const lang of ['schinese', 'english']) {
     try {
-      const url = await tryAppDetails(lang);
-      if (url) return { provider: 'Steam', url };
+      const result = await tryAppDetails(lang);
+      if (result?.imageUrl) {
+        return { provider: 'Steam', url: result.imageUrl, vendors: result.vendors || [], appid };
+      }
     } catch {}
   }
 
@@ -625,7 +707,30 @@ const tryDlsiteCover = async (title) => {
 
   const urlOut = pickUrl(candidate);
   if (!urlOut) return null;
-  return { provider: 'DLsite', url: urlOut };
+  const toNameList = (value) => {
+    if (!value) return [];
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value)) return value.flatMap(toNameList);
+    if (typeof value === 'object') {
+      const name = value?.name || value?.maker_name || value?.circle_name || value?.brand_name || null;
+      return name ? [name] : [];
+    }
+    return [];
+  };
+
+  const vendors = uniqCaseInsensitive([
+    ...toNameList(candidate?.maker_name),
+    ...toNameList(candidate?.makerName),
+    ...toNameList(candidate?.maker),
+    ...toNameList(candidate?.circle),
+    ...toNameList(candidate?.circle_name),
+    ...toNameList(candidate?.brand),
+    ...toNameList(candidate?.brand_name),
+    ...toNameList(candidate?.publisher),
+    ...toNameList(candidate?.publisher_name)
+  ]);
+
+  return { provider: 'DLsite', url: urlOut, vendors };
 };
 
 function createWindow() {
@@ -800,6 +905,36 @@ ipcMain.handle('select-background', async () => {
 });
 
 ipcMain.handle('get-settings', async () => {
+  try {
+    const settingKey = 'projectBackgroundPath';
+    const current = db.prepare('SELECT value FROM settings WHERE key = ?').get(settingKey)?.value;
+    if (current === null || current === undefined || String(current).trim() === '') {
+      const defaultSourcePath = path.join(__dirname, 'photo.jpg');
+      if (fs.existsSync(defaultSourcePath)) {
+        const ext = path.extname(defaultSourcePath).toLowerCase().replace('.', '');
+        const allowed = new Set(['jpg', 'jpeg', 'png']);
+        if (allowed.has(ext)) {
+          const backgroundsDir = getBackgroundsDir();
+          fs.mkdirSync(backgroundsDir, { recursive: true });
+
+          const normalizedExt = ext === 'jpeg' ? 'jpg' : ext;
+          const newPath = path.join(backgroundsDir, `project-background.${normalizedExt}`);
+
+          try {
+            if (fs.existsSync(newPath)) fs.unlinkSync(newPath);
+          } catch {}
+
+          try {
+            fs.copyFileSync(defaultSourcePath, newPath);
+            db.prepare(`
+              INSERT INTO settings (key, value) VALUES (?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = ?
+            `).run(settingKey, newPath, newPath);
+          } catch {}
+        }
+      }
+    }
+  } catch {}
   const stmt = db.prepare('SELECT key, value FROM settings');
   const rows = stmt.all();
   const settings = {};
@@ -807,6 +942,14 @@ ipcMain.handle('get-settings', async () => {
     settings[row.key] = row.value;
   });
   return settings;
+});
+
+ipcMain.handle('get-app-version', async () => {
+  try {
+    return { success: true, version: app.getVersion() };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
 });
 
 // 根目录管理IPC事件
@@ -1328,6 +1471,50 @@ ipcMain.handle('update-game-cover', async (event, gameId, coverPath) => {
   return true;
 });
 
+const ensureTagIdByName = (name) => {
+  const normalized = normalizeVendorName(name);
+  if (!normalized) return null;
+  const existing = db
+    .prepare('SELECT id, name FROM tags WHERE lower(name) = lower(?) LIMIT 1')
+    .get(normalized);
+  if (existing?.id) return Number(existing.id);
+
+  try {
+    db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(normalized);
+  } catch {}
+
+  const created = db
+    .prepare('SELECT id FROM tags WHERE lower(name) = lower(?) LIMIT 1')
+    .get(normalized);
+  return created?.id ? Number(created.id) : null;
+};
+
+const addTagsToGameByNames = (gameId, names) => {
+  const id = Number(gameId);
+  if (!Number.isFinite(id)) return [];
+
+  const uniqueNames = uniqCaseInsensitive(Array.isArray(names) ? names : []);
+  if (uniqueNames.length === 0) return [];
+
+  const limited = uniqueNames.slice(0, 12);
+  const added = [];
+
+  db.transaction(() => {
+    for (const name of limited) {
+      const tagId = ensureTagIdByName(name);
+      if (!tagId) continue;
+      const info = db
+        .prepare('INSERT OR IGNORE INTO game_tags (game_id, tag_id) VALUES (?, ?)')
+        .run(id, tagId);
+      if (info?.changes > 0) {
+        added.push(name);
+      }
+    }
+  })();
+
+  return added;
+};
+
 ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   const game = db.prepare('SELECT id, name, alias, path, cover_path FROM games WHERE id = ?').get(gameId);
   if (!game) {
@@ -1363,8 +1550,8 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   const providerDefaultEnabledByName = {
     VNDBv2: true,
     Ymgal: true,
-    Steam: true,
     Bangumi: true,
+    Steam: false,
     SteamGridDB: false,
     IGDB: false,
     VNDB: false,
@@ -1374,8 +1561,8 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   const providerFns = [
     { name: 'VNDBv2', fn: tryVndbV2Cover },
     { name: 'Ymgal', fn: tryYmgalCover },
-    { name: 'Steam', fn: trySteamCover },
     { name: 'Bangumi', fn: tryBangumiCover },
+    { name: 'Steam', fn: trySteamCover },
     { name: 'SteamGridDB', fn: trySteamGridDbCover },
     { name: 'IGDB', fn: tryIgdbCover },
     { name: 'VNDB', fn: tryVndbCover },
@@ -1428,7 +1615,60 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
     fs.writeFileSync(newCoverPath, out);
     db.prepare('UPDATE games SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newCoverPath, gameId);
 
-    return { success: true, provider: found.provider, query: found.query, coverPath: newCoverPath };
+    let vendorNames = uniqCaseInsensitive(Array.isArray(found?.vendors) ? found.vendors : []);
+
+    if (vendorNames.length === 0) {
+      const steamEnabled = getBooleanSetting(providerToggleKeyByName.Steam, providerDefaultEnabledByName.Steam);
+      if (steamEnabled) {
+        for (const query of candidates) {
+          try {
+            const appid = await resolveSteamAppId(query);
+            if (!appid) continue;
+            const vendors = await fetchSteamVendors(appid);
+            if (Array.isArray(vendors) && vendors.length > 0) {
+              vendorNames = vendors;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (vendorNames.length === 0) {
+      const vndbV2Enabled = getBooleanSetting(providerToggleKeyByName.VNDBv2, providerDefaultEnabledByName.VNDBv2);
+      if (vndbV2Enabled) {
+        for (const query of candidates) {
+          try {
+            const vendors = await tryVndbV2Vendors(query);
+            if (Array.isArray(vendors) && vendors.length > 0) {
+              vendorNames = vendors;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (vendorNames.length === 0) {
+      const dlsiteEnabled = getBooleanSetting(providerToggleKeyByName.DLsite, providerDefaultEnabledByName.DLsite);
+      const hasWorkNo = candidates.some((t) => /((?:RJ|VJ|BJ|RE)\d{6,8})/i.test(String(t || '')));
+      if (dlsiteEnabled && hasWorkNo) {
+        for (const query of candidates) {
+          try {
+            const result = await tryDlsiteCover(query);
+            const vendors = Array.isArray(result?.vendors) ? result.vendors : [];
+            if (vendors.length > 0) {
+              vendorNames = vendors;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const vendorTags = addTagsToGameByNames(gameId, vendorNames);
+
+    return { success: true, provider: found.provider, query: found.query, coverPath: newCoverPath, vendorTags };
   } catch (error) {
     return { success: false, error: error?.message || String(error), tried, queries: candidates, attempts };
   }
@@ -1522,6 +1762,179 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
     return true;
   }
   return false;
+});
+
+ipcMain.handle('show-item-in-folder', async (event, filePath) => {
+  const raw = typeof filePath === 'string' ? filePath.trim() : '';
+  if (!raw) return false;
+  const resolved = path.resolve(raw);
+  if (!fs.existsSync(resolved)) return false;
+  shell.showItemInFolder(resolved);
+  return true;
+});
+
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    const raw = typeof url === 'string' ? url.trim() : '';
+    if (!raw) return { success: false, error: '无效链接' };
+    if (!/^https?:\/\//i.test(raw)) return { success: false, error: '仅支持 http/https 链接' };
+    await shell.openExternal(raw);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('scan-executables', async (event, rootPaths) => {
+  const roots = (Array.isArray(rootPaths) ? rootPaths : [rootPaths])
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+
+  const maxDepth = 6;
+  const maxResults = 200;
+  const maxVisitedDirs = 3000;
+
+  const ignoreDirNames = new Set([
+    '.git',
+    '.svn',
+    'node_modules',
+    'Steamworks Shared',
+    'CommonRedist',
+    '__MACOSX'
+  ]);
+
+  const byPathKey = new Map();
+
+  const pushResult = async (root, fullPath) => {
+    const key = fullPath.toLowerCase();
+    if (byPathKey.has(key)) return;
+    let size = null;
+    try {
+      const st = await fs.promises.stat(fullPath);
+      size = typeof st.size === 'number' ? st.size : null;
+    } catch {}
+    const relativePath = path.relative(root, fullPath);
+    byPathKey.set(key, {
+      path: fullPath,
+      name: path.basename(fullPath),
+      relativePath: relativePath,
+      size
+    });
+  };
+
+  for (const root of roots) {
+    try {
+      if (!fs.existsSync(root)) continue;
+      const st = await fs.promises.stat(root);
+      if (!st.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    const queue = [{ dir: root, depth: 0 }];
+    let visitedDirs = 0;
+
+    while (queue.length > 0 && byPathKey.size < maxResults && visitedDirs < maxVisitedDirs) {
+      const current = queue.shift();
+      visitedDirs += 1;
+
+      let entries = [];
+      try {
+        entries = await fs.promises.readdir(current.dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const ent of entries) {
+        if (byPathKey.size >= maxResults) break;
+        const full = path.join(current.dir, ent.name);
+        if (ent.isDirectory()) {
+          if (current.depth >= maxDepth) continue;
+          if (ignoreDirNames.has(ent.name)) continue;
+          queue.push({ dir: full, depth: current.depth + 1 });
+          continue;
+        }
+        if (!ent.isFile()) continue;
+        if (path.extname(ent.name).toLowerCase() !== '.exe') continue;
+        await pushResult(root, full);
+      }
+    }
+  }
+
+  const items = Array.from(byPathKey.values())
+    .sort((a, b) => {
+      const aRel = String(a.relativePath || '');
+      const bRel = String(b.relativePath || '');
+      const aDepth = aRel.split(path.sep).length;
+      const bDepth = bRel.split(path.sep).length;
+      if (aDepth !== bDepth) return aDepth - bDepth;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+    });
+
+  return { success: true, items };
+});
+
+ipcMain.handle('launch-executable', async (event, exePath, rootPaths) => {
+  try {
+    if (typeof exePath !== 'string' || !exePath.trim()) {
+      return { success: false, error: '无效的可执行文件路径' };
+    }
+    const resolvedExe = path.resolve(exePath);
+    if (!path.isAbsolute(resolvedExe)) {
+      return { success: false, error: '无效的可执行文件路径' };
+    }
+    if (path.extname(resolvedExe).toLowerCase() !== '.exe') {
+      return { success: false, error: '仅支持运行 exe 文件' };
+    }
+    if (!fs.existsSync(resolvedExe)) {
+      return { success: false, error: '文件不存在' };
+    }
+
+    const roots = (Array.isArray(rootPaths) ? rootPaths : [rootPaths])
+      .map((p) => (typeof p === 'string' ? p.trim() : ''))
+      .filter(Boolean)
+      .map((p) => path.resolve(p));
+
+    if (roots.length > 0) {
+      const allowed = roots.some((root) => isPathUnderDirectory(resolvedExe, root));
+      if (!allowed) {
+        return { success: false, error: '不允许运行该路径下的程序' };
+      }
+    }
+
+    const exeDir = path.dirname(resolvedExe);
+    const hasMotw = (() => {
+      try {
+        const raw = fs.readFileSync(`${resolvedExe}:Zone.Identifier`, 'utf8');
+        return /\[ZoneTransfer\]/i.test(String(raw));
+      } catch {
+        return false;
+      }
+    })();
+
+    if (hasMotw) {
+      const err = await shell.openPath(resolvedExe);
+      if (typeof err === 'string' && err.trim()) {
+        try {
+          shell.showItemInFolder(resolvedExe);
+        } catch {}
+        return { success: false, error: '该程序会触发 SmartScreen，请在资源管理器中“更多信息 → 仍要运行”后再启动', details: err.trim() };
+      }
+      return { success: true, method: 'shell.openPath', needsUserConfirm: true };
+    }
+
+    const child = spawn(resolvedExe, [], {
+      cwd: exeDir,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    child.unref();
+    return { success: true, method: 'spawn' };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('get-game-cover', async (event, gameId) => {
