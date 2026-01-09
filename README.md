@@ -1,6 +1,6 @@
 适合游戏文件、未知后缀的压缩包全扔进某一文件夹的仓鼠。根目录下的次级文件会被作为游戏项目导入，刮削文件名时会清洗掉特定字符，最后再将原名称和清洗后名称进行匹配刮削。
-基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削封面。
-<img width="896" height="590" alt="首页" src="https://github.com/user-attachments/assets/89d53a80-b751-4737-a5fb-69cc5e184bf1" />
+基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削。
+<img width="891" height="602" alt="desk" src="https://github.com/user-attachments/assets/b3d04573-ca0c-4ec3-a28b-d0cacc30a0fe" />
 
 
 ## 主要功能
@@ -22,14 +22,14 @@
 
     VNDB Kana v2
     muyueGalgame
-    Steam
     Bangumi
+    Steam
     SteamGridDB（需要 Key 未测试）
     IGDB（需要 Client ID/Secret 未测试）
     VNDB（需要 Token 未测试）
     DLsite（RJ/VJ 号 未测试）
 
-  - **批量刮削封面**：对缺失封面的游戏进行自动抓取
+  - **批量刮削封面、厂商名**：对缺失封面的游戏进行自动抓取，刮削得到的厂商名作为标签添加在游戏上
   - **刮削范围配置**：可选择“哪些根目录参与批量刮削”，新增根目录默认勾选
 
 - **背景图片**
@@ -40,7 +40,7 @@
 <img width="899" height="601" alt="gameCard" src="https://github.com/user-attachments/assets/810d3c2e-6f21-48d9-a677-18769ede148a" />
 
 - 封面截图，直接截图作为游戏封面
-- 扫描文件夹内部exe文件，可直接点击运行
+- 扫描文件夹内部exe文件，可左键单击直接点击运行，右键点击进入exe文件夹自动选中可执行程序
 - 打开游戏所在文件夹
 - 删除游戏条目（不删除本地文件，具体以实现为准）
  
