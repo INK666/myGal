@@ -45,10 +45,4 @@
 - 删除游戏条目（不删除本地文件，具体以实现为准）
  
 
-## 技术栈
 
-- Electron
-- React 18
-- Vite 5
-- Tailwind CSS
-- SQLite（better-sqlite3）
