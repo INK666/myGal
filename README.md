@@ -36,7 +36,7 @@
   - 支持自定义项目背景图（jpg/png）
   - 可清除背景恢复默认
  
-  - - **游戏卡片**
+ **游戏卡片**
 <img width="899" height="601" alt="gameCard" src="https://github.com/user-attachments/assets/810d3c2e-6f21-48d9-a677-18769ede148a" />
 
 - 封面截图，直接截图作为游戏封面
