@@ -825,6 +825,11 @@ function initDatabase() {
       FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
       FOREIGN KEY (root_path_id) REFERENCES root_paths(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS ignored_game_paths (
+      path TEXT PRIMARY KEY,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   
   // 数据迁移：将旧的单个根目录设置迁移到root_paths表
@@ -1196,6 +1201,13 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
     SELECT gp.game_id AS id FROM game_paths gp
     WHERE gp.path = ?
   `);
+
+  const isIgnoredPathStmt = db.prepare(`
+    SELECT 1 AS ignored
+    FROM ignored_game_paths
+    WHERE path = ?
+    LIMIT 1
+  `);
   
   const findScannedGameByNameStmt = db.prepare(`
     SELECT id
@@ -1233,6 +1245,9 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
     
     gameItems.forEach(name => {
       const gamePath = path.join(rootPath.path, name);
+      if (isIgnoredPathStmt.get(gamePath)) {
+        return;
+      }
       const existing = findGameByPathStmt.get(gamePath, gamePath);
       
       if (existing) {
@@ -1317,6 +1332,7 @@ ipcMain.handle('reset-database', async () => {
         DELETE FROM tags;
         DELETE FROM root_paths;
         DELETE FROM settings;
+        DELETE FROM ignored_game_paths;
         DELETE FROM sqlite_sequence WHERE name IN ('games','tags','root_paths','game_paths');
       `);
     })();
@@ -1675,10 +1691,74 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
 });
 
 ipcMain.handle('delete-game', async (event, gameId) => {
-  const game = db.prepare('SELECT cover_path FROM games WHERE id = ?').get(gameId);
-  safeUnlinkCover(game?.cover_path);
-  db.prepare('DELETE FROM games WHERE id = ?').run(gameId);
-  return true;
+  try {
+    const game = db.prepare('SELECT id, cover_path, path FROM games WHERE id = ?').get(gameId);
+    if (!game) return false;
+
+    const extraPaths = db.prepare('SELECT path FROM game_paths WHERE game_id = ?').all(gameId);
+    const pathSet = new Set([
+      game.path,
+      ...extraPaths.map((r) => r?.path).filter(Boolean)
+    ]);
+
+    const insertIgnoredPathStmt = db.prepare(
+      'INSERT OR IGNORE INTO ignored_game_paths (path) VALUES (?)'
+    );
+
+    const tx = db.transaction(() => {
+      for (const p of pathSet) {
+        if (p) insertIgnoredPathStmt.run(p);
+      }
+      db.prepare('DELETE FROM game_tags WHERE game_id = ?').run(gameId);
+      db.prepare('DELETE FROM game_paths WHERE game_id = ?').run(gameId);
+      db.prepare('DELETE FROM games WHERE id = ?').run(gameId);
+    });
+    tx();
+
+    safeUnlinkCover(game.cover_path);
+    return true;
+  } catch (error) {
+    console.error('delete-game failed:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('get-ignored-game-paths', async () => {
+  try {
+    const rows = db.prepare('SELECT path, created_at FROM ignored_game_paths ORDER BY created_at DESC').all();
+    return { success: true, items: rows };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('restore-ignored-game-paths', async (event, paths) => {
+  try {
+    const list = Array.isArray(paths) ? paths.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    if (list.length === 0) return { success: true, restored: 0 };
+
+    const delStmt = db.prepare('DELETE FROM ignored_game_paths WHERE path = ?');
+    let restored = 0;
+    db.transaction(() => {
+      for (const p of list) {
+        const res = delStmt.run(p);
+        restored += res.changes || 0;
+      }
+    })();
+
+    return { success: true, restored };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('clear-ignored-game-paths', async () => {
+  try {
+    const res = db.prepare('DELETE FROM ignored_game_paths').run();
+    return { success: true, restored: res.changes || 0 };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('get-tags', async () => {

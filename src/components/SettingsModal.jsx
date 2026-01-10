@@ -6,6 +6,11 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
   const [status, setStatus] = useState({ type: '', message: '' });
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [showRestoreDeleted, setShowRestoreDeleted] = useState(false);
+  const [ignoredItems, setIgnoredItems] = useState([]);
+  const [ignoredLoading, setIgnoredLoading] = useState(false);
+  const [ignoredFilter, setIgnoredFilter] = useState('');
+  const [restoreLoading, setRestoreLoading] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshingRootId, setRefreshingRootId] = useState(null);
   const [steamGridDbKey, setSteamGridDbKey] = useState('');
@@ -287,6 +292,85 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
     }
   };
 
+  const loadIgnoredItems = async () => {
+    if (!window.electronAPI?.getIgnoredGamePaths) {
+      setIgnoredItems([]);
+      return;
+    }
+    setIgnoredLoading(true);
+    try {
+      const result = await window.electronAPI.getIgnoredGamePaths();
+      if (result?.success) {
+        setIgnoredItems(Array.isArray(result?.items) ? result.items : []);
+      } else {
+        showStatus('error', '读取失败：' + (result?.error || '未知错误'));
+        setIgnoredItems([]);
+      }
+    } catch (error) {
+      showStatus('error', '读取失败：' + (error?.message || String(error)));
+      setIgnoredItems([]);
+    } finally {
+      setIgnoredLoading(false);
+    }
+  };
+
+  const handleRestoreIgnored = async (paths) => {
+    if (restoreLoading) return;
+    if (!window.electronAPI?.restoreIgnoredGamePaths) {
+      showStatus('error', '当前环境不支持恢复');
+      return;
+    }
+    setRestoreLoading(true);
+    try {
+      const result = await window.electronAPI.restoreIgnoredGamePaths(paths);
+      if (result?.success) {
+        const restored = Number.isFinite(result?.restored) ? result.restored : 0;
+        showStatus('success', restored > 0 ? `已恢复 ${restored} 条` : '已恢复');
+        await loadIgnoredItems();
+      } else {
+        showStatus('error', '恢复失败：' + (result?.error || '未知错误'));
+      }
+    } catch (error) {
+      showStatus('error', '恢复失败：' + (error?.message || String(error)));
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
+  const handleRestoreAllIgnored = async () => {
+    if (restoreLoading) return;
+    if (!window.electronAPI?.clearIgnoredGamePaths) {
+      showStatus('error', '当前环境不支持恢复');
+      return;
+    }
+    setRestoreLoading(true);
+    try {
+      const result = await window.electronAPI.clearIgnoredGamePaths();
+      if (result?.success) {
+        const restored = Number.isFinite(result?.restored) ? result.restored : 0;
+        showStatus('success', restored > 0 ? `已恢复 ${restored} 条` : '已恢复');
+        await loadIgnoredItems();
+      } else {
+        showStatus('error', '恢复失败：' + (result?.error || '未知错误'));
+      }
+    } catch (error) {
+      showStatus('error', '恢复失败：' + (error?.message || String(error)));
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showRestoreDeleted) return;
+    setIgnoredFilter('');
+    loadIgnoredItems();
+  }, [showRestoreDeleted]);
+
+  const normalizedFilter = String(ignoredFilter || '').trim().toLowerCase();
+  const filteredIgnoredItems = normalizedFilter
+    ? ignoredItems.filter((item) => String(item?.path || '').toLowerCase().includes(normalizedFilter))
+    : ignoredItems;
+
   return (
     <div className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300">
       <div className="modal-content bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl w-full max-w-lg mx-4 border border-gray-800 shadow-2xl shadow-indigo-900/20 transform transition-all duration-300 hover:shadow-3xl">
@@ -296,6 +380,21 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
               <h2 className="text-xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">设置</h2>
             </div>
             <div className="flex items-center gap-4">
+              <div className="relative group">
+                <button
+                  type="button"
+                  onClick={() => setShowRestoreDeleted(true)}
+                  className="p-2 rounded-xl text-gray-400 hover:text-white bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 transition-all duration-300"
+                  title="恢复被删游戏"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v6h6M3 13a9 9 0 109-9 9 9 0 00-6.36 2.64L3 7" />
+                  </svg>
+                </button>
+                <div className="pointer-events-none absolute right-0 top-full mt-2 w-[220px] rounded-xl border border-gray-700/80 bg-gray-900/95 px-3 py-2 text-xs text-gray-200 opacity-0 shadow-2xl transition-opacity duration-200 group-hover:opacity-100">
+                  恢复被删游戏
+                </div>
+              </div>
               <div className="relative group">
                 <button
                   type="button"
@@ -654,6 +753,101 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
                 className="flex-1 bg-gradient-to-r from-red-600 to-pink-600 text-white font-medium py-2.5 rounded-xl hover:shadow-lg hover:shadow-red-600/30 transition-all transform active:scale-95 disabled:opacity-60"
               >
                 {resetLoading ? '正在删除...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRestoreDeleted && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-3 text-indigo-300">
+                <div className="p-3 bg-indigo-500/10 rounded-xl">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v6h6M3 13a9 9 0 109-9 9 9 0 00-6.36 2.64L3 7" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">恢复被删游戏</h3>
+                  <div className="text-xs text-gray-400 mt-1">恢复后需点击“刷新/导入”才会重新入库</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRestoreDeleted(false)}
+                className="p-2 rounded-xl text-gray-400 hover:text-white bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 transition-all duration-300"
+                title="关闭"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3 mb-4">
+              <input
+                type="text"
+                value={ignoredFilter}
+                onChange={(e) => setIgnoredFilter(e.target.value)}
+                placeholder="搜索路径"
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300"
+              />
+              <button
+                type="button"
+                onClick={handleRestoreAllIgnored}
+                disabled={restoreLoading || ignoredLoading || ignoredItems.length === 0}
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium py-2.5 px-4 rounded-xl hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-350 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                全部恢复
+              </button>
+            </div>
+
+            <div className="p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 max-h-[50vh] overflow-y-auto">
+              {ignoredLoading ? (
+                <div className="text-sm text-gray-400">正在加载...</div>
+              ) : filteredIgnoredItems.length === 0 ? (
+                <div className="text-sm text-gray-400">
+                  {ignoredItems.length === 0 ? '暂无被删除记录' : '没有匹配的路径'}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredIgnoredItems.map((item) => (
+                    <div
+                      key={item.path}
+                      className="flex items-center justify-between gap-3 p-3 rounded-xl bg-gray-900/50 border border-gray-800/80 hover:border-indigo-700/40 transition-all"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-gray-200 font-mono break-all">{item.path}</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          {item.created_at ? new Date(item.created_at).toLocaleString() : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreIgnored([item.path])}
+                        disabled={restoreLoading}
+                        className="shrink-0 px-3 py-2 rounded-xl text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-200 hover:text-white border border-gray-700/80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        恢复
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-500">
+                删除游戏不会删本地文件，只是加入忽略列表
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRestoreDeleted(false)}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 transition-all"
+              >
+                关闭
               </button>
             </div>
           </div>

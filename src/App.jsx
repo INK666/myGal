@@ -85,7 +85,10 @@ if (!window.electronAPI) {
     getAppVersion: async () => ({ success: true, version: 'dev' }),
     scanExecutables: async () => ({ success: true, items: [] }),
     launchExecutable: async () => ({ success: false, error: 'browser mock' }),
-    captureScreenCover: async () => ({ success: false, error: 'browser mock' })
+    captureScreenCover: async () => ({ success: false, error: 'browser mock' }),
+    getIgnoredGamePaths: async () => ({ success: true, items: [] }),
+    restoreIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
+    clearIgnoredGamePaths: async () => ({ success: true, restored: 0 })
   };
 }
 

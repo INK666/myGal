@@ -258,9 +258,18 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
   };
 
   const handleDeleteGame = async () => {
-    await window.electronAPI.deleteGame(game.id);
-    onClose();
-    onUpdate();
+    try {
+      const ok = await window.electronAPI.deleteGame(game.id);
+      if (!ok) {
+        showStatus('error', '删除失败：游戏不存在或已删除');
+        return;
+      }
+      setShowDeleteConfirm(false);
+      onClose();
+      onUpdate();
+    } catch (error) {
+      showStatus('error', '删除失败：' + (error?.message || String(error)));
+    }
   };
 
   const handleSaveAlias = async () => {

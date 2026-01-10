@@ -36,5 +36,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteRootPath: (id) => ipcRenderer.invoke('delete-root-path', id),
   addGameDirectory: (path) => ipcRenderer.invoke('add-game-directory', path),
   captureScreenCover: (gameId) => ipcRenderer.invoke('capture-screen-cover', gameId),
-  resetDatabase: () => ipcRenderer.invoke('reset-database')
+  resetDatabase: () => ipcRenderer.invoke('reset-database'),
+  getIgnoredGamePaths: () => ipcRenderer.invoke('get-ignored-game-paths'),
+  restoreIgnoredGamePaths: (paths) => ipcRenderer.invoke('restore-ignored-game-paths', paths),
+  clearIgnoredGamePaths: () => ipcRenderer.invoke('clear-ignored-game-paths')
 });
