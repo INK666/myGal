@@ -36,14 +36,21 @@ A根目录/
   - 刮削源：
 
     VNDB Kana v2
+    
     muyueGalgame
+    
     Bangumi
+    
     Steam
+    
+    DLsite
+    
     SteamGridDB（需要 Key 未测试）
+    
     IGDB（需要 Client ID/Secret 未测试）
+    
     VNDB（需要 Token 未测试）
-    DLsite（RJ/VJ 号 未测试）
-
+    
   - **批量刮削封面、厂商名**：对缺失封面的游戏进行自动抓取，刮削得到的厂商名作为标签添加在游戏上
   - **刮削范围配置**：可选择“哪些根目录参与批量刮削”，新增根目录默认勾选
 
