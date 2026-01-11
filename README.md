@@ -15,8 +15,9 @@ A根目录/
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
   
+<img width="1280" height="677" alt="desk" src="https://github.com/user-attachments/assets/c50f9516-1e5a-404c-b88b-e93184e9d0dc" />
 
-<img width="891" height="602" alt="desk" src="https://github.com/user-attachments/assets/b3d04573-ca0c-4ec3-a28b-d0cacc30a0fe" />
+
 
 ## 主要功能
 基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削。
@@ -59,7 +60,8 @@ A根目录/
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="899" height="601" alt="gameCard" src="https://github.com/user-attachments/assets/810d3c2e-6f21-48d9-a677-18769ede148a" />
+<img width="499" height="653" alt="card" src="https://github.com/user-attachments/assets/60f7a6bc-b555-46a1-bb5f-b48f64bd7891" />
+
 
 - 封面截图，直接截图作为游戏封面
 - 扫描文件夹内部exe文件，可左键单击直接点击运行，右键点击进入exe文件夹自动选中可执行程序
