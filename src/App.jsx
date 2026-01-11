@@ -85,6 +85,11 @@ if (!window.electronAPI) {
     getAppVersion: async () => ({ success: true, version: 'dev' }),
     scanExecutables: async () => ({ success: true, items: [] }),
     launchExecutable: async () => ({ success: false, error: 'browser mock' }),
+    launchExecutableAdmin: async () => ({ success: false, error: 'browser mock' }),
+    launchExecutableLocaleRemulator: async () => ({ success: false, error: 'browser mock' }),
+    launchExecutableLocaleEmulator: async () => ({ success: false, error: 'browser mock' }),
+    getRunHistory: async () => ({ success: true, items: [], total: 0 }),
+    clearRunHistory: async () => ({ success: true }),
     captureScreenCover: async () => ({ success: false, error: 'browser mock' }),
     getIgnoredGamePaths: async () => ({ success: true, items: [] }),
     restoreIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
@@ -118,6 +123,11 @@ function App() {
   const [bulkScrapeProgress, setBulkScrapeProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState({ type: '', message: '' });
   const [appVersion, setAppVersion] = useState('');
+  const [showRunHistory, setShowRunHistory] = useState(false);
+  const [runHistoryItems, setRunHistoryItems] = useState([]);
+  const [runHistoryTotal, setRunHistoryTotal] = useState(0);
+  const [runHistoryLoading, setRunHistoryLoading] = useState(false);
+  const [runHistoryOffset, setRunHistoryOffset] = useState(0);
   const bulkScrapeRunIdRef = useRef(0);
   const bulkScrapeCancelRef = useRef(false);
   const tagFilterPopoverRef = useRef(null);
@@ -134,6 +144,39 @@ function App() {
   const showStatus = (type, message) => {
     setStatus({ type, message });
   };
+
+  const runHistoryLimit = 50;
+  const loadRunHistory = async ({ offset = 0, append = false } = {}) => {
+    try {
+      const api = window.electronAPI;
+      if (!api?.getRunHistory) return;
+      setRunHistoryLoading(true);
+      const result = await api.getRunHistory({ limit: runHistoryLimit, offset });
+      if (result?.success) {
+        const nextItems = Array.isArray(result.items) ? result.items : [];
+        setRunHistoryItems((prev) => (append ? [...prev, ...nextItems] : nextItems));
+        setRunHistoryTotal(Number(result.total || 0));
+        setRunHistoryOffset(offset);
+      }
+    } catch {
+    } finally {
+      setRunHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showRunHistory) return;
+    loadRunHistory({ offset: 0, append: false });
+  }, [showRunHistory]);
+
+  useEffect(() => {
+    if (!showRunHistory) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setShowRunHistory(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showRunHistory]);
 
   useEffect(() => {
     loadRootPaths();
@@ -748,6 +791,197 @@ function App() {
     );
   };
 
+  const RunHistoryModal = () => {
+    const formatMethod = (m) => {
+      const v = String(m || '').trim();
+      if (!v) return '未知方式';
+      if (v === 'shell.openPath') return '直接启动';
+      if (v === 'powershell-runas') return '管理员启动';
+      if (v === 'leproc') return 'Locale Emulator';
+      if (v === 'lrproc') return 'Locale Remulator';
+      return v;
+    };
+
+    const formatTime = (ts) => {
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      try {
+        return new Date(n).toLocaleString();
+      } catch {
+        return '';
+      }
+    };
+
+    const relaunchFromHistory = async (it) => {
+      try {
+        const api = window.electronAPI;
+        if (!api) return;
+        const exePath = String(it?.exe_path || '').trim();
+        if (!exePath) {
+          showStatus('error', '启动失败：无效路径');
+          return;
+        }
+
+        const method = String(it?.method || '').trim();
+        const launcher =
+          method === 'powershell-runas'
+            ? api.launchExecutableAdmin
+            : method === 'leproc'
+              ? api.launchExecutableLocaleEmulator
+              : method === 'lrproc'
+                ? api.launchExecutableLocaleRemulator
+                : api.launchExecutable;
+
+        if (typeof launcher !== 'function') {
+          showStatus('error', '当前环境不支持运行');
+          return;
+        }
+
+        const result = await launcher(exePath, [], {
+          gameId: it?.game_id ?? null,
+          gameName: String(it?.game_name || '')
+        });
+
+        if (result?.success) {
+          if (method === 'powershell-runas') {
+            showStatus('success', '已请求以管理员身份启动');
+            await loadRunHistory({ offset: 0, append: false });
+            return;
+          }
+          if (method === 'leproc') {
+            showStatus('success', '已通过 Locale Emulator 启动');
+            await loadRunHistory({ offset: 0, append: false });
+            return;
+          }
+          if (method === 'lrproc') {
+            showStatus('success', '已通过 Locale Remulator 启动');
+            await loadRunHistory({ offset: 0, append: false });
+            return;
+          }
+          if (result?.needsUserConfirm) {
+            showStatus('success', '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”');
+          } else {
+            showStatus('success', '已启动');
+          }
+          await loadRunHistory({ offset: 0, append: false });
+          return;
+        }
+
+        const detail = result?.details ? `（${result.details}）` : '';
+        showStatus('error', '启动失败：' + (result?.error || '未知错误') + detail);
+      } catch (error) {
+        showStatus('error', '启动失败：' + (error?.message || String(error)));
+      }
+    };
+
+    return (
+      <div
+        className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) setShowRunHistory(false);
+        }}
+      >
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl shadow-2xl transform animate-in zoom-in-95 duration-200 overflow-hidden max-h-[calc(100vh-2rem)] flex flex-col">
+          <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-800/80">
+            <div className="min-w-0">
+              <div className="text-white font-semibold">运行历史</div>
+              <div className="text-xs text-gray-400">共 {runHistoryTotal} 条</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm transition-all disabled:opacity-60"
+                disabled={runHistoryLoading || runHistoryTotal === 0}
+                onClick={async () => {
+                  try {
+                    const api = window.electronAPI;
+                    if (!api?.clearRunHistory) return;
+                    const res = await api.clearRunHistory();
+                    if (res?.success) {
+                      setRunHistoryItems([]);
+                      setRunHistoryTotal(0);
+                      setRunHistoryOffset(0);
+                    }
+                  } catch {}
+                }}
+              >
+                清空
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm transition-all"
+                onClick={() => setShowRunHistory(false)}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-auto px-5 py-4">
+            {runHistoryItems.length === 0 ? (
+              <div className="text-gray-400 text-sm py-10 text-center">
+                {runHistoryLoading ? '加载中...' : '暂无记录'}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {runHistoryItems.map((it) => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    className="w-full text-left bg-gray-950/40 border border-gray-800/70 rounded-xl p-3 hover:bg-gray-900/55 hover:border-gray-700/70 transition-all"
+                    onClick={() => relaunchFromHistory(it)}
+                    title="点击按上次方式启动"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-gray-100 text-sm truncate">
+                          {String(it.game_name || '未命名游戏')}
+                        </div>
+                        <div className="text-xs text-gray-500">{formatTime(it.launched_at)}</div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2">
+                        {it.needs_user_confirm ? (
+                          <span className="text-xs px-2 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/20">
+                            需确认
+                          </span>
+                        ) : null}
+                        <span className="text-xs px-2 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
+                          {formatMethod(it.method)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-gray-400 break-all font-mono">
+                      {String(it.exe_path || '')}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="shrink-0 px-5 py-4 border-t border-gray-800/80 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              className="text-sm text-indigo-300 hover:text-indigo-200 transition-colors disabled:opacity-60"
+              disabled={runHistoryLoading}
+              onClick={() => loadRunHistory({ offset: 0, append: false })}
+            >
+              刷新
+            </button>
+            <button
+              type="button"
+              className="text-sm text-gray-200 bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded-xl transition-all disabled:opacity-60"
+              disabled={runHistoryLoading || runHistoryItems.length >= runHistoryTotal}
+              onClick={() => loadRunHistory({ offset: runHistoryOffset + runHistoryLimit, append: true })}
+            >
+              {runHistoryItems.length >= runHistoryTotal ? '没有更多了' : '加载更多'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen relative">
       {projectBackgroundUrl ? (
@@ -977,14 +1211,28 @@ function App() {
       {showBulkScrapeScope && <BulkScrapeScopeModal />}
 
       {appVersion ? (
-        <div
-          className={`fixed bottom-3 right-4 z-[40] text-xs pointer-events-none select-none ${
-            hasProjectBackground ? 'text-gray-100/70' : 'text-gray-300/70'
-          }`}
-        >
-          v{appVersion}
-        </div>
+        <>
+          <button
+            type="button"
+            className="fixed bottom-10 right-0 z-[60] h-7 w-14 rounded-l-full bg-indigo-500/25 hover:bg-indigo-500/40 border border-white/10 backdrop-blur-sm text-white/90 transition-all duration-300 flex items-center justify-center shadow-lg shadow-black/20"
+            onClick={() => setShowRunHistory(true)}
+            title="查看运行历史"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </button>
+          <div
+            className={`fixed bottom-3 right-4 z-[40] text-xs pointer-events-none select-none ${
+              hasProjectBackground ? 'text-gray-100/70' : 'text-gray-300/70'
+            }`}
+          >
+            v{appVersion}
+          </div>
+        </>
       ) : null}
+
+      {showRunHistory && <RunHistoryModal />}
     </div>
   );
 }

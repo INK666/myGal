@@ -658,29 +658,12 @@ const tryDlsiteCover = async (title) => {
   const workno = match?.[1] ? match[1].toUpperCase() : '';
   if (!workno) return null;
 
-  const apiUrl = `https://www.dlsite.com/maniax/api/=/product.json?workno=${encodeURIComponent(workno)}&locale=zh_cn`;
-  const res = await fetchWithTimeout(apiUrl, {
-    headers: {
-      'User-Agent': 'GameManage/1.0',
-      Accept: 'application/json'
-    }
-  }, 15000);
-  if (!res.ok) return null;
-  const json = await res.json();
-
   const pickObject = (value) => {
     if (!value) return null;
     if (Array.isArray(value)) return value[0] || null;
     if (typeof value === 'object') return value;
     return null;
   };
-
-  const candidate =
-    pickObject(json) ||
-    pickObject(json?.[workno]) ||
-    pickObject(json?.product) ||
-    pickObject(json?.work) ||
-    null;
 
   const pickUrl = (obj) => {
     const direct =
@@ -697,16 +680,20 @@ const tryDlsiteCover = async (title) => {
       obj?.images?.thumb ||
       obj?.work_image_main ||
       null;
-    if (typeof direct === 'string' && direct.startsWith('http')) return direct;
+    if (typeof direct === 'string') {
+      if (direct.startsWith('http')) return direct;
+      if (direct.startsWith('//')) return `https:${direct}`;
+    }
     if (direct && typeof direct === 'object') {
       const nested = direct?.url || direct?.large || direct?.common || direct?.medium || direct?.small || null;
-      if (typeof nested === 'string' && nested.startsWith('http')) return nested;
+      if (typeof nested === 'string') {
+        if (nested.startsWith('http')) return nested;
+        if (nested.startsWith('//')) return `https:${nested}`;
+      }
     }
     return null;
   };
 
-  const urlOut = pickUrl(candidate);
-  if (!urlOut) return null;
   const toNameList = (value) => {
     if (!value) return [];
     if (typeof value === 'string') return [value];
@@ -718,19 +705,64 @@ const tryDlsiteCover = async (title) => {
     return [];
   };
 
-  const vendors = uniqCaseInsensitive([
-    ...toNameList(candidate?.maker_name),
-    ...toNameList(candidate?.makerName),
-    ...toNameList(candidate?.maker),
-    ...toNameList(candidate?.circle),
-    ...toNameList(candidate?.circle_name),
-    ...toNameList(candidate?.brand),
-    ...toNameList(candidate?.brand_name),
-    ...toNameList(candidate?.publisher),
-    ...toNameList(candidate?.publisher_name)
-  ]);
+  const headers = {
+    'User-Agent': 'GameManage/1.0',
+    Accept: 'application/json'
+  };
 
-  return { provider: 'DLsite', url: urlOut, vendors };
+  const locales = ['zh_cn', 'ja_jp', 'en_us'];
+  const sections = ['maniax', 'home', 'pro'];
+
+  const fetchOne = async (section, locale) => {
+    const apiUrl = `https://www.dlsite.com/${section}/api/=/product.json?workno=${encodeURIComponent(workno)}&locale=${encodeURIComponent(locale)}`;
+    let res = null;
+    try {
+      res = await fetchWithTimeout(apiUrl, { headers }, 18000);
+    } catch {
+      return null;
+    }
+    if (!res?.ok) return null;
+
+    let json = null;
+    try {
+      json = await res.json();
+    } catch {
+      return null;
+    }
+
+    const candidate =
+      pickObject(json) ||
+      pickObject(json?.[workno]) ||
+      pickObject(json?.product) ||
+      pickObject(json?.work) ||
+      null;
+
+    const urlOut = pickUrl(candidate);
+    if (!urlOut) return null;
+
+    const vendors = uniqCaseInsensitive([
+      ...toNameList(candidate?.maker_name),
+      ...toNameList(candidate?.makerName),
+      ...toNameList(candidate?.maker),
+      ...toNameList(candidate?.circle),
+      ...toNameList(candidate?.circle_name),
+      ...toNameList(candidate?.brand),
+      ...toNameList(candidate?.brand_name),
+      ...toNameList(candidate?.publisher),
+      ...toNameList(candidate?.publisher_name)
+    ]);
+
+    return { provider: 'DLsite', url: urlOut, vendors };
+  };
+
+  for (const section of sections) {
+    for (const locale of locales) {
+      const result = await fetchOne(section, locale);
+      if (result?.url) return result;
+    }
+  }
+
+  return null;
 };
 
 function createWindow() {
@@ -830,6 +862,19 @@ function initDatabase() {
       path TEXT PRIMARY KEY,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS run_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER,
+      game_name TEXT,
+      exe_path TEXT NOT NULL,
+      method TEXT,
+      needs_user_confirm INTEGER DEFAULT 0,
+      launched_at INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_history_launched_at ON run_history(launched_at DESC);
   `);
   
   // 数据迁移：将旧的单个根目录设置迁移到root_paths表
@@ -1333,7 +1378,8 @@ ipcMain.handle('reset-database', async () => {
         DELETE FROM root_paths;
         DELETE FROM settings;
         DELETE FROM ignored_game_paths;
-        DELETE FROM sqlite_sequence WHERE name IN ('games','tags','root_paths','game_paths');
+        DELETE FROM run_history;
+        DELETE FROM sqlite_sequence WHERE name IN ('games','tags','root_paths','game_paths','run_history');
       `);
     })();
     
@@ -1865,6 +1911,32 @@ ipcMain.handle('open-external', async (event, url) => {
   }
 });
 
+ipcMain.handle('get-run-history', async (event, params) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(params?.limit ?? 50), 10) || 50));
+    const offset = Math.max(0, Number.parseInt(String(params?.offset ?? 0), 10) || 0);
+    const total = db.prepare('SELECT COUNT(1) AS c FROM run_history').get()?.c || 0;
+    const items = db.prepare(`
+      SELECT id, game_id, game_name, exe_path, method, needs_user_confirm, launched_at
+      FROM run_history
+      ORDER BY launched_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(limit, offset);
+    return { success: true, items, total };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('clear-run-history', async () => {
+  try {
+    db.prepare('DELETE FROM run_history').run();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('scan-executables', async (event, rootPaths) => {
   const roots = (Array.isArray(rootPaths) ? rootPaths : [rootPaths])
     .map((p) => (typeof p === 'string' ? p.trim() : ''))
@@ -1955,43 +2027,323 @@ ipcMain.handle('scan-executables', async (event, rootPaths) => {
   return { success: true, items };
 });
 
-ipcMain.handle('launch-executable', async (event, exePath, rootPaths) => {
+const resolveLaunchTargetExecutable = (exePath, rootPaths) => {
+  if (typeof exePath !== 'string' || !exePath.trim()) {
+    return { success: false, error: '无效的可执行文件路径' };
+  }
+  const resolvedExe = path.resolve(exePath);
+  if (!path.isAbsolute(resolvedExe)) {
+    return { success: false, error: '无效的可执行文件路径' };
+  }
+  if (path.extname(resolvedExe).toLowerCase() !== '.exe') {
+    return { success: false, error: '仅支持运行 exe 文件' };
+  }
+  if (!fs.existsSync(resolvedExe)) {
+    return { success: false, error: '文件不存在' };
+  }
+
+  const roots = (Array.isArray(rootPaths) ? rootPaths : [rootPaths])
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+
+  if (roots.length > 0) {
+    const allowed = roots.some((root) => isPathUnderDirectory(resolvedExe, root));
+    if (!allowed) {
+      return { success: false, error: '不允许运行该路径下的程序' };
+    }
+  }
+
+  return { success: true, resolvedExe, exeDir: path.dirname(resolvedExe), roots };
+};
+
+const readZoneIdentifier = (resolvedExe) => {
   try {
-    if (typeof exePath !== 'string' || !exePath.trim()) {
-      return { success: false, error: '无效的可执行文件路径' };
-    }
-    const resolvedExe = path.resolve(exePath);
-    if (!path.isAbsolute(resolvedExe)) {
-      return { success: false, error: '无效的可执行文件路径' };
-    }
-    if (path.extname(resolvedExe).toLowerCase() !== '.exe') {
-      return { success: false, error: '仅支持运行 exe 文件' };
-    }
-    if (!fs.existsSync(resolvedExe)) {
-      return { success: false, error: '文件不存在' };
+    const raw = fs.readFileSync(`${resolvedExe}:Zone.Identifier`, 'utf8');
+    return String(raw || '');
+  } catch {
+    return '';
+  }
+};
+
+const runCommandCapture = (command, args, options = {}) => new Promise((resolve) => {
+  let stdout = '';
+  let stderr = '';
+  let done = false;
+
+  const finish = (result) => {
+    if (done) return;
+    done = true;
+    resolve(result);
+  };
+
+  let child = null;
+  try {
+    child = spawn(command, Array.isArray(args) ? args : [], {
+      windowsHide: true,
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    finish({ ok: false, code: null, stdout: '', stderr: error?.message || String(error) });
+    return;
+  }
+
+  if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
+  if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
+  child.on('error', (error) => finish({ ok: false, code: null, stdout, stderr: (error?.message || String(error)) }));
+  child.on('close', (code) => finish({ ok: code === 0, code, stdout, stderr }));
+});
+
+const findFirstOnPath = async (fileName) => {
+  const raw = typeof fileName === 'string' ? fileName.trim() : '';
+  if (!raw) return null;
+  const result = await runCommandCapture('where.exe', [raw]);
+  if (!result.ok) return null;
+  const first = String(result.stdout || '')
+    .split(/\r?\n/g)
+    .map((v) => v.trim())
+    .filter(Boolean)[0];
+  if (!first) return null;
+  const resolved = path.resolve(first);
+  if (!fs.existsSync(resolved)) return null;
+  return resolved;
+};
+
+const findFileInRoots = async (fileNames, searchRoots) => {
+  const names = (Array.isArray(fileNames) ? fileNames : [fileNames])
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter(Boolean);
+  if (names.length === 0) return null;
+  const nameSet = new Set(names.map((n) => n.toLowerCase()));
+
+  const roots = (Array.isArray(searchRoots) ? searchRoots : [searchRoots])
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+
+  const ignoreDirNames = new Set([
+    '.git',
+    '.svn',
+    'node_modules',
+    'Steamworks Shared',
+    'CommonRedist',
+    '__MACOSX',
+    '$Recycle.Bin'
+  ]);
+
+  const maxDepth = 5;
+  const maxVisitedDirs = 4000;
+
+  for (const root of roots) {
+    try {
+      if (!fs.existsSync(root)) continue;
+      const st = await fs.promises.stat(root);
+      if (!st.isDirectory()) continue;
+    } catch {
+      continue;
     }
 
-    const roots = (Array.isArray(rootPaths) ? rootPaths : [rootPaths])
-      .map((p) => (typeof p === 'string' ? p.trim() : ''))
-      .filter(Boolean)
-      .map((p) => path.resolve(p));
+    const queue = [{ dir: root, depth: 0 }];
+    let visited = 0;
 
-    if (roots.length > 0) {
-      const allowed = roots.some((root) => isPathUnderDirectory(resolvedExe, root));
-      if (!allowed) {
-        return { success: false, error: '不允许运行该路径下的程序' };
-      }
-    }
+    while (queue.length > 0 && visited < maxVisitedDirs) {
+      const current = queue.shift();
+      visited += 1;
 
-    const exeDir = path.dirname(resolvedExe);
-    const hasMotw = (() => {
+      let entries = [];
       try {
-        const raw = fs.readFileSync(`${resolvedExe}:Zone.Identifier`, 'utf8');
-        return /\[ZoneTransfer\]/i.test(String(raw));
+        entries = await fs.promises.readdir(current.dir, { withFileTypes: true });
       } catch {
-        return false;
+        continue;
       }
-    })();
+
+      for (const ent of entries) {
+        const full = path.join(current.dir, ent.name);
+        if (ent.isDirectory()) {
+          if (current.depth >= maxDepth) continue;
+          if (ignoreDirNames.has(ent.name)) continue;
+          queue.push({ dir: full, depth: current.depth + 1 });
+          continue;
+        }
+        if (!ent.isFile()) continue;
+        if (!nameSet.has(String(ent.name).toLowerCase())) continue;
+        try {
+          if (fs.existsSync(full)) return full;
+        } catch {}
+      }
+    }
+  }
+
+  return null;
+};
+
+const findToolExecutable = async (fileNames, rootPaths) => {
+  const names = (Array.isArray(fileNames) ? fileNames : [fileNames])
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter(Boolean);
+
+  const isAsarVirtualPath = (p) => {
+    const s = String(p || '');
+    return /app\.asar[\\/]/i.test(s) && !/app\.asar\.unpacked[\\/]/i.test(s);
+  };
+
+  const resourcesBase = (() => {
+    try {
+      return process.resourcesPath ? path.resolve(process.resourcesPath) : '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const resourcesExtends = resourcesBase ? path.join(resourcesBase, 'extends') : '';
+  const resourcesUnpackedExtends = resourcesBase ? path.join(resourcesBase, 'app.asar.unpacked', 'extends') : '';
+  const userDataExtends = path.join(app.getPath('userData'), 'extends');
+  const cwdExtends = path.join(process.cwd(), 'extends');
+  const dirExtends = path.join(__dirname, 'extends');
+
+  const extendsBases = (app.isPackaged
+    ? [resourcesExtends, resourcesUnpackedExtends, userDataExtends, cwdExtends, dirExtends]
+    : [dirExtends, cwdExtends, resourcesExtends, resourcesUnpackedExtends, userDataExtends]
+  )
+    .filter(Boolean)
+    .filter((p) => !isAsarVirtualPath(p));
+
+  const candidateDirs = [];
+  for (const base of extendsBases) {
+    try {
+      if (!fs.existsSync(base)) continue;
+      const st = fs.statSync(base);
+      if (!st.isDirectory()) continue;
+      candidateDirs.push(base);
+      const entries = fs.readdirSync(base, { withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const sub = path.join(base, ent.name);
+        if (isAsarVirtualPath(sub)) continue;
+        candidateDirs.push(sub);
+      }
+    } catch {}
+  }
+
+  for (const dir of candidateDirs) {
+    for (const n of names) {
+      try {
+        const full = path.join(dir, n);
+        if (isAsarVirtualPath(full)) continue;
+        if (fs.existsSync(full)) return full;
+      } catch {}
+    }
+  }
+
+  for (const n of names) {
+    const found = await findFirstOnPath(n);
+    if (found) return found;
+  }
+
+  const specialRoots = [
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    process.env.LocalAppData,
+    process.env.AppData
+  ].filter(Boolean);
+
+  return await findFileInRoots(names, [...(Array.isArray(rootPaths) ? rootPaths : [rootPaths]).filter(Boolean), ...specialRoots]);
+};
+
+const spawnDetachedChecked = async (command, args, options = {}) => {
+  return await new Promise((resolve) => {
+    let child = null;
+    let settled = false;
+
+    const finish = (ok, error) => {
+      if (settled) return;
+      settled = true;
+      if (child) {
+        try {
+          child.removeAllListeners('error');
+          child.removeAllListeners('spawn');
+          child.unref();
+        } catch {}
+      }
+      resolve({ ok, error: error ? String(error) : '' });
+    };
+
+    try {
+      child = spawn(command, Array.isArray(args) ? args : [], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        ...options
+      });
+    } catch (error) {
+      finish(false, error?.message || String(error));
+      return;
+    }
+
+    child.once('error', (error) => finish(false, error?.message || String(error)));
+    child.once('spawn', () => finish(true, ''));
+
+    setTimeout(() => finish(true, ''), 400);
+  });
+};
+
+const toPowerShellSingleQuoted = (value) => `'${String(value ?? '').replace(/'/g, "''")}'`;
+
+let runHistoryInsertStmt = null;
+let runHistoryCountStmt = null;
+
+const tryLogRunHistory = (meta) => {
+  try {
+    if (!db) return;
+
+    const gameIdRaw = meta?.gameId ?? meta?.id ?? meta?.game_id ?? null;
+    const gameId = Number.isFinite(Number(gameIdRaw)) ? Number(gameIdRaw) : null;
+    const gameName = meta?.gameName ?? meta?.game_name ?? null;
+    const exePath = meta?.exePath ?? meta?.exe_path ?? '';
+    const method = meta?.method ?? null;
+    const needsUserConfirm = meta?.needsUserConfirm ? 1 : 0;
+
+    if (!exePath || typeof exePath !== 'string') return;
+
+    if (!runHistoryInsertStmt) {
+      runHistoryInsertStmt = db.prepare(`
+        INSERT INTO run_history (game_id, game_name, exe_path, method, needs_user_confirm, launched_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+    }
+    if (!runHistoryCountStmt) {
+      runHistoryCountStmt = db.prepare('SELECT COUNT(1) AS c FROM run_history');
+    }
+
+    runHistoryInsertStmt.run(gameId, gameName ? String(gameName) : null, String(exePath), method ? String(method) : null, needsUserConfirm, Date.now());
+
+    const count = runHistoryCountStmt.get()?.c || 0;
+    const keep = 500;
+    const threshold = 800;
+    if (count > threshold) {
+      const over = count - keep;
+      if (over > 0) {
+        db.prepare(`
+          DELETE FROM run_history
+          WHERE id IN (
+            SELECT id FROM run_history
+            ORDER BY launched_at ASC, id ASC
+            LIMIT ?
+          )
+        `).run(over);
+      }
+    }
+  } catch {}
+};
+
+ipcMain.handle('launch-executable', async (event, exePath, rootPaths, gameMeta) => {
+  try {
+    const resolved = resolveLaunchTargetExecutable(exePath, rootPaths);
+    if (!resolved.success) return resolved;
+
+    const { resolvedExe, exeDir } = resolved;
+    const hasMotw = /\[ZoneTransfer\]/i.test(readZoneIdentifier(resolvedExe));
 
     if (hasMotw) {
       const err = await shell.openPath(resolvedExe);
@@ -2001,17 +2353,152 @@ ipcMain.handle('launch-executable', async (event, exePath, rootPaths) => {
         } catch {}
         return { success: false, error: '该程序会触发 SmartScreen，请在资源管理器中“更多信息 → 仍要运行”后再启动', details: err.trim() };
       }
+      tryLogRunHistory({
+        ...gameMeta,
+        exePath: resolvedExe,
+        method: 'shell.openPath',
+        needsUserConfirm: true
+      });
       return { success: true, method: 'shell.openPath', needsUserConfirm: true };
     }
 
-    const child = spawn(resolvedExe, [], {
-      cwd: exeDir,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
+    const err = await shell.openPath(resolvedExe);
+    if (typeof err === 'string' && err.trim()) {
+      try {
+        shell.showItemInFolder(resolvedExe);
+      } catch {}
+      return { success: false, error: '启动失败', details: err.trim() };
+    }
+    tryLogRunHistory({
+      ...gameMeta,
+      exePath: resolvedExe,
+      method: 'shell.openPath',
+      needsUserConfirm: false
     });
-    child.unref();
-    return { success: true, method: 'spawn' };
+    return { success: true, method: 'shell.openPath' };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('launch-executable-admin', async (event, exePath, rootPaths, gameMeta) => {
+  try {
+    const resolved = resolveLaunchTargetExecutable(exePath, rootPaths);
+    if (!resolved.success) return resolved;
+    const { resolvedExe, exeDir } = resolved;
+
+    const hasMotw = /\[ZoneTransfer\]/i.test(readZoneIdentifier(resolvedExe));
+    if (hasMotw) {
+      try {
+        fs.unlinkSync(`${resolvedExe}:Zone.Identifier`);
+      } catch (error) {
+        try {
+          shell.showItemInFolder(resolvedExe);
+        } catch {}
+        return {
+          success: false,
+          error: '该程序被 SmartScreen 拦截，无法直接以管理员启动；请先在资源管理器中对该文件选择“仍要运行/解除锁定”后再试',
+          details: error?.message || String(error)
+        };
+      }
+    }
+
+    const psCommand = [
+      '$ErrorActionPreference = "Stop"',
+      `Start-Process -FilePath ${toPowerShellSingleQuoted(resolvedExe)} -WorkingDirectory ${toPowerShellSingleQuoted(exeDir)} -Verb RunAs | Out-Null`,
+      'exit 0'
+    ].join('; ');
+
+    const result = await runCommandCapture('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCommand], {
+      cwd: exeDir,
+      detached: false
+    });
+
+    if (result.ok) {
+      tryLogRunHistory({
+        ...gameMeta,
+        exePath: resolvedExe,
+        method: 'powershell-runas',
+        needsUserConfirm: true
+      });
+      return { success: true, method: 'powershell-runas', needsUserConfirm: true };
+    }
+
+    const msg = String(result.stderr || result.stdout || '').trim();
+    return {
+      success: false,
+      error: msg || '以管理员身份启动失败（可能已取消 UAC）'
+    };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('launch-executable-locale-emulator', async (event, exePath, rootPaths, gameMeta) => {
+  try {
+    const resolved = resolveLaunchTargetExecutable(exePath, rootPaths);
+    if (!resolved.success) return resolved;
+    const { resolvedExe } = resolved;
+
+    const leproc = await findToolExecutable(['LEProc.exe', 'LEProc'], resolved.roots);
+    if (!leproc) {
+      return { success: false, error: '未找到 LEProc.exe，请确认已安装 Locale Emulator，或放到 extends/Locale_Emulator 目录' };
+    }
+
+    const leDir = path.dirname(leproc);
+    const spawned = await spawnDetachedChecked(leproc, [resolvedExe], { cwd: leDir });
+    if (!spawned.ok) {
+      return { success: false, error: '启动失败：' + (spawned.error || '无法启动 LEProc.exe') };
+    }
+    tryLogRunHistory({
+      ...gameMeta,
+      exePath: resolvedExe,
+      method: 'leproc',
+      needsUserConfirm: false
+    });
+    return { success: true, method: 'leproc' };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('launch-executable-locale-remulator', async (event, exePath, rootPaths, gameMeta) => {
+  try {
+    const resolved = resolveLaunchTargetExecutable(exePath, rootPaths);
+    if (!resolved.success) return resolved;
+    const { resolvedExe } = resolved;
+
+    const lrproc = await findToolExecutable(['LRProc.exe', 'LRProc'], resolved.roots);
+    if (!lrproc) {
+      return { success: false, error: '未找到 LRProc.exe，请确认已安装 Locale Remulator x64，或放到 extends/Locale_Remulator 目录' };
+    }
+
+    const lrDir = path.dirname(lrproc);
+    const configPath = path.join(lrDir, 'LRConfig.xml');
+    let guid = '';
+    try {
+      if (fs.existsSync(configPath)) {
+        const xml = String(await fs.promises.readFile(configPath, 'utf8') || '');
+        const m = xml.match(/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/);
+        guid = m?.[0] ? String(m[0]) : '';
+      }
+    } catch {}
+
+    if (!guid) {
+      return { success: false, error: '未找到 Locale Remulator 配置（LRConfig.xml 或 GUID），请先在 LREditor 中创建配置' };
+    }
+
+    const spawned = await spawnDetachedChecked(lrproc, [guid, resolvedExe], { cwd: lrDir });
+    if (!spawned.ok) {
+      return { success: false, error: '启动失败：' + (spawned.error || '无法启动 LRProc.exe') };
+    }
+    tryLogRunHistory({
+      ...gameMeta,
+      exePath: resolvedExe,
+      method: 'lrproc',
+      needsUserConfirm: false
+    });
+    return { success: true, method: 'lrproc', guid };
   } catch (error) {
     return { success: false, error: error?.message || String(error) };
   }

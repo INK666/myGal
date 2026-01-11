@@ -13,6 +13,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
   const [exeItems, setExeItems] = useState([]);
   const [exeLoading, setExeLoading] = useState(false);
   const [exeExpanded, setExeExpanded] = useState(false);
+  const [exeContextMenu, setExeContextMenu] = useState(null);
   const editTagInputRef = useRef(null);
   const exeRequestIdRef = useRef(0);
 
@@ -29,6 +30,15 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
   const showStatus = (type, message) => {
     setStatus({ type, message });
   };
+
+  useEffect(() => {
+    if (!exeContextMenu) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setExeContextMenu(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [exeContextMenu]);
 
   useEffect(() => {
     loadGameTags();
@@ -99,13 +109,58 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     }
 
     try {
-      const result = await window.electronAPI.launchExecutable(exePath, paths);
+      const result = await window.electronAPI.launchExecutable(exePath, paths, {
+        gameId: game.id,
+        gameName: String((game.alias ?? '').trim() || game.name || '')
+      });
       if (result && result.success) {
         if (result.needsUserConfirm) {
           showStatus('success', '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”');
         } else {
           showStatus('success', '已启动');
         }
+        return;
+      }
+      const detail = result?.details ? `（${result.details}）` : '';
+      showStatus('error', '启动失败：' + (result?.error || '未知错误') + detail);
+    } catch (error) {
+      showStatus('error', '启动失败：' + (error?.message || String(error)));
+    }
+  };
+
+  const handleLaunchExeWith = async (method, exePath) => {
+    const paths = (game.paths && game.paths.length > 0)
+      ? game.paths
+      : (game.path ? [game.path] : []);
+
+    if (!exePath) return;
+
+    const api = window.electronAPI;
+    const launcher =
+      method === 'admin'
+        ? api?.launchExecutableAdmin
+        : method === 'localeRemulator'
+          ? api?.launchExecutableLocaleRemulator
+          : api?.launchExecutableLocaleEmulator;
+
+    if (!launcher) {
+      showStatus('error', '当前环境不支持运行');
+      return;
+    }
+
+    try {
+      const result = await launcher(exePath, paths, {
+        gameId: game.id,
+        gameName: String((game.alias ?? '').trim() || game.name || '')
+      });
+      if (result && result.success) {
+        const msg =
+          method === 'admin'
+            ? '已请求以管理员身份启动'
+            : method === 'localeRemulator'
+              ? '已通过 Locale Remulator 启动'
+              : '已通过 Locale Emulator 启动';
+        showStatus('success', msg);
         return;
       }
       const detail = result?.details ? `（${result.details}）` : '';
@@ -127,6 +182,17 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
       return;
     }
     showStatus('error', '当前环境不支持在资源管理器定位');
+  };
+
+  const openExeContextMenu = (e, exePath) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 240;
+    const menuHeight = 128;
+    const padding = 8;
+    const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
+    const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
+    setExeContextMenu({ x, y, exePath });
   };
 
   const handleOpenFolder = async () => {
@@ -571,9 +637,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                         type="button"
                         onClick={() => handleLaunchExe(item.path)}
                         onContextMenu={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleRevealExeInFolder(item.path);
+                          openExeContextMenu(e, item.path);
                         }}
                         className="w-full text-left bg-gray-900/50 hover:bg-gray-900/70 border border-gray-800/80 rounded-lg px-3 py-2 transition-all duration-300"
                         title="点击运行"
@@ -668,6 +732,58 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
         </div>
         </div>
       </div>
+
+      {exeContextMenu && (
+        <div
+          className="fixed inset-0 z-[90]"
+          onMouseDown={() => setExeContextMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setExeContextMenu(null);
+          }}
+        >
+          <div
+            className="fixed bg-gray-900/95 backdrop-blur-sm border border-gray-700/80 rounded-xl shadow-2xl shadow-black/60 overflow-hidden"
+            style={{ left: exeContextMenu.x, top: exeContextMenu.y, width: 240 }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2.5 text-sm text-gray-200 hover:bg-white/10 transition-colors"
+              onClick={() => {
+                const p = exeContextMenu.exePath;
+                setExeContextMenu(null);
+                handleLaunchExeWith('admin', p);
+              }}
+            >
+              以管理员身份运行
+            </button>
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2.5 text-sm text-gray-200 hover:bg-white/10 transition-colors"
+              onClick={() => {
+                const p = exeContextMenu.exePath;
+                setExeContextMenu(null);
+                handleLaunchExeWith('localeRemulator', p);
+              }}
+            >
+              Locale Remulator
+            </button>
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2.5 text-sm text-gray-200 hover:bg-white/10 transition-colors"
+              onClick={() => {
+                const p = exeContextMenu.exePath;
+                setExeContextMenu(null);
+                handleLaunchExeWith('localeEmulator', p);
+              }}
+            >
+              Locale Emulator
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 删除确认弹窗 */}
       {showDeleteConfirm && (

@@ -1,9 +1,10 @@
 {
   "name": "gamemanage",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "游戏资源管理工具",
   "main": "main.js",
   "scripts": {
+    "prebuild": "node scripts/generate-icon.js",
     "dev": "start /b vite && electron . --dev --user-data-dir=./electron-data",
     "start": "electron . --user-data-dir=./electron-data",
     "electron": "electron . --dev --user-data-dir=./electron-data",
@@ -38,9 +39,16 @@
   "build": {
     "appId": "com.gamemanage.app",
     "productName": "myGal",
+    "icon": "icon.ico",
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "extends",
+        "to": "extends"
+      }
+    ],
     "win": {
       "target": "nsis",
       "icon": "icon.ico"
