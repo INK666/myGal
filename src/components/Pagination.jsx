@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+const Pagination = ({ currentPage, totalPages, onPageChange, floating = false }) => {
   const [jumpPage, setJumpPage] = useState('');
 
   if (totalPages <= 1) return null;
@@ -29,14 +29,14 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
   };
 
   return (
-    <div className="flex justify-center items-center gap-6 mt-12 pb-12">
+    <div className={`flex justify-center items-center gap-6 ${floating ? '' : 'mt-12 pb-12'}`}>
       <div className="flex items-center gap-2 bg-gray-900/40 p-1 rounded-2xl border border-gray-800/50 backdrop-blur-sm shadow-xl">
         {/* 首页 */}
         <button
           onClick={() => onPageChange(1)}
           disabled={currentPage === 1}
           title="首页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white"
+          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
@@ -48,7 +48,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage === 1}
           title="上一页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white"
+          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -61,7 +61,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
             <>
               <button
                 onClick={() => onPageChange(1)}
-                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white"
+                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
               >
                 1
               </button>
@@ -73,7 +73,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
             <button
               key={page}
               onClick={() => onPageChange(page)}
-              className={`w-10 h-10 rounded-xl text-sm font-bold transition-all transform hover:scale-105 ${
+              className={`w-10 h-10 rounded-xl text-sm font-bold transition-all transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
                 currentPage === page
                   ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/30'
                   : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700 hover:text-white'
@@ -88,7 +88,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
               {endPage < totalPages - 1 && <span className="text-gray-600 px-1 font-bold">...</span>}
               <button
                 onClick={() => onPageChange(totalPages)}
-                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white"
+                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
               >
                 {totalPages}
               </button>
@@ -101,7 +101,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage === totalPages}
           title="下一页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white"
+          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -113,7 +113,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
           onClick={() => onPageChange(totalPages)}
           disabled={currentPage === totalPages}
           title="末页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white"
+          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
@@ -136,7 +136,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
           />
           <button
             type="submit"
-            className="bg-indigo-600/90 hover:bg-indigo-600 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg transition-all shadow-md active:scale-95 uppercase tracking-wider"
+            className="bg-indigo-600/90 hover:bg-indigo-600 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg transition-all shadow-md active:scale-95 uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
           >
             Go
           </button>

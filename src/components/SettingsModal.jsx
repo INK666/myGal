@@ -17,7 +17,7 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
   const [igdbClientId, setIgdbClientId] = useState('');
   const [igdbClientSecret, setIgdbClientSecret] = useState('');
   const [vndbToken, setVndbToken] = useState('');
-  const [bulkScrapeIntervalMs, setBulkScrapeIntervalMs] = useState('1200');
+  const [bulkScrapeIntervalMs, setBulkScrapeIntervalMs] = useState('800');
   const [bulkScrapeMaxConcurrent, setBulkScrapeMaxConcurrent] = useState('1');
   const projectBackgroundSettingKey = 'projectBackgroundPath';
   const [projectBackgroundPath, setProjectBackgroundPath] = useState('');
@@ -88,7 +88,7 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
         setBulkScrapeIntervalMs(
           settings?.bulkScrapeIntervalMs !== undefined && settings?.bulkScrapeIntervalMs !== null && String(settings?.bulkScrapeIntervalMs).trim() !== ''
             ? String(settings.bulkScrapeIntervalMs)
-            : '1200'
+            : '800'
         );
         setBulkScrapeMaxConcurrent(
           settings?.bulkScrapeMaxConcurrent !== undefined && settings?.bulkScrapeMaxConcurrent !== null && String(settings?.bulkScrapeMaxConcurrent).trim() !== ''
@@ -104,7 +104,7 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
   const handleSaveScrapeSettings = async () => {
     try {
       const parsedIntervalMs = Number.parseInt(String(bulkScrapeIntervalMs || '').trim(), 10);
-      const normalizedIntervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 1200;
+      const normalizedIntervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 800;
       const parsedMaxConcurrent = Number.parseInt(String(bulkScrapeMaxConcurrent || '').trim(), 10);
       const normalizedMaxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
 
@@ -217,10 +217,12 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
             if (!(raw === null || raw === undefined || String(raw).trim() === '')) {
               const parsed = JSON.parse(String(raw));
               if (Array.isArray(parsed)) {
+                const includeOthers = parsed.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
                 const normalized = [...new Set(parsed.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
                 if (!normalized.includes(newRootId)) {
-                  const next = [...normalized, newRootId].sort((a, b) => a - b);
-                  await window.electronAPI.saveSetting(scopeKey, JSON.stringify(next));
+                  const nextIds = [...normalized, newRootId].sort((a, b) => a - b);
+                  const nextScope = [...nextIds, ...(includeOthers ? ['others'] : [])];
+                  await window.electronAPI.saveSetting(scopeKey, JSON.stringify(nextScope));
                 }
               }
             }
@@ -643,7 +645,7 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
                     step="100"
                     value={bulkScrapeIntervalMs}
                     onChange={(e) => setBulkScrapeIntervalMs(e.target.value)}
-                    placeholder="例如 1200"
+                    placeholder="例如 800"
                     className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
                   />
                 </div>

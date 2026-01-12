@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import Header from './components/Header';
 import GameGrid from './components/GameGrid';
 import SettingsModal from './components/SettingsModal';
@@ -31,7 +31,7 @@ if (!window.electronAPI) {
   window.electronAPI = {
     getSettings: async () => ({
       rootPath: 'D:/Games',
-      bulkScrapeIntervalMs: localStorage.getItem('bulkScrapeIntervalMs') || '1200',
+      bulkScrapeIntervalMs: localStorage.getItem('bulkScrapeIntervalMs') || '800',
       bulkScrapeMaxConcurrent: localStorage.getItem('bulkScrapeMaxConcurrent') || '1',
       bulkScrapeScopeRootPathIds: localStorage.getItem('bulkScrapeScopeRootPathIds') || '',
       projectBackgroundPath: localStorage.getItem('projectBackgroundPath') || ''
@@ -105,8 +105,12 @@ function App() {
   const [games, setGames] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
+  const [selectedRootPathId, setSelectedRootPathId] = useState(null);
   const [tags, setTags] = useState([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
+  const [rootFilterOpen, setRootFilterOpen] = useState(false);
+  const [tagFilterPopoverStyle, setTagFilterPopoverStyle] = useState(null);
+  const [rootFilterPopoverStyle, setRootFilterPopoverStyle] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -128,9 +132,36 @@ function App() {
   const [runHistoryTotal, setRunHistoryTotal] = useState(0);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
   const [runHistoryOffset, setRunHistoryOffset] = useState(0);
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      const raw = localStorage.getItem('gameViewMode');
+      return raw === 'list' ? 'list' : 'grid';
+    } catch {
+      return 'grid';
+    }
+  });
   const bulkScrapeRunIdRef = useRef(0);
   const bulkScrapeCancelRef = useRef(false);
   const tagFilterPopoverRef = useRef(null);
+  const rootFilterPopoverRef = useRef(null);
+  const bulkScrapeScopeButtonRef = useRef(null);
+  const tagFilterButtonRef = useRef(null);
+  const rootFilterButtonRef = useRef(null);
+
+  const computeFilterPopoverStyle = (anchorEl) => {
+    if (!anchorEl) return null;
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const bulkRect = bulkScrapeScopeButtonRef.current?.getBoundingClientRect?.() || null;
+    const viewportLeft = 12;
+    const viewportRight = window.innerWidth - 12;
+    const reservedRight = bulkRect?.left ? Math.max(viewportLeft, bulkRect.left - 12) : viewportRight;
+    const rightLimit = Math.max(viewportLeft + 160, Math.min(viewportRight, reservedRight));
+    const maxWidth = Math.min(720, rightLimit - viewportLeft);
+    const left = Math.max(viewportLeft, Math.min(anchorRect.left, rightLimit - 220));
+    const width = Math.max(220, Math.min(maxWidth, rightLimit - left));
+    const top = anchorRect.bottom + 8;
+    return { position: 'fixed', left, top, width };
+  };
 
   useEffect(() => {
     if (status.message) {
@@ -146,6 +177,12 @@ function App() {
   };
 
   const runHistoryLimit = 50;
+  const setAndPersistViewMode = (next) => {
+    setViewMode(next);
+    try {
+      localStorage.setItem('gameViewMode', next);
+    } catch {}
+  };
   const loadRunHistory = async ({ offset = 0, append = false } = {}) => {
     try {
       const api = window.electronAPI;
@@ -203,8 +240,10 @@ function App() {
     load();
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!tagFilterOpen) return;
+
+    setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
 
     const handleMouseDown = (event) => {
       const el = tagFilterPopoverRef.current;
@@ -217,17 +256,23 @@ function App() {
       if (event.key === 'Escape') setTagFilterOpen(false);
     };
 
+    const handleResize = () => {
+      setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
+    };
+
     window.addEventListener('mousedown', handleMouseDown);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
     };
   }, [tagFilterOpen]);
 
   useEffect(() => {
-    setCurrentPage(1); // 重置到第一页
-  }, [searchQuery, selectedTag]);
+    setCurrentPage(1);
+  }, [searchQuery, selectedTag, selectedRootPathId]);
 
   useEffect(() => {
     if (searchQuery.trim()) {
@@ -237,7 +282,37 @@ function App() {
     } else {
       loadGames();
     }
-  }, [searchQuery, selectedTag, currentPage]);
+  }, [searchQuery, selectedTag, selectedRootPathId, currentPage]);
+
+  useLayoutEffect(() => {
+    if (!rootFilterOpen) return;
+
+    setRootFilterPopoverStyle(computeFilterPopoverStyle(rootFilterButtonRef.current));
+
+    const handleMouseDown = (event) => {
+      const el = rootFilterPopoverRef.current;
+      if (!el) return;
+      if (el.contains(event.target)) return;
+      setRootFilterOpen(false);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setRootFilterOpen(false);
+    };
+
+    const handleResize = () => {
+      setRootFilterPopoverStyle(computeFilterPopoverStyle(rootFilterButtonRef.current));
+    };
+
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [rootFilterOpen]);
 
   const loadRootPaths = async () => {
     const paths = await window.electronAPI.getRootPaths();
@@ -256,16 +331,18 @@ function App() {
       } else {
         const parsed = JSON.parse(String(raw));
         if (Array.isArray(parsed)) {
+          const includeOthers = parsed.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
           const normalized = [...new Set(parsed.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
           const currentRootIds = paths.map((rp) => rp.id);
           const currentRootIdSet = new Set(currentRootIds);
           const filtered = normalized.filter((id) => currentRootIdSet.has(id)).sort((a, b) => a - b);
-          if (filtered.length !== normalized.length) {
+          const nextScope = [...filtered, ...(includeOthers ? ['others'] : [])];
+          if (JSON.stringify(parsed) !== JSON.stringify(nextScope)) {
             try {
-              await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(filtered));
+              await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(nextScope));
             } catch {}
           }
-          setBulkScrapeScopeRootPathIds(filtered);
+          setBulkScrapeScopeRootPathIds(nextScope);
         } else {
           setBulkScrapeScopeRootPathIds(null);
         }
@@ -297,6 +374,9 @@ function App() {
     : '';
   const hasProjectBackground = !!projectBackgroundPath;
   const selectedTagInfo = selectedTag ? tags.find((tag) => tag.name === selectedTag) : null;
+  const selectedRootPathInfo = typeof selectedRootPathId === 'number' && Number.isFinite(selectedRootPathId)
+    ? rootPaths.find((rp) => rp.id === selectedRootPathId)
+    : null;
 
   const loadTags = async () => {
     const allTags = await window.electronAPI.getAllTags();
@@ -305,7 +385,7 @@ function App() {
 
   const loadGames = async () => {
     setLoading(true);
-    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize });
+    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize, rootPathId: selectedRootPathId });
     setGames(allGames);
     setTotalGames(total);
     setLoading(false);
@@ -313,7 +393,7 @@ function App() {
 
   const searchGames = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize });
+    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize, rootPathId: selectedRootPathId });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -321,7 +401,7 @@ function App() {
 
   const loadGamesByTag = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize });
+    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize, rootPathId: selectedRootPathId });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -335,6 +415,7 @@ function App() {
       if (paths.length === 0) {
         setSearchQuery('');
         setSelectedTag('');
+        setSelectedRootPathId(null);
         setCurrentPage(1);
         await loadGames();
         return { success: true, imported: 0, deleted: 0 };
@@ -344,6 +425,7 @@ function App() {
       if (result?.success) {
         setSearchQuery('');
         setSelectedTag('');
+        setSelectedRootPathId(null);
         setCurrentPage(1);
         await loadGames();
       }
@@ -373,6 +455,7 @@ function App() {
     setShowSettings(false);
     setSelectedTag('');
     setSearchQuery('');
+    setSelectedRootPathId(null);
     setCurrentPage(1);
     const paths = await loadRootPaths();
     if (paths.length > 0) {
@@ -461,16 +544,19 @@ function App() {
       };
       const settings = await window.electronAPI.getSettings?.();
       const parsedIntervalMs = Number.parseInt(String(settings?.bulkScrapeIntervalMs || '').trim(), 10);
-      const intervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 1200;
+      const intervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 800;
       const parsedMaxConcurrent = Number.parseInt(String(settings?.bulkScrapeMaxConcurrent || '').trim(), 10);
       const maxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
 
       const allGames = await fetchAllGames();
       if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
-      const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds)
-        ? bulkScrapeScopeRootPathIds
-        : rootPaths.map((rp) => rp.id);
-      const enabledRootIdSet = new Set(effectiveScopeIds);
+      const defaultScopeIds = [...rootPaths.map((rp) => rp.id), 'others'];
+      const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds) ? bulkScrapeScopeRootPathIds : defaultScopeIds;
+      const includeOthers = effectiveScopeIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+      const enabledRootIds = effectiveScopeIds
+        .map((v) => Number.parseInt(String(v), 10))
+        .filter((n) => Number.isFinite(n));
+      const enabledRootIdSet = new Set(enabledRootIds);
       const hasEnabledRoots = enabledRootIdSet.size > 0;
 
       const targets = allGames
@@ -479,9 +565,9 @@ function App() {
           const ids = Array.isArray(g?.root_path_ids)
             ? g.root_path_ids
             : (g?.root_path_id === null || g?.root_path_id === undefined ? [] : [g.root_path_id]);
-          if (ids.length === 0) return true;
+          if (ids.length === 0) return includeOthers;
           if (!hasEnabledRoots) return false;
-          return ids.some((id) => enabledRootIdSet.has(id));
+          return ids.some((id) => enabledRootIdSet.has(Number(id)));
         });
 
       if (targets.length === 0) {
@@ -558,15 +644,44 @@ function App() {
   };
 
   const totalPages = Math.ceil(totalGames / pageSize);
+  const showFloatingPagination =
+    !showSettings && !selectedGame && !showRunHistory && !showBulkScrapeScope && totalPages > 1;
 
   const handlePageChange = (page) => {
     setCurrentPage(page);
   };
 
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (loading || bulkScrapeLoading) return;
+      if (showSettings || selectedGame || showRunHistory || showBulkScrapeScope) return;
+      if (totalPages <= 1) return;
+
+      const el = document.activeElement;
+      const tag = el?.tagName ? String(el.tagName).toLowerCase() : '';
+      if (el?.isContentEditable) return;
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      event.preventDefault();
+      if (tagFilterOpen) setTagFilterOpen(false);
+      if (rootFilterOpen) setRootFilterOpen(false);
+
+      if (event.key === 'ArrowLeft') {
+        setCurrentPage((prev) => Math.max(1, prev - 1));
+      } else {
+        setCurrentPage((prev) => Math.min(totalPages, prev + 1));
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [bulkScrapeLoading, loading, rootFilterOpen, selectedGame, showBulkScrapeScope, showRunHistory, showSettings, tagFilterOpen, totalPages]);
+
   const BulkScrapeScopeModal = () => {
-    const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds)
-      ? bulkScrapeScopeRootPathIds
-      : rootPaths.map((rp) => rp.id);
+    const defaultScopeIds = [...rootPaths.map((rp) => rp.id), 'others'];
+    const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds) ? bulkScrapeScopeRootPathIds : defaultScopeIds;
     const [draftIds, setDraftIds] = useState(effectiveScopeIds);
     const [scrapeSourceExpanded, setScrapeSourceExpanded] = useState(true);
     const [scrapeEnabled, setScrapeEnabled] = useState({
@@ -585,9 +700,12 @@ function App() {
       const currentRootIds = rootPaths.map((rp) => rp.id);
       const currentRootIdSet = new Set(currentRootIds);
       if (Array.isArray(bulkScrapeScopeRootPathIds)) {
-        setDraftIds(bulkScrapeScopeRootPathIds.filter((id) => currentRootIdSet.has(id)));
+        const includeOthers = bulkScrapeScopeRootPathIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+        const normalized = [...new Set(bulkScrapeScopeRootPathIds.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
+        const filtered = normalized.filter((id) => currentRootIdSet.has(id)).sort((a, b) => a - b);
+        setDraftIds([...filtered, ...(includeOthers ? ['others'] : [])]);
       } else {
-        setDraftIds(currentRootIds);
+        setDraftIds([...currentRootIds, 'others']);
       }
     }, [rootPaths, bulkScrapeScopeRootPathIds]);
 
@@ -626,9 +744,11 @@ function App() {
       if (saving) return;
       setSaving(true);
       try {
+        const includeOthers = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
         const normalized = [...new Set(draftIds.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
         normalized.sort((a, b) => a - b);
-        await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(normalized));
+        const nextScope = [...normalized, ...(includeOthers ? ['others'] : [])];
+        await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(nextScope));
         await window.electronAPI.saveSetting('scrapeEnableSteamGridDB', scrapeEnabled.SteamGridDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableIGDB', scrapeEnabled.IGDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableVNDBv2', scrapeEnabled.VNDBv2 ? '1' : '0');
@@ -637,7 +757,7 @@ function App() {
         await window.electronAPI.saveSetting('scrapeEnableSteam', scrapeEnabled.Steam ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableBangumi', scrapeEnabled.Bangumi ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableDLsite', scrapeEnabled.DLsite ? '1' : '0');
-        setBulkScrapeScopeRootPathIds(normalized);
+        setBulkScrapeScopeRootPathIds(nextScope);
         setShowBulkScrapeScope(false);
       } catch (error) {
         showStatus('error', '保存失败：' + (error?.message || String(error)));
@@ -698,6 +818,33 @@ function App() {
                   </button>
                 );
               })}
+              {(() => {
+                const checked = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+                return (
+                  <button
+                    key="others"
+                    onClick={() => toggle('others')}
+                    className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-300 ${
+                      checked
+                        ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
+                        : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
+                    }`}
+                  >
+                    <span className="text-sm font-medium truncate">Others（单独加入）</span>
+                    <span
+                      className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                        checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
+                      }`}
+                    >
+                      {checked && (
+                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+                );
+              })()}
               {rootPaths.length === 0 && (
                 <div className="text-sm text-gray-400 bg-gray-900/40 border border-gray-800/80 rounded-xl p-4">
                   当前没有根目录
@@ -1006,7 +1153,7 @@ function App() {
         sticky={!showSettings && !selectedGame}
       />
       
-      <main className="container mx-auto px-6 py-8">
+      <main className={`container mx-auto px-6 pt-8 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
         <>
           {status.message && (
             <div
@@ -1026,87 +1173,187 @@ function App() {
                 <h1 className="text-2xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-500">我的游戏</h1>
                 <span className="text-gray-400 bg-gray-800 px-3 py-1 rounded-full text-sm">({totalGames} 个游戏)</span>
               </div>
-              {tags.length > 0 && (
-                <div ref={tagFilterPopoverRef} className="relative min-w-0">
-                  <div className="flex items-center gap-2 py-1 min-w-0">
+              {(tags.length > 0 || rootPaths.length > 0) && (
+                <div className="flex items-center gap-2 py-1 min-w-0 flex-wrap">
                   <button
                     onClick={() => {
                       setSelectedTag('');
+                      setSelectedRootPathId(null);
                       setSearchQuery('');
                       setTagFilterOpen(false);
+                      setRootFilterOpen(false);
                     }}
                     className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 shrink-0 ${
-                      selectedTag || searchQuery
+                      selectedTag || searchQuery || selectedRootPathId
                         ? 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80'
                         : 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/30 hover:shadow-xl hover:shadow-indigo-600/40'
                     }`}
                   >
                     全部
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setTagFilterOpen((prev) => !prev)}
-                    className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
-                      selectedTag && !searchQuery
-                        ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
-                        : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
-                    }`}
-                    style={{
-                      backgroundColor: selectedTag && !searchQuery ? selectedTagInfo?.color : undefined,
-                      border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid ${selectedTagInfo.color}` : undefined
-                    }}
-                    aria-expanded={tagFilterOpen ? 'true' : 'false'}
-                    aria-label="展开标签筛选"
-                  >
-                    <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
-                    <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                  </div>
 
-                  {tagFilterOpen && (
-                    <div className="absolute left-0 top-full mt-2 z-50 w-[min(720px,calc(100vw-3rem))] rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
-                      <div className="flex items-center justify-between gap-3 mb-3">
-                        <div className="text-sm font-medium text-gray-200">标签</div>
-                        <button
-                          type="button"
-                          onClick={() => setTagFilterOpen(false)}
-                          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
-                          aria-label="收起标签筛选"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
+                  {tags.length > 0 && (
+                    <div ref={tagFilterPopoverRef} className="relative min-w-0">
+                      <button
+                        type="button"
+                        ref={tagFilterButtonRef}
+                        onClick={() => {
+                          const next = !tagFilterOpen;
+                          if (next) {
+                            setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
+                            setRootFilterOpen(false);
+                          }
+                          setTagFilterOpen(next);
+                        }}
+                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
+                          selectedTag && !searchQuery
+                            ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
+                            : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                        }`}
+                        style={{
+                          backgroundColor: selectedTag && !searchQuery ? selectedTagInfo?.color : undefined,
+                          border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid ${selectedTagInfo.color}` : undefined
+                        }}
+                        aria-expanded={tagFilterOpen ? 'true' : 'false'}
+                        aria-label="展开标签筛选"
+                      >
+                        <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
+                        <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
 
-                      <div className="max-h-[50vh] overflow-auto pr-1">
-                        <div className="flex flex-wrap gap-2">
-                          {tags.map(tag => (
+                      {tagFilterOpen && (
+                        <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <div className="text-sm font-medium text-gray-200">标签</div>
                             <button
-                              key={tag.id}
                               type="button"
-                              onClick={() => {
-                                setSelectedTag(tag.name);
-                                setSearchQuery('');
-                                setTagFilterOpen(false);
-                              }}
-                              className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 whitespace-nowrap ${
-                                selectedTag === tag.name && !searchQuery
-                                  ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
-                                  : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
-                              }`}
-                              style={{
-                                backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
-                                border: selectedTag === tag.name && !searchQuery ? `1px solid ${tag.color}` : undefined
-                              }}
+                              onClick={() => setTagFilterOpen(false)}
+                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                              aria-label="收起标签筛选"
                             >
-                              {tag.name}
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
                             </button>
-                          ))}
+                          </div>
+
+                          <div className="max-h-[50vh] overflow-auto pr-1">
+                            <div className="flex flex-wrap gap-2">
+                              {tags.map(tag => (
+                                <button
+                                  key={tag.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedTag(tag.name);
+                                    setSearchQuery('');
+                                    setTagFilterOpen(false);
+                                  }}
+                                  className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 whitespace-nowrap ${
+                                    selectedTag === tag.name && !searchQuery
+                                      ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
+                                      : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                  }`}
+                                  style={{
+                                    backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
+                                    border: selectedTag === tag.name && !searchQuery ? `1px solid ${tag.color}` : undefined
+                                  }}
+                                >
+                                  {tag.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      )}
+                    </div>
+                  )}
+
+                  {rootPaths.length > 0 && (
+                    <div ref={rootFilterPopoverRef} className="relative min-w-0">
+                      <button
+                        type="button"
+                        ref={rootFilterButtonRef}
+                        onClick={() => {
+                          const next = !rootFilterOpen;
+                          if (next) {
+                            setRootFilterPopoverStyle(computeFilterPopoverStyle(rootFilterButtonRef.current));
+                            setTagFilterOpen(false);
+                          }
+                          setRootFilterOpen(next);
+                        }}
+                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
+                          selectedRootPathId
+                            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
+                            : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                        }`}
+                        aria-expanded={rootFilterOpen ? 'true' : 'false'}
+                        aria-label="展开根目录筛选"
+                      >
+                        <span className="truncate">
+                          {selectedRootPathId === 'others' ? 'Others' : (selectedRootPathInfo?.path ? selectedRootPathInfo.path : '根目录')}
+                        </span>
+                        <svg className={`w-4 h-4 transition-transform ${rootFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+
+                      {rootFilterOpen && (
+                        <div style={rootFilterPopoverStyle || undefined} className="z-50 rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <div className="text-sm font-medium text-gray-200">根目录</div>
+                            <button
+                              type="button"
+                              onClick={() => setRootFilterOpen(false)}
+                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                              aria-label="收起根目录筛选"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+
+                          <div className="max-h-[50vh] overflow-y-auto overflow-x-hidden pr-1">
+                            <div className="flex flex-wrap gap-2 min-w-0">
+                              {rootPaths.map((rp) => (
+                                <button
+                                  key={rp.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedRootPathId(rp.id);
+                                    setRootFilterOpen(false);
+                                  }}
+                                  className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-full truncate ${
+                                    selectedRootPathId === rp.id
+                                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
+                                      : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                  }`}
+                                  title={rp.path}
+                                >
+                                  {rp.path}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedRootPathId('others');
+                                  setRootFilterOpen(false);
+                                }}
+                                className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-full truncate ${
+                                  selectedRootPathId === 'others'
+                                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
+                                    : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                }`}
+                                title="单独加入的游戏"
+                              >
+                                Others
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1138,6 +1385,34 @@ function App() {
                   </div>
                 </div>
               )}
+              <div className="flex items-stretch rounded-xl overflow-hidden bg-gray-900/40 border border-gray-800/60 backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={() => setAndPersistViewMode('grid')}
+                  className={`px-3 py-2 flex items-center justify-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                    viewMode === 'grid' ? 'bg-indigo-600/90 text-white' : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                  title="卡片视图"
+                  aria-label="卡片视图"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2v-3zm11-9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2v-3z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAndPersistViewMode('list')}
+                  className={`px-3 py-2 flex items-center justify-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                    viewMode === 'list' ? 'bg-indigo-600/90 text-white' : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                  title="列表视图"
+                  aria-label="列表视图"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+                  </svg>
+                </button>
+              </div>
               <div className="flex items-stretch rounded-xl overflow-hidden bg-gradient-to-r from-fuchsia-600 to-pink-600 shadow-sm hover:shadow-md hover:shadow-fuchsia-600/20 transition-all duration-300 hover:-translate-y-0.5">
                 <button
                   onClick={handleBulkScrape}
@@ -1152,6 +1427,7 @@ function App() {
                 <button
                   onClick={() => setShowBulkScrapeScope(true)}
                   disabled={loading || bulkScrapeLoading}
+                  ref={bulkScrapeScopeButtonRef}
                   className="flex items-center justify-center px-3 text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   title="配置刮削范围"
                 >
@@ -1175,15 +1451,21 @@ function App() {
             onGameClick={handleGameClick}
             tags={tags}
             onTogglePinned={handleTogglePinned}
+            viewMode={viewMode}
           />
+        </>
+      </main>
 
+      {showFloatingPagination ? (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[45]">
           <Pagination
+            floating
             currentPage={currentPage}
             totalPages={totalPages}
             onPageChange={handlePageChange}
           />
-        </>
-      </main>
+        </div>
+      ) : null}
 
       {showSettings && (
         <SettingsModal

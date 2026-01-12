@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, protocol, screen, desktopCapturer, net } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, protocol, screen, desktopCapturer, net, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -14,6 +14,9 @@ if (isDev) {
 
 let mainWindow;
 let db;
+let tray;
+let isQuitting = false;
+let hasShownCloseToTrayBalloon = false;
 
 const getCoversDir = () => path.join(app.getPath('userData'), 'covers');
 const getBackgroundsDir = () => path.join(app.getPath('userData'), 'backgrounds');
@@ -103,8 +106,9 @@ const normalizeGameTitle = (rawName) => {
 
     const dotAscii = name.indexOf('.');
     const dotFull = name.indexOf('．');
-    const dotIndex =
-      dotAscii === -1 ? dotFull : dotFull === -1 ? dotAscii : Math.min(dotAscii, dotFull);
+    const dotCn = name.indexOf('。');
+    const dotIndices = [dotAscii, dotFull, dotCn].filter((n) => n !== -1);
+    const dotIndex = dotIndices.length > 0 ? Math.min(...dotIndices) : -1;
     if (dotIndex > 0 && dotIndex < name.length - 1) {
       const tail = name.slice(dotIndex + 1);
       if (!/\s/.test(tail)) {
@@ -799,6 +803,72 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
+
+  mainWindow.on('close', (event) => {
+    if (process.platform !== 'win32') return;
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+    if (!hasShownCloseToTrayBalloon) {
+      if (!tray) createTray();
+      if (tray && typeof tray.displayBalloon === 'function') {
+        try {
+          tray.displayBalloon({
+            title: '已最小化到托盘',
+            content: '应用仍在后台运行。右键托盘图标可退出。',
+            icon: nativeImage.createFromPath(resolveTrayIconPath())
+          });
+        } catch {}
+      }
+      hasShownCloseToTrayBalloon = true;
+    }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+  }
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function resolveTrayIconPath() {
+  const candidates = [
+    path.join(__dirname, 'icon.ico'),
+    path.join(app.getAppPath(), 'icon.ico'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'icon.ico') : null
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) || path.join(__dirname, 'icon.ico');
+}
+
+function createTray() {
+  if (tray) return;
+  const iconPath = resolveTrayIconPath();
+  const icon = nativeImage.createFromPath(iconPath);
+  tray = new Tray(icon);
+  tray.setToolTip('myGal');
+
+  const menu = Menu.buildFromTemplate([
+    { label: '打开主界面', click: () => showMainWindow() },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+  tray.setContextMenu(menu);
+  tray.on('click', () => showMainWindow());
+  tray.on('double-click', () => showMainWindow());
 }
 
 function initDatabase() {
@@ -1435,20 +1505,66 @@ const processGames = (games) => {
   });
 };
 
-ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20 } = {}) => {
+ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
   const offset = (page - 1) * pageSize;
+  const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
+  const isOthers = rootPathKey === 'others';
+  const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
+  const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
   
-  const total = db.prepare('SELECT COUNT(*) as count FROM games').get().count;
+  const total = isOthers
+    ? db.prepare(`
+      SELECT COUNT(*) as count
+      FROM games g
+      WHERE g.is_manual = 1
+    `).get().count
+    : rootPathId
+    ? db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      WHERE g.root_path_id = ?
+        OR EXISTS (
+          SELECT 1 FROM game_paths gp
+          WHERE gp.game_id = g.id AND gp.root_path_id = ?
+        )
+    `).get(rootPathId, rootPathId).count
+    : db.prepare('SELECT COUNT(*) as count FROM games').get().count;
   
-  const games = db.prepare(`
-    SELECT g.*, GROUP_CONCAT(t.name) as tags
-    FROM games g
-    LEFT JOIN game_tags gt ON g.id = gt.game_id
-    LEFT JOIN tags t ON gt.tag_id = t.id
-    GROUP BY g.id
-    ORDER BY g.pinned DESC, g.updated_at DESC
-    LIMIT ? OFFSET ?
-  `).all(pageSize, offset);
+  const games = isOthers
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE g.is_manual = 1
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(pageSize, offset)
+    : rootPathId
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE g.root_path_id = ?
+        OR EXISTS (
+          SELECT 1 FROM game_paths gp
+          WHERE gp.game_id = g.id AND gp.root_path_id = ?
+        )
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(rootPathId, rootPathId, pageSize, offset)
+    : db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(pageSize, offset);
   
   return {
     games: processGames(games),
@@ -1456,32 +1572,90 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20 } = {}) => {
   };
 });
 
-ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20 } = {}) => {
+ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
   if (!query || !query.trim()) {
     return { games: [], total: 0 };
   }
   
   const offset = (page - 1) * pageSize;
   const searchPattern = `%${query}%`;
+  const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
+  const isOthers = rootPathKey === 'others';
+  const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
+  const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
   
-  const total = db.prepare(`
-    SELECT COUNT(DISTINCT g.id) as count
-    FROM games g
-    LEFT JOIN game_tags gt ON g.id = gt.game_id
-    LEFT JOIN tags t ON gt.tag_id = t.id
-    WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
-  `).get(searchPattern, searchPattern, searchPattern).count;
+  const total = isOthers
+    ? db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+        AND g.is_manual = 1
+    `).get(searchPattern, searchPattern, searchPattern).count
+    : rootPathId
+    ? db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+        AND (
+          g.root_path_id = ?
+          OR EXISTS (
+            SELECT 1 FROM game_paths gp
+            WHERE gp.game_id = g.id AND gp.root_path_id = ?
+          )
+        )
+    `).get(searchPattern, searchPattern, searchPattern, rootPathId, rootPathId).count
+    : db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
+    `).get(searchPattern, searchPattern, searchPattern).count;
   
-  const games = db.prepare(`
-    SELECT g.*, GROUP_CONCAT(t.name) as tags
-    FROM games g
-    LEFT JOIN game_tags gt ON g.id = gt.game_id
-    LEFT JOIN tags t ON gt.tag_id = t.id
-    WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
-    GROUP BY g.id
-    ORDER BY g.pinned DESC, g.updated_at DESC
-    LIMIT ? OFFSET ?
-  `).all(searchPattern, searchPattern, searchPattern, pageSize, offset);
+  const games = isOthers
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+        AND g.is_manual = 1
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(searchPattern, searchPattern, searchPattern, pageSize, offset)
+    : rootPathId
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+        AND (
+          g.root_path_id = ?
+          OR EXISTS (
+            SELECT 1 FROM game_paths gp
+            WHERE gp.game_id = g.id AND gp.root_path_id = ?
+          )
+        )
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(searchPattern, searchPattern, searchPattern, rootPathId, rootPathId, pageSize, offset)
+    : db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      LEFT JOIN game_tags gt ON g.id = gt.game_id
+      LEFT JOIN tags t ON gt.tag_id = t.id
+      WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(searchPattern, searchPattern, searchPattern, pageSize, offset);
   
   return {
     games: processGames(games),
@@ -1584,12 +1758,17 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   }
 
   const rawPathName = game.path ? path.basename(game.path) : '';
+  const rawName = String(game.name || '').trim();
+  const rawAlias = String(game.alias || '').trim();
+  const normalizedName = normalizeGameTitle(rawName);
+  const normalizedAlias = normalizeGameTitle(rawAlias);
+  const normalizedPathName = normalizeGameTitle(rawPathName);
+
   const candidates = [
-    normalizeGameTitle(game.name),
-    normalizeGameTitle(game.alias),
-    normalizeGameTitle(rawPathName),
-    String(game.name || '').trim(),
-    String(game.alias || '').trim(),
+    ...(rawAlias ? [normalizedAlias, rawAlias] : []),
+    normalizedName,
+    rawName,
+    normalizedPathName,
     String(rawPathName || '').trim()
   ]
     .filter(Boolean)
@@ -1854,27 +2033,85 @@ ipcMain.handle('get-all-tags', async () => {
   return db.prepare('SELECT * FROM tags ORDER BY name').all();
 });
 
-ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20 } = {}) => {
+ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
   const offset = (page - 1) * pageSize;
+  const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
+  const isOthers = rootPathKey === 'others';
+  const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
+  const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
   
-  const total = db.prepare(`
-    SELECT COUNT(DISTINCT g.id) as count
-    FROM games g
-    JOIN game_tags gt ON g.id = gt.game_id
-    JOIN tags t ON gt.tag_id = t.id
-    WHERE t.name = ?
-  `).get(tagName).count;
+  const total = isOthers
+    ? db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+        AND g.is_manual = 1
+    `).get(tagName).count
+    : rootPathId
+    ? db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+        AND (
+          g.root_path_id = ?
+          OR EXISTS (
+            SELECT 1 FROM game_paths gp
+            WHERE gp.game_id = g.id AND gp.root_path_id = ?
+          )
+        )
+    `).get(tagName, rootPathId, rootPathId).count
+    : db.prepare(`
+      SELECT COUNT(DISTINCT g.id) as count
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+    `).get(tagName).count;
   
-  const games = db.prepare(`
-    SELECT g.*, GROUP_CONCAT(t.name) as tags
-    FROM games g
-    JOIN game_tags gt ON g.id = gt.game_id
-    JOIN tags t ON gt.tag_id = t.id
-    WHERE t.name = ?
-    GROUP BY g.id
-    ORDER BY g.pinned DESC, g.updated_at DESC
-    LIMIT ? OFFSET ?
-  `).all(tagName, pageSize, offset);
+  const games = isOthers
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+        AND g.is_manual = 1
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(tagName, pageSize, offset)
+    : rootPathId
+    ? db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+        AND (
+          g.root_path_id = ?
+          OR EXISTS (
+            SELECT 1 FROM game_paths gp
+            WHERE gp.game_id = g.id AND gp.root_path_id = ?
+          )
+        )
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(tagName, rootPathId, rootPathId, pageSize, offset)
+    : db.prepare(`
+      SELECT g.*, GROUP_CONCAT(t.name) as tags
+      FROM games g
+      JOIN game_tags gt ON g.id = gt.game_id
+      JOIN tags t ON gt.tag_id = t.id
+      WHERE t.name = ?
+      GROUP BY g.id
+      ORDER BY g.pinned DESC, g.updated_at DESC
+      LIMIT ? OFFSET ?
+    `).all(tagName, pageSize, offset);
   
   return {
     games: processGames(games),
@@ -2749,16 +2986,20 @@ ipcMain.handle('capture-screen-cover', async (event, gameId) => {
 app.whenReady().then(() => {
   initDatabase();
   createWindow();
+  createTray();
   
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    showMainWindow();
   });
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    if (tray && !isQuitting) return;
     app.quit();
   }
 });
