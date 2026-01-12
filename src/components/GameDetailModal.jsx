@@ -184,6 +184,21 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     showStatus('error', '当前环境不支持在资源管理器定位');
   };
 
+  const handleRevealGamePathInFolder = async (gamePath) => {
+    const target = typeof gamePath === 'string' ? gamePath.trim() : '';
+    if (!target) return;
+    if (window.electronAPI?.showItemInFolder) {
+      const ok = await window.electronAPI.showItemInFolder(target);
+      if (ok) {
+        showStatus('success', '已在资源管理器中定位该游戏');
+        return;
+      }
+      showStatus('error', '定位失败：目录不存在或路径无效');
+      return;
+    }
+    showStatus('error', '当前环境不支持在资源管理器定位');
+  };
+
   const openExeContextMenu = (e, exePath) => {
     e.preventDefault();
     e.stopPropagation();
@@ -581,12 +596,25 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                 ? game.paths
                 : (game.path ? [game.path] : [])
               ).map((p, index) => (
-                <p
+                <div
                   key={`${p}-${index}`}
-                  className="text-sm text-gray-300 break-all font-mono bg-gray-900/50 px-2 py-1.5 rounded-lg"
+                  className="flex items-center gap-2 text-sm text-gray-300 break-all font-mono bg-gray-900/50 px-2 py-1.5 rounded-lg"
                 >
-                  {p}
-                </p>
+                  <div className="flex-1 min-w-0 break-all">{p}</div>
+                  <button
+                    type="button"
+                    onClick={() => handleRevealGamePathInFolder(p)}
+                    disabled={!window.electronAPI?.showItemInFolder || !String(p || '').trim()}
+                    className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-lg text-gray-300/70 hover:text-gray-200 hover:bg-white/5 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="在资源管理器中定位"
+                  >
+                    <svg className="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="9" strokeWidth={1.6} />
+                      <circle cx="12" cy="12" r="2" strokeWidth={1.6} />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.6} d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+                    </svg>
+                  </button>
+                </div>
               ))}
             </div>
           </div>
