@@ -1,4 +1,4 @@
-适用人群：需要管理冷备份游戏库或游戏文件、未知后缀的压缩包全扔进某一文件夹的仓鼠。
+适用人群：管理冷备份游戏库或游戏文件、未知后缀的压缩包全扔进某一文件夹的仓鼠。
 
 不同于遍历文件夹搜寻exe程序作为游戏录入，本项目会将根目录下的次级文件作为游戏项目导入，刮削文件名时会清洗掉特定字符，最后再将原名称和清洗后名称进行匹配刮削。
 
@@ -15,8 +15,10 @@ A根目录/
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
   
+<img width="1280" height="677" alt="desk" src="https://github.com/user-attachments/assets/c50f9516-1e5a-404c-b88b-e93184e9d0dc" />
+<img width="899" height="599" alt="list2" src="https://github.com/user-attachments/assets/dc927f23-a3cb-4586-8725-c2ce500b3544" />
 
-<img width="891" height="602" alt="desk" src="https://github.com/user-attachments/assets/b3d04573-ca0c-4ec3-a28b-d0cacc30a0fe" />
+
 
 ## 主要功能
 基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削。
@@ -59,10 +61,11 @@ A根目录/
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="899" height="601" alt="gameCard" src="https://github.com/user-attachments/assets/810d3c2e-6f21-48d9-a677-18769ede148a" />
+<img width="499" height="653" alt="card" src="https://github.com/user-attachments/assets/60f7a6bc-b555-46a1-bb5f-b48f64bd7891" />
+
 
 - 封面截图，直接截图作为游戏封面
-- 扫描文件夹内部exe文件，可左键单击直接点击运行，右键点击进入exe文件夹自动选中可执行程序
+- 扫描文件夹内部exe文件，左键单击直接运行，右键点击弹出右键菜单
 - 打开游戏所在文件夹
 - 删除游戏条目（删除后不删除本地文件，只添加进ignore名单，可在配置窗口内恢复）
  
