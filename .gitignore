@@ -1,4 +1,6 @@
 release/
 *.log
 release-new/
+electron-data/
+node_modules/
 
