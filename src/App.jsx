@@ -6,13 +6,14 @@ import GameDetailModal from './components/GameDetailModal';
 import Pagination from './components/Pagination';
 
 // Mock data for browser compatibility
+const now = Date.now();
 const mockGames = [
-  { id: 1, name: '赛博朋克 2077', path: 'D:/Games/Cyberpunk 2077', cover_path: null, tags: ['开放世界', 'RPG', '科幻'], pinned: 0 },
-  { id: 2, name: '艾尔登法环', path: 'D:/Games/Elden Ring', cover_path: null, tags: ['动作', 'RPG', '开放世界'], pinned: 0 },
-  { id: 3, name: '星穹铁道', path: 'D:/Games/Star Rail', cover_path: null, tags: ['RPG', '二次元', '回合制'], pinned: 0 },
-  { id: 4, name: '原神', path: 'D:/Games/Genshin Impact', cover_path: null, tags: ['开放世界', 'RPG', '二次元'], pinned: 0 },
-  { id: 5, name: '黑神话：悟空', path: 'D:/Games/Black Myth Wukong', cover_path: null, tags: ['动作', 'RPG', '武侠'], pinned: 0 },
-  { id: 6, name: '博德之门 3', path: 'D:/Games/Baldurs Gate 3', cover_path: null, tags: ['RPG', '回合制', '奇幻'], pinned: 0 },
+  { id: 1, name: '赛博朋克 2077', path: 'D:/Games/Cyberpunk 2077', cover_path: null, tags: ['开放世界', 'RPG', '科幻'], pinned: 0, imported_at: now - 6 * 3600 * 1000 },
+  { id: 2, name: '艾尔登法环', path: 'D:/Games/Elden Ring', cover_path: null, tags: ['动作', 'RPG', '开放世界'], pinned: 0, imported_at: now - 5 * 3600 * 1000 },
+  { id: 3, name: '星穹铁道', path: 'D:/Games/Star Rail', cover_path: null, tags: ['RPG', '二次元', '回合制'], pinned: 0, imported_at: now - 4 * 3600 * 1000 },
+  { id: 4, name: '原神', path: 'D:/Games/Genshin Impact', cover_path: null, tags: ['开放世界', 'RPG', '二次元'], pinned: 0, imported_at: now - 3 * 3600 * 1000 },
+  { id: 5, name: '黑神话：悟空', path: 'D:/Games/Black Myth Wukong', cover_path: null, tags: ['动作', 'RPG', '武侠'], pinned: 0, imported_at: now - 2 * 3600 * 1000 },
+  { id: 6, name: '博德之门 3', path: 'D:/Games/Baldurs Gate 3', cover_path: null, tags: ['RPG', '回合制', '奇幻'], pinned: 0, imported_at: now - 1 * 3600 * 1000 },
 ];
 
 const mockTags = [
@@ -28,32 +29,55 @@ const mockTags = [
 
 // Mock electronAPI for browser
 if (!window.electronAPI) {
+  const sortGames = (list, sortOrder) => {
+    const order = String(sortOrder || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
+    const getImportedAt = (g) => (Number.isFinite(Number(g?.imported_at)) ? Number(g.imported_at) : 0);
+    const getPinned = (g) => (Number.isFinite(Number(g?.pinned)) ? Number(g.pinned) : 0);
+    const getId = (g) => (Number.isFinite(Number(g?.id)) ? Number(g.id) : 0);
+
+    return [...list].sort((a, b) => {
+      const pinnedDiff = getPinned(b) - getPinned(a);
+      if (pinnedDiff !== 0) return pinnedDiff;
+
+      const importedDiff = getImportedAt(a) - getImportedAt(b);
+      if (importedDiff !== 0) return order === 'asc' ? importedDiff : -importedDiff;
+
+      return getId(b) - getId(a);
+    });
+  };
+
   window.electronAPI = {
     getSettings: async () => ({
       rootPath: 'D:/Games',
       bulkScrapeIntervalMs: localStorage.getItem('bulkScrapeIntervalMs') || '800',
       bulkScrapeMaxConcurrent: localStorage.getItem('bulkScrapeMaxConcurrent') || '1',
       bulkScrapeScopeRootPathIds: localStorage.getItem('bulkScrapeScopeRootPathIds') || '',
-      projectBackgroundPath: localStorage.getItem('projectBackgroundPath') || ''
+      projectBackgroundPath: localStorage.getItem('projectBackgroundPath') || '',
+      gameSortImportedAtOrder: localStorage.getItem('gameSortImportedAtOrder') || 'desc'
     }),
     getRootPaths: async () => [{ id: 1, path: 'D:/Games', created_at: new Date().toISOString() }],
     addRootPath: async () => ({ success: true, id: 2 }),
     deleteRootPath: async () => ({ success: true }),
     saveSetting: async (key, value) => localStorage.setItem(key, value),
     importGames: async () => ({ success: true, imported: mockGames.length, deleted: 0 }),
-    getGames: async () => ({ games: mockGames, total: mockGames.length }),
-    searchGames: async (query) => {
+    getGames: async (params) => {
+      const sorted = sortGames(mockGames, params?.sortOrder);
+      return { games: sorted, total: sorted.length };
+    },
+    searchGames: async (query, params) => {
       const results = mockGames.filter(game => 
         game.name.toLowerCase().includes(query.toLowerCase()) ||
         game.path.toLowerCase().includes(query.toLowerCase()) ||
         game.tags.some(tag => tag.toLowerCase().includes(query.toLowerCase()))
       );
-      return { games: results, total: results.length };
+      const sorted = sortGames(results, params?.sortOrder);
+      return { games: sorted, total: sorted.length };
     },
     getAllTags: async () => mockTags,
-    getGamesByTag: async (tagName) => {
+    getGamesByTag: async (tagName, params) => {
       const results = mockGames.filter(game => game.tags.includes(tagName));
-      return { games: results, total: results.length };
+      const sorted = sortGames(results, params?.sortOrder);
+      return { games: sorted, total: sorted.length };
     },
     selectDirectory: async () => 'D:/Games',
     selectCover: async () => ({ canceled: true, filePaths: [] }),
@@ -100,6 +124,7 @@ if (!window.electronAPI) {
 function App() {
   const bulkScrapeScopeSettingKey = 'bulkScrapeScopeRootPathIds';
   const projectBackgroundSettingKey = 'projectBackgroundPath';
+  const importedAtSortOrderSettingKey = 'gameSortImportedAtOrder';
 
   const [rootPaths, setRootPaths] = useState([]);
   const [games, setGames] = useState([]);
@@ -140,6 +165,7 @@ function App() {
       return 'grid';
     }
   });
+  const [importedAtSortOrder, setImportedAtSortOrder] = useState('desc');
   const bulkScrapeRunIdRef = useRef(0);
   const bulkScrapeCancelRef = useRef(false);
   const tagFilterPopoverRef = useRef(null);
@@ -176,11 +202,28 @@ function App() {
     setStatus({ type, message });
   };
 
+  const toEnabled = (raw, defaultValue = false) => {
+    if (raw === null || raw === undefined || raw === '') return defaultValue;
+    const v = String(raw).trim().toLowerCase();
+    if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+    if (v === '1' || v === 'true' || v === 'on' || v === 'yes') return true;
+    return defaultValue;
+  };
+
   const runHistoryLimit = 50;
   const setAndPersistViewMode = (next) => {
     setViewMode(next);
     try {
       localStorage.setItem('gameViewMode', next);
+    } catch {}
+  };
+
+  const setAndPersistImportedAtSortOrder = (next) => {
+    const normalized = next === 'asc' ? 'asc' : 'desc';
+    setImportedAtSortOrder(normalized);
+    setCurrentPage(1);
+    try {
+      window.electronAPI.saveSetting(importedAtSortOrderSettingKey, normalized);
     } catch {}
   };
   const loadRunHistory = async ({ offset = 0, append = false } = {}) => {
@@ -272,7 +315,7 @@ function App() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedTag, selectedRootPathId]);
+  }, [searchQuery, selectedTag, selectedRootPathId, importedAtSortOrder]);
 
   useEffect(() => {
     if (searchQuery.trim()) {
@@ -282,7 +325,7 @@ function App() {
     } else {
       loadGames();
     }
-  }, [searchQuery, selectedTag, selectedRootPathId, currentPage]);
+  }, [searchQuery, selectedTag, selectedRootPathId, currentPage, importedAtSortOrder]);
 
   useLayoutEffect(() => {
     if (!rootFilterOpen) return;
@@ -325,6 +368,8 @@ function App() {
       const bgPath = settings?.[projectBackgroundSettingKey] ? String(settings[projectBackgroundSettingKey]) : '';
       setProjectBackgroundPath(bgPath);
       setProjectBackgroundNonce(bgPath ? Date.now() : 0);
+      const importedSortKey = String(settings?.[importedAtSortOrderSettingKey] ?? '').trim().toLowerCase();
+      setImportedAtSortOrder(importedSortKey === 'asc' ? 'asc' : 'desc');
       const raw = settings?.[bulkScrapeScopeSettingKey];
       if (raw === null || raw === undefined || String(raw).trim() === '') {
         setBulkScrapeScopeRootPathIds(null);
@@ -351,7 +396,14 @@ function App() {
       setBulkScrapeScopeRootPathIds(null);
       setProjectBackgroundPath('');
       setProjectBackgroundNonce(0);
+      setImportedAtSortOrder('desc');
     }
+    return paths;
+  };
+
+  const reloadRootPathsOnly = async () => {
+    const paths = await window.electronAPI.getRootPaths();
+    setRootPaths(paths);
     return paths;
   };
 
@@ -385,7 +437,7 @@ function App() {
 
   const loadGames = async () => {
     setLoading(true);
-    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize, rootPathId: selectedRootPathId });
+    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(allGames);
     setTotalGames(total);
     setLoading(false);
@@ -393,7 +445,7 @@ function App() {
 
   const searchGames = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize, rootPathId: selectedRootPathId });
+    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -401,7 +453,7 @@ function App() {
 
   const loadGamesByTag = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize, rootPathId: selectedRootPathId });
+    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -423,6 +475,7 @@ function App() {
 
       const result = await window.electronAPI.importGames();
       if (result?.success) {
+        await reloadRootPathsOnly();
         setSearchQuery('');
         setSelectedTag('');
         setSelectedRootPathId(null);
@@ -442,6 +495,7 @@ function App() {
     try {
       const result = await window.electronAPI.importGames(rootPathId);
       if (result?.success) {
+        await reloadRootPathsOnly();
         await handleGameUpdate();
       }
       return result;
@@ -449,6 +503,35 @@ function App() {
       showStatus('error', '刷新失败：' + (error?.message || String(error)));
       return { success: false, error: error?.message || String(error) };
     }
+  };
+
+  const maybeAutoScrapeImported = async (result) => {
+    try {
+      const settings = await window.electronAPI.getSettings?.();
+      const auto = toEnabled(settings?.autoScrapeAfterRefresh, true);
+      if (!auto) return;
+
+      const importedGameIds = Array.isArray(result?.importedGameIds) ? result.importedGameIds : [];
+      if (importedGameIds.length === 0) return;
+
+      await handleBulkScrape({ gameIds: importedGameIds, ignoreLoading: true, ignoreScope: true });
+    } catch {}
+  };
+
+  const handleRefreshAll = async () => {
+    const result = await handleImport();
+    if (result?.success) {
+      maybeAutoScrapeImported(result);
+    }
+    return result;
+  };
+
+  const handleRefreshRoot = async (rootPathId) => {
+    const result = await handleImportRootPath(rootPathId);
+    if (result?.success) {
+      maybeAutoScrapeImported(result);
+    }
+    return result;
   };
 
   const handleSettingsSave = async () => {
@@ -518,8 +601,8 @@ function App() {
     return allGames;
   };
 
-  const handleBulkScrape = async () => {
-    if (bulkScrapeLoading || loading) return;
+  const handleBulkScrape = async ({ gameIds = null, ignoreLoading = false, ignoreScope = false } = {}) => {
+    if (bulkScrapeLoading || (!ignoreLoading && loading)) return;
     if (!window.electronAPI || !window.electronAPI.scrapeGameCover) return;
 
     const runId = bulkScrapeRunIdRef.current + 1;
@@ -548,6 +631,10 @@ function App() {
       const parsedMaxConcurrent = Number.parseInt(String(settings?.bulkScrapeMaxConcurrent || '').trim(), 10);
       const maxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
 
+      const idSet = Array.isArray(gameIds)
+        ? new Set(gameIds.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))
+        : null;
+
       const allGames = await fetchAllGames();
       if (bulkScrapeRunIdRef.current !== runId || bulkScrapeCancelRef.current) return;
       const defaultScopeIds = [...rootPaths.map((rp) => rp.id), 'others'];
@@ -561,7 +648,9 @@ function App() {
 
       const targets = allGames
         .filter((g) => !g.cover_path)
+        .filter((g) => (idSet ? idSet.has(Number(g.id)) : true))
         .filter((g) => {
+          if (ignoreScope) return true;
           const ids = Array.isArray(g?.root_path_ids)
             ? g.root_path_ids
             : (g?.root_path_id === null || g?.root_path_id === undefined ? [] : [g.root_path_id]);
@@ -683,7 +772,7 @@ function App() {
     const defaultScopeIds = [...rootPaths.map((rp) => rp.id), 'others'];
     const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds) ? bulkScrapeScopeRootPathIds : defaultScopeIds;
     const [draftIds, setDraftIds] = useState(effectiveScopeIds);
-    const [scrapeSourceExpanded, setScrapeSourceExpanded] = useState(true);
+    const [scrapeSourceExpanded, setScrapeSourceExpanded] = useState(false);
     const [scrapeEnabled, setScrapeEnabled] = useState({
       VNDBv2: true,
       Ymgal: true,
@@ -694,6 +783,7 @@ function App() {
       VNDB: false,
       DLsite: false
     });
+    const [autoScrapeAfterRefresh, setAutoScrapeAfterRefresh] = useState(true);
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -731,6 +821,7 @@ function App() {
             VNDB: toEnabled(settings?.scrapeEnableVNDB, false),
             DLsite: toEnabled(settings?.scrapeEnableDLsite, false)
           });
+          setAutoScrapeAfterRefresh(toEnabled(settings?.autoScrapeAfterRefresh, true));
         } catch {}
       };
       load();
@@ -749,6 +840,7 @@ function App() {
         normalized.sort((a, b) => a - b);
         const nextScope = [...normalized, ...(includeOthers ? ['others'] : [])];
         await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(nextScope));
+        await window.electronAPI.saveSetting('autoScrapeAfterRefresh', autoScrapeAfterRefresh ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableSteamGridDB', scrapeEnabled.SteamGridDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableIGDB', scrapeEnabled.IGDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableVNDBv2', scrapeEnabled.VNDBv2 ? '1' : '0');
@@ -769,14 +861,11 @@ function App() {
     return (
       <div
         className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) setShowBulkScrapeScope(false);
-        }}
       >
         <div className="modal-content bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl w-full max-w-lg mx-4 border border-gray-800 shadow-2xl shadow-indigo-900/20 transform transition-all duration-300 hover:shadow-3xl flex flex-col max-h-[70vh] overflow-hidden">
           <div className="p-6 border-b border-gray-800/80 bg-gradient-to-r from-gray-800/50 to-gray-900/50 rounded-t-2xl relative">
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">配置刮削范围</h2>
+              <h2 className="text-xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">刮削配置</h2>
               <button
                 onClick={() => setShowBulkScrapeScope(false)}
                 className="p-2 rounded-xl text-gray-400 hover:text-white bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 transition-all duration-300"
@@ -791,6 +880,7 @@ function App() {
 
           <div className="p-6 space-y-4 flex-1 overflow-y-auto">
             <div className="space-y-2">
+              <div className="text-sm font-medium text-gray-300">批量刮削范围</div>
               {rootPaths.map((rp) => {
                 const checked = draftIds.includes(rp.id);
                 return (
@@ -850,6 +940,26 @@ function App() {
                   当前没有根目录
                 </div>
               )}
+            </div>
+
+            <div className="pt-2">
+              <div className="flex items-center justify-between gap-3 p-4 bg-gray-850/60 rounded-xl border border-gray-800/80">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刷新后自动刮削本次新增</div>
+                  <div className="text-xs text-gray-500 mt-1 truncate">仅对新入库且缺失封面的游戏生效</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
+                  className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                    autoScrapeAfterRefresh
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                      : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
+                  }`}
+                >
+                  {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
+                </button>
+              </div>
             </div>
 
             <div className="pt-2">
@@ -916,7 +1026,7 @@ function App() {
           </div>
 
           <div className="p-6 border-t border-gray-800/80 bg-gray-900/30">
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-end gap-6">
               <button
                 onClick={() => setShowBulkScrapeScope(false)}
                 className="px-4 py-2 rounded-xl bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 text-gray-200 hover:text-white transition-all"
@@ -1138,10 +1248,10 @@ function App() {
         />
       ) : null}
       <div
-        className={`fixed inset-0 z-[-1] bg-gradient-to-br ${
+        className={`fixed inset-0 z-[-1] ${
           projectBackgroundUrl
-            ? 'from-gray-950/70 via-gray-900/60 to-indigo-950/70'
-            : 'from-gray-950 via-gray-900 to-indigo-950'
+            ? 'bg-black/60'
+            : 'bg-gradient-to-br from-gray-950 via-gray-950 to-gray-900'
         }`}
       />
       <Header
@@ -1153,7 +1263,7 @@ function App() {
         sticky={!showSettings && !selectedGame}
       />
       
-      <main className={`container mx-auto px-6 pt-8 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
+      <main className={`w-full max-w-[2000px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
         <>
           {status.message && (
             <div
@@ -1167,11 +1277,11 @@ function App() {
             </div>
           )}
 
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-5 gap-4">
             <div className="flex flex-col sm:flex-row sm:items-center gap-4 min-w-0">
               <div className="flex items-center gap-4 shrink-0">
-                <h1 className="text-2xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-500">我的游戏</h1>
-                <span className="text-gray-400 bg-gray-800 px-3 py-1 rounded-full text-sm">({totalGames} 个游戏)</span>
+                <h1 className="text-xl font-semibold text-white">我的游戏</h1>
+                <span className="text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-xs">{totalGames} 个游戏</span>
               </div>
               {(tags.length > 0 || rootPaths.length > 0) && (
                 <div className="flex items-center gap-2 py-1 min-w-0 flex-wrap">
@@ -1183,10 +1293,10 @@ function App() {
                       setTagFilterOpen(false);
                       setRootFilterOpen(false);
                     }}
-                    className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 shrink-0 ${
+                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
                       selectedTag || searchQuery || selectedRootPathId
-                        ? 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80'
-                        : 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/30 hover:shadow-xl hover:shadow-indigo-600/40'
+                        ? 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                        : 'bg-indigo-600/90 text-white hover:bg-indigo-600 border border-indigo-400/30'
                     }`}
                   >
                     全部
@@ -1205,10 +1315,10 @@ function App() {
                           }
                           setTagFilterOpen(next);
                         }}
-                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
+                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
                           selectedTag && !searchQuery
-                            ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
-                            : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                            ? 'text-white'
+                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                         }`}
                         style={{
                           backgroundColor: selectedTag && !searchQuery ? selectedTagInfo?.color : undefined,
@@ -1224,7 +1334,7 @@ function App() {
                       </button>
 
                       {tagFilterOpen && (
-                        <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
+                        <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
                           <div className="flex items-center justify-between gap-3 mb-3">
                             <div className="text-sm font-medium text-gray-200">标签</div>
                             <button
@@ -1250,10 +1360,10 @@ function App() {
                                     setSearchQuery('');
                                     setTagFilterOpen(false);
                                   }}
-                                  className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 whitespace-nowrap ${
+                                  className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                                     selectedTag === tag.name && !searchQuery
-                                      ? 'text-white shadow-lg shadow-current/40 hover:shadow-xl'
-                                      : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                      ? 'text-white'
+                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                   }`}
                                   style={{
                                     backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
@@ -1283,10 +1393,10 @@ function App() {
                           }
                           setRootFilterOpen(next);
                         }}
-                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-[240px] ${
+                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
                           selectedRootPathId
-                            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
-                            : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                            ? 'bg-emerald-600/90 text-white hover:bg-emerald-600 border border-emerald-400/30'
+                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                         }`}
                         aria-expanded={rootFilterOpen ? 'true' : 'false'}
                         aria-label="展开根目录筛选"
@@ -1300,7 +1410,7 @@ function App() {
                       </button>
 
                       {rootFilterOpen && (
-                        <div style={rootFilterPopoverStyle || undefined} className="z-50 rounded-2xl bg-gray-900/55 backdrop-blur-md border border-gray-800/70 shadow-2xl shadow-black/30 p-4">
+                        <div style={rootFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
                           <div className="flex items-center justify-between gap-3 mb-3">
                             <div className="text-sm font-medium text-gray-200">根目录</div>
                             <button
@@ -1325,10 +1435,10 @@ function App() {
                                     setSelectedRootPathId(rp.id);
                                     setRootFilterOpen(false);
                                   }}
-                                  className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-full truncate ${
+                                  className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
                                     selectedRootPathId === rp.id
-                                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
-                                      : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                      ? 'bg-emerald-600/90 text-white border border-emerald-400/30'
+                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                   }`}
                                   title={rp.path}
                                 >
@@ -1341,10 +1451,10 @@ function App() {
                                   setSelectedRootPathId('others');
                                   setRootFilterOpen(false);
                                 }}
-                                className={`tag px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-350 hover:scale-105 max-w-full truncate ${
+                                className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
                                   selectedRootPathId === 'others'
-                                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/30'
-                                    : 'bg-gray-850 text-gray-300 hover:bg-gray-800 hover:text-white border border-gray-800/80 hover:border-gray-700/80'
+                                    ? 'bg-emerald-600/90 text-white border border-emerald-400/30'
+                                    : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                 }`}
                                 title="单独加入的游戏"
                               >
@@ -1361,8 +1471,8 @@ function App() {
             </div>
             <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
               {bulkScrapeLoading && bulkScrapeProgress.total > 0 && (
-                <div className="flex items-center gap-3">
-                  <div className="text-xs text-gray-200 font-medium whitespace-nowrap">
+                <div className="flex items-center gap-2">
+                  <div className="text-xs text-gray-200/90 font-medium whitespace-nowrap">
                     {bulkScrapeProgress.current}/{bulkScrapeProgress.total}
                   </div>
                   <button
@@ -1375,22 +1485,14 @@ function App() {
                       <rect x="7" y="7" width="10" height="10" rx="1.5" />
                     </svg>
                   </button>
-                  <div className="w-40 h-2 bg-gray-800/80 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-indigo-600 to-purple-600"
-                      style={{
-                        width: `${Math.min(100, Math.round((bulkScrapeProgress.current / bulkScrapeProgress.total) * 100))}%`
-                      }}
-                    />
-                  </div>
                 </div>
               )}
-              <div className="flex items-stretch rounded-xl overflow-hidden bg-gray-900/40 border border-gray-800/60 backdrop-blur-sm">
+              <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
                 <button
                   type="button"
                   onClick={() => setAndPersistViewMode('grid')}
-                  className={`px-3 py-2 flex items-center justify-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
-                    viewMode === 'grid' ? 'bg-indigo-600/90 text-white' : 'text-gray-300 hover:bg-white/5'
+                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                    viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
                   }`}
                   title="卡片视图"
                   aria-label="卡片视图"
@@ -1402,8 +1504,8 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setAndPersistViewMode('list')}
-                  className={`px-3 py-2 flex items-center justify-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
-                    viewMode === 'list' ? 'bg-indigo-600/90 text-white' : 'text-gray-300 hover:bg-white/5'
+                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                    viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
                   }`}
                   title="列表视图"
                   aria-label="列表视图"
@@ -1413,11 +1515,30 @@ function App() {
                   </svg>
                 </button>
               </div>
-              <div className="flex items-stretch rounded-xl overflow-hidden bg-gradient-to-r from-fuchsia-600 to-pink-600 shadow-sm hover:shadow-md hover:shadow-fuchsia-600/20 transition-all duration-300 hover:-translate-y-0.5">
+              <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={() => setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc')}
+                  className="px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 text-gray-200 hover:bg-white/10"
+                  title={importedAtSortOrder === 'desc' ? '按导入时间：倒序' : '按导入时间：正序'}
+                  aria-label={importedAtSortOrder === 'desc' ? '按导入时间倒序排序' : '按导入时间正序排序'}
+                >
+                  <svg
+                    className={`w-4 h-4 transition-transform ${importedAtSortOrder === 'desc' ? '' : 'rotate-180'}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-600/90 hover:bg-indigo-600 border border-indigo-400/30 transition-colors">
                 <button
                   onClick={handleBulkScrape}
                   disabled={loading || bulkScrapeLoading}
-                  className="flex items-center justify-center gap-2 px-6 py-2.5 text-white font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/20"
+                  className="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/15"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" />
@@ -1429,7 +1550,7 @@ function App() {
                   disabled={loading || bulkScrapeLoading}
                   ref={bulkScrapeScopeButtonRef}
                   className="flex items-center justify-center px-3 text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="配置刮削范围"
+                  title="刮削配置"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
@@ -1471,8 +1592,11 @@ function App() {
         <SettingsModal
           currentPaths={rootPaths}
           onSave={handleSettingsSave}
-          onRefreshAll={() => handleImport()}
-          onRefreshRoot={handleImportRootPath}
+          onRefreshAll={handleRefreshAll}
+          onRefreshRoot={handleRefreshRoot}
+          bulkScrapeLoading={bulkScrapeLoading}
+          bulkScrapeProgress={bulkScrapeProgress}
+          onStopBulkScrape={handleStopBulkScrape}
           onBackgroundChange={(nextPath) => {
             setProjectBackgroundPath(nextPath);
             setProjectBackgroundNonce(nextPath ? Date.now() : 0);

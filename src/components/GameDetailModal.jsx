@@ -32,6 +32,28 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     setStatus({ type, message });
   };
 
+  const formatDateTime = (value) => {
+    if (value === null || value === undefined) return '';
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) {
+      try {
+        return new Date(num).toLocaleString();
+      } catch {
+        return '';
+      }
+    }
+    const s = String(value).trim();
+    if (!s) return '';
+    const iso = s.includes('T') ? s : s.replace(' ', 'T');
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts)) return '';
+    try {
+      return new Date(ts).toLocaleString();
+    } catch {
+      return '';
+    }
+  };
+
   const toAlphaColor = (color, alpha = 0.55) => {
     const raw = typeof color === 'string' ? color.trim() : '';
     if (!raw) return raw;
@@ -480,15 +502,22 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
         </button>
 
         <div className="relative z-10 flex flex-col min-h-[96vh] max-h-[98vh]">
-          <div className="shrink-0 px-6 pt-6 pb-8">
-            <h2 className="text-2xl md:text-3xl font-bold text-white drop-shadow-2xl">
-              {game.name}
-            </h2>
+          <div className="shrink-0 px-6 pt-6 pb-4">
+            <div className="pr-12">
+              <h2 className="text-2xl md:text-3xl font-bold text-white drop-shadow-2xl min-w-0">
+                <span className="truncate block">{game.name}</span>
+              </h2>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 pb-0 flex flex-col gap-6">
 
           <div>
+            {formatDateTime(game?.imported_at || game?.created_at) ? (
+              <div className="mb-2 text-xs text-gray-200/80 whitespace-nowrap text-left">
+                {formatDateTime(game?.imported_at || game?.created_at)}
+              </div>
+            ) : null}
             <input
               type="text"
               value={aliasValue}

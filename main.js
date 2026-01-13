@@ -887,7 +887,8 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS root_paths (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       path TEXT NOT NULL UNIQUE,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_refreshed_at INTEGER
     );
     
     CREATE TABLE IF NOT EXISTS games (
@@ -899,6 +900,7 @@ function initDatabase() {
       is_manual INTEGER DEFAULT 0,
       pinned INTEGER DEFAULT 0,
       alias TEXT,
+      imported_at INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (root_path_id) REFERENCES root_paths(id) ON DELETE CASCADE
@@ -954,6 +956,7 @@ function initDatabase() {
     const hasIsManual = columns.some(col => col.name === 'is_manual');
     const hasAlias = columns.some(col => col.name === 'alias');
     const hasPinned = columns.some(col => col.name === 'pinned');
+    const hasImportedAt = columns.some(col => col.name === 'imported_at');
     
     if (!hasRootPathId) {
       db.exec('ALTER TABLE games ADD COLUMN root_path_id INTEGER;');
@@ -967,8 +970,27 @@ function initDatabase() {
     if (!hasAlias) {
       db.exec('ALTER TABLE games ADD COLUMN alias TEXT;');
     }
+    if (!hasImportedAt) {
+      db.exec('ALTER TABLE games ADD COLUMN imported_at INTEGER;');
+    }
     db.exec('UPDATE games SET is_manual = 0 WHERE is_manual IS NULL;');
     db.exec('UPDATE games SET pinned = 0 WHERE pinned IS NULL;');
+    db.exec(`
+      UPDATE games
+      SET imported_at = CAST(strftime('%s', created_at) AS INTEGER) * 1000
+      WHERE imported_at IS NULL OR imported_at <= 0
+    `);
+
+    const rootColumns = db.prepare('PRAGMA table_info(root_paths)').all();
+    const hasLastRefreshedAt = rootColumns.some(col => col.name === 'last_refreshed_at');
+    if (!hasLastRefreshedAt) {
+      db.exec('ALTER TABLE root_paths ADD COLUMN last_refreshed_at INTEGER;');
+    }
+    db.exec(`
+      UPDATE root_paths
+      SET last_refreshed_at = CAST(strftime('%s', created_at) AS INTEGER) * 1000
+      WHERE last_refreshed_at IS NULL OR last_refreshed_at <= 0
+    `);
     
     const oldRootPath = db.prepare('SELECT value FROM settings WHERE key = ?').get('rootPath');
     if (oldRootPath && oldRootPath.value) {
@@ -1181,8 +1203,8 @@ try {
     `);
     
     const insertGameStmt = db.prepare(`
-      INSERT INTO games (name, path, root_path_id, is_manual)
-      VALUES (?, ?, NULL, 1)
+      INSERT INTO games (name, path, root_path_id, is_manual, imported_at)
+      VALUES (?, ?, NULL, 1, ?)
     `);
     
     const insertGamePathStmt = db.prepare(`
@@ -1196,7 +1218,7 @@ try {
       return { success: true, id: existingByName.id };
     }
     
-    const result = insertGameStmt.run(name, gamePath);
+    const result = insertGameStmt.run(name, gamePath, Date.now());
     insertGamePathStmt.run(result.lastInsertRowid, gamePath);
     
     return { success: true, id: result.lastInsertRowid };
@@ -1300,13 +1322,17 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   }
   
   const insertGameStmt = db.prepare(`
-    INSERT INTO games (name, path, root_path_id, is_manual)
-    VALUES (?, ?, ?, 0)
+    INSERT INTO games (name, path, root_path_id, is_manual, imported_at)
+    VALUES (?, ?, ?, 0, ?)
   `);
   
   const insertGamePathStmt = db.prepare(`
     INSERT OR IGNORE INTO game_paths (game_id, path, root_path_id)
     VALUES (?, ?, ?)
+  `);
+
+  const updateRootLastRefreshedAtStmt = db.prepare(`
+    UPDATE root_paths SET last_refreshed_at = ? WHERE id = ?
   `);
   
   const findGameByPathStmt = db.prepare(`
@@ -1337,9 +1363,11 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   `);
   
   let totalImported = 0;
+  const importedGameIds = [];
   
   // 从每个根目录导入游戏
   for (const rootPath of rootPaths) {
+    const refreshedAt = Date.now();
     const entries = fs.readdirSync(rootPath.path, { withFileTypes: true });
     
     const gameItems = entries
@@ -1373,12 +1401,15 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
         if (existingByName) {
           insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
         } else {
-          const result = insertGameStmt.run(name, gamePath, rootPath.id);
+          const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
           insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
+          importedGameIds.push(result.lastInsertRowid);
         }
         totalImported++;
       }
     });
+
+    updateRootLastRefreshedAtStmt.run(refreshedAt, rootPath.id);
   }
   
   const allGames = db.prepare('SELECT id, path, root_path_id FROM games').all();
@@ -1434,7 +1465,7 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
       .run(primary.path, primary.root_path_id, game.id);
   });
 
-  return { success: true, imported: totalImported, deleted: totalDeleted };
+  return { success: true, imported: totalImported, deleted: totalDeleted, importedGameIds };
 });
 
 ipcMain.handle('reset-database', async () => {
@@ -1505,12 +1536,16 @@ const processGames = (games) => {
   });
 };
 
-ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
+ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
   const offset = (page - 1) * pageSize;
   const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
+
+  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
+  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
+  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
   
   const total = isOthers
     ? db.prepare(`
@@ -1538,7 +1573,7 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId:
       LEFT JOIN tags t ON gt.tag_id = t.id
       WHERE g.is_manual = 1
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(pageSize, offset)
     : rootPathId
@@ -1553,7 +1588,7 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId:
           WHERE gp.game_id = g.id AND gp.root_path_id = ?
         )
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(rootPathId, rootPathId, pageSize, offset)
     : db.prepare(`
@@ -1562,7 +1597,7 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId:
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(pageSize, offset);
   
@@ -1572,7 +1607,7 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId:
   };
 });
 
-ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
+ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
   if (!query || !query.trim()) {
     return { games: [], total: 0 };
   }
@@ -1583,6 +1618,10 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
+
+  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
+  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
+  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
   
   const total = isOthers
     ? db.prepare(`
@@ -1625,7 +1664,7 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
       WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
         AND g.is_manual = 1
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(searchPattern, searchPattern, searchPattern, pageSize, offset)
     : rootPathId
@@ -1643,7 +1682,7 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
           )
         )
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(searchPattern, searchPattern, searchPattern, rootPathId, rootPathId, pageSize, offset)
     : db.prepare(`
@@ -1653,7 +1692,7 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
       LEFT JOIN tags t ON gt.tag_id = t.id
       WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(searchPattern, searchPattern, searchPattern, pageSize, offset);
   
@@ -2033,12 +2072,16 @@ ipcMain.handle('get-all-tags', async () => {
   return db.prepare('SELECT * FROM tags ORDER BY name').all();
 });
 
-ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null } = {}) => {
+ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
   const offset = (page - 1) * pageSize;
   const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
+
+  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
+  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
+  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
   
   const total = isOthers
     ? db.prepare(`
@@ -2081,7 +2124,7 @@ ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize =
       WHERE t.name = ?
         AND g.is_manual = 1
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(tagName, pageSize, offset)
     : rootPathId
@@ -2099,7 +2142,7 @@ ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize =
           )
         )
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(tagName, rootPathId, rootPathId, pageSize, offset)
     : db.prepare(`
@@ -2109,7 +2152,7 @@ ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize =
       JOIN tags t ON gt.tag_id = t.id
       WHERE t.name = ?
       GROUP BY g.id
-      ORDER BY g.pinned DESC, g.updated_at DESC
+      ${orderByClause}
       LIMIT ? OFFSET ?
     `).all(tagName, pageSize, offset);
   

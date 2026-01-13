@@ -1,6 +1,6 @@
 {
   "name": "gamemanage",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "游戏资源管理工具",
   "main": "main.js",
   "scripts": {

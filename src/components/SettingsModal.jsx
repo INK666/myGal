@@ -1,6 +1,37 @@
 import React, { useState, useEffect } from 'react';
 
-function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onClose, onBackgroundChange }) {
+function SettingsModal({
+  currentPaths,
+  onSave,
+  onRefreshAll,
+  onRefreshRoot,
+  onClose,
+  onBackgroundChange,
+  bulkScrapeLoading,
+  bulkScrapeProgress,
+  onStopBulkScrape
+}) {
+  const formatDateTime = (value) => {
+    if (value === null || value === undefined) return '';
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) {
+      try {
+        return new Date(num).toLocaleString();
+      } catch {
+        return '';
+      }
+    }
+    const s = String(value).trim();
+    if (!s) return '';
+    const iso = s.includes('T') ? s : s.replace(' ', 'T');
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts)) return '';
+    try {
+      return new Date(ts).toLocaleString();
+    } catch {
+      return '';
+    }
+  };
   const [newPath, setNewPath] = useState('');
   const [newGamePath, setNewGamePath] = useState('');
   const [status, setStatus] = useState({ type: '', message: '' });
@@ -458,6 +489,24 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
                 </svg>
               </button>
             </div>
+
+            {bulkScrapeLoading && bulkScrapeProgress?.total > 0 && (
+              <div className="mb-3 flex items-center justify-between gap-3 p-3 bg-gray-900/40 border border-gray-800/80 rounded-xl">
+                <div className="text-sm text-gray-200/90 font-medium whitespace-nowrap">
+                  自动刮削中：{bulkScrapeProgress.current}/{bulkScrapeProgress.total}
+                </div>
+                <button
+                  type="button"
+                  onClick={onStopBulkScrape}
+                  className="p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/30 text-red-100 transition-all"
+                  title="停止"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                  </svg>
+                </button>
+              </div>
+            )}
             
             {currentPaths.length === 0 ? (
               <div className="p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 text-center">
@@ -473,7 +522,10 @@ function SettingsModal({ currentPaths, onSave, onRefreshAll, onRefreshRoot, onCl
                     <div className="flex-1 min-w-0">
                       <p className="text-gray-300 font-medium break-all text-sm">{rootPath.path}</p>
                       <p className="text-gray-500 text-xs mt-1">
-                        添加时间: {new Date(rootPath.created_at).toLocaleString()}
+                        添加时间: {formatDateTime(rootPath.created_at)}
+                      </p>
+                      <p className="text-gray-500 text-xs mt-1">
+                        最后刷新: {formatDateTime(rootPath.last_refreshed_at) || '未刷新'}
                       </p>
                     </div>
                     <div className="ml-3 flex items-center gap-2 shrink-0">

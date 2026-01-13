@@ -46,17 +46,8 @@ body {
   transition: all 0.3s ease;
 }
 
-.game-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-}
-
 .tag {
   transition: all 0.2s ease;
-}
-
-.tag:hover {
-  transform: scale(1.05);
 }
 
 .fade-in {

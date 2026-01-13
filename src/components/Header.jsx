@@ -3,15 +3,15 @@ import React from 'react';
 function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBackground, sticky = false }) {
   return (
     <header
-      className={`${sticky ? 'sticky top-0 z-40' : ''} backdrop-blur-md border-b shadow-xl shadow-indigo-900/20 ${
+      className={`${sticky ? 'sticky top-0 z-40' : ''} backdrop-blur-md border-b ${
         hasBackground
-          ? 'bg-gradient-to-r from-gray-950/12 via-gray-900/8 to-indigo-950/12 border-white/10'
-          : 'bg-gradient-to-r from-gray-900/55 via-gray-900/40 to-indigo-950/45 border-gray-800/80'
+          ? 'bg-black/20 border-white/10'
+          : 'bg-gray-950/55 border-gray-800/80'
       }`}
       style={{ WebkitAppRegion: 'drag' }}
     >
-      <div className="container mx-auto px-6 py-5">
-        <div className="grid grid-cols-[1fr_minmax(0,640px)_1fr] items-center pt-2 gap-4">
+      <div className="w-full max-w-[2000px] mx-auto px-4 sm:px-6 lg:px-8 py-3">
+        <div className="grid grid-cols-[1fr_minmax(0,760px)_1fr] items-center gap-4">
           <div className="flex items-center justify-start">
             <button
               type="button"
@@ -23,10 +23,10 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
                 }
                 window.open(url, '_blank', 'noreferrer');
               }}
-              className={`-ml-3 text-base font-medium px-3 py-2 rounded-xl transition-all duration-300 hover:-translate-y-0.5 ${
+              className={`-ml-2 text-sm font-medium px-3 py-2 rounded-lg transition-colors ${
                 hasBackground
-                  ? 'bg-black/20 hover:bg-black/30 text-gray-100 border border-white/10'
-                  : 'bg-gray-850 hover:bg-gray-800 text-gray-200 border border-gray-700/80'
+                  ? 'bg-black/25 hover:bg-black/35 text-gray-100 border border-white/10'
+                  : 'bg-gray-900/70 hover:bg-gray-900 text-gray-200 border border-gray-700/80'
               }`}
               style={{ WebkitAppRegion: 'no-drag' }}
               title="打开 GitHub"
@@ -43,12 +43,9 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
                 type="text"
                 placeholder="搜索游戏名称、路径或标签..."
                 value={searchQuery}
-                onChange={(e) => {
-                  console.log('Input change:', e.target.value);
-                  setSearchQuery(e.target.value);
-                }}
-                className={`w-full rounded-xl py-2.5 pl-12 pr-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300 shadow-lg hover:shadow-xl ${
-                  hasBackground ? 'bg-black/25 border border-white/10' : 'bg-gray-800 border border-gray-700'
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={`w-full rounded-lg py-2.5 pl-12 pr-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-colors ${
+                  hasBackground ? 'bg-black/25 border border-white/10' : 'bg-gray-900/70 border border-gray-700/80'
                 }`}
                 style={{ WebkitAppRegion: 'no-drag' }}
               />
@@ -69,10 +66,10 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
           <div className="flex justify-end">
             <button
               onClick={onOpenSettings}
-              className={`group relative overflow-hidden text-white font-medium py-3 px-6 rounded-2xl flex items-center gap-2 transition-all duration-300 shadow-lg hover:shadow-xl hover:border-indigo-500/50 ${
+              className={`group relative overflow-hidden text-white font-medium py-2.5 px-4 rounded-lg flex items-center gap-2 transition-colors ${
                 hasBackground
-                  ? 'bg-black/20 hover:bg-black/30 border border-white/10'
-                  : 'bg-gradient-to-r from-gray-850 to-gray-800 hover:from-gray-800 hover:to-gray-750 border border-gray-700/80'
+                  ? 'bg-black/25 hover:bg-black/35 border border-white/10'
+                  : 'bg-gray-900/70 hover:bg-gray-900 border border-gray-700/80'
               }`}
               style={{ WebkitAppRegion: 'no-drag' }}
             >
