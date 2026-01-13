@@ -6,6 +6,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('#6366f1');
   const [editingTag, setEditingTag] = useState(null);
+  const [tagSearch, setTagSearch] = useState('');
   const [status, setStatus] = useState({ type: '', message: '' });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [scrapeLoading, setScrapeLoading] = useState(false);
@@ -31,6 +32,31 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     setStatus({ type, message });
   };
 
+  const toAlphaColor = (color, alpha = 0.55) => {
+    const raw = typeof color === 'string' ? color.trim() : '';
+    if (!raw) return raw;
+    const hex = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hex) {
+      const value = hex[1].length === 3
+        ? hex[1].split('').map((c) => c + c).join('')
+        : hex[1];
+      const r = Number.parseInt(value.slice(0, 2), 16);
+      const g = Number.parseInt(value.slice(2, 4), 16);
+      const b = Number.parseInt(value.slice(4, 6), 16);
+      if ([r, g, b].some((n) => !Number.isFinite(n))) return raw;
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    const rgb = raw.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i);
+    if (rgb) {
+      const r = Number.parseInt(rgb[1], 10);
+      const g = Number.parseInt(rgb[2], 10);
+      const b = Number.parseInt(rgb[3], 10);
+      if ([r, g, b].some((n) => !Number.isFinite(n))) return raw;
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    return raw;
+  };
+
   useEffect(() => {
     if (!exeContextMenu) return;
     const onKeyDown = (e) => {
@@ -52,6 +78,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     setExeExpanded(false);
     setExeItems([]);
     setExeLoading(false);
+    setTagSearch('');
   }, [game.id]);
 
   const loadGameTags = async () => {
@@ -388,6 +415,12 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     }
   };
 
+  const quickTags = allTags.filter((tag) => !gameTags.some((gameTag) => gameTag.id === tag.id));
+  const normalizedTagSearch = tagSearch.trim().toLowerCase();
+  const filteredQuickTags = normalizedTagSearch
+    ? quickTags.filter((tag) => String(tag?.name || '').toLowerCase().includes(normalizedTagSearch))
+    : quickTags;
+
   return (
     <div
       className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-0 transition-opacity duration-300"
@@ -485,19 +518,19 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
             
             {showTagManager && (
               <div className="bg-gray-850/80 backdrop-blur-sm rounded-xl p-4 border border-gray-800/80 shadow-lg">
-                <div className="flex flex-wrap gap-3 mb-3">
+                <div className="flex flex-wrap items-center gap-3 mb-3">
                   <input
                     type="text"
                     value={newTagName}
                     onChange={(e) => setNewTagName(e.target.value)}
                     placeholder="新标签名称"
-                    className="flex-1 bg-gray-900 border border-gray-800/80 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300"
+                    className="w-52 bg-gray-900/35 border border-gray-800/70 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-gray-400/70 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
                   />
                   <input
                     type="color"
                     value={newTagColor}
                     onChange={(e) => setNewTagColor(e.target.value)}
-                    className="w-12 h-12 rounded-lg border border-gray-800/80 cursor-pointer hover:scale-110 transition-transform duration-300"
+                    className="w-8 h-8 rounded-lg border border-gray-800/80 cursor-pointer hover:scale-110 transition-transform duration-300"
                   />
                   <button
                     onClick={handleAddTag}
@@ -505,20 +538,29 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                   >
                     添加
                   </button>
+                  <input
+                    type="text"
+                    value={tagSearch}
+                    onChange={(e) => setTagSearch(e.target.value)}
+                    placeholder="搜索标签"
+                    className="ml-auto w-56 min-w-0 bg-gray-900/35 border border-gray-800/70 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-gray-400/70 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300 backdrop-blur-sm"
+                  />
                 </div>
                 
-                {/* 现有标签快捷选择 */}
                 {allTags.length > 0 && (
                   <div className="mt-4">
-                    <h4 className="text-sm font-medium text-gray-400 mb-2">快捷选择现有标签</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {allTags
-                        .filter(tag => !gameTags.some(gameTag => gameTag.id === tag.id))
-                        .map(tag => (
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <h4 className="text-sm font-medium text-gray-400">快捷选择现有标签</h4>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2 max-h-56 overflow-auto pr-1">
+                      {filteredQuickTags.map(tag => (
                           <div
                             key={tag.id}
                             className="group rounded-full text-xs font-medium text-white inline-flex items-center overflow-hidden hover:shadow-md transition-all duration-350 transform hover:scale-105"
-                            style={{ backgroundColor: tag.color }}
+                            style={{
+                              backgroundColor: toAlphaColor(tag.color, 0.2),
+                              border: `1px solid ${toAlphaColor(tag.color, 0.35)}`
+                            }}
                           >
                             <button
                               type="button"
@@ -539,7 +581,7 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
                             </button>
                           </div>
                         ))}
-                      {allTags.filter(tag => !gameTags.some(gameTag => gameTag.id === tag.id)).length === 0 && (
+                      {filteredQuickTags.length === 0 && (
                         <p className="text-gray-500 text-xs">已添加所有标签</p>
                       )}
                     </div>
@@ -548,12 +590,15 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2.5">
+            <div className="flex flex-wrap gap-2.5 max-h-32 overflow-auto pr-1">
               {gameTags.map(tag => (
                 <span
                   key={tag.id}
                   className="px-3 py-1.5 rounded-full text-sm font-medium text-white flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-350 transform hover:scale-105"
-                  style={{ backgroundColor: tag.color }}
+                  style={{
+                    backgroundColor: toAlphaColor(tag.color, 0.2),
+                    border: `1px solid ${toAlphaColor(tag.color, 0.35)}`
+                  }}
                 >
                   {editingTag?.id === tag.id ? (
                     <input

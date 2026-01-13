@@ -1,0 +1,3 @@
+@echo off
+echo Test script running...
+pause
