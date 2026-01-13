@@ -14,9 +14,9 @@ A根目录/
   
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
-  
-<img width="1280" height="677" alt="desk" src="https://github.com/user-attachments/assets/c50f9516-1e5a-404c-b88b-e93184e9d0dc" />
-<img width="899" height="599" alt="list2" src="https://github.com/user-attachments/assets/dc927f23-a3cb-4586-8725-c2ce500b3544" />
+  <img width="896" height="593" alt="desk" src="https://github.com/user-attachments/assets/c4fa7487-823a-4d0d-bf7e-3855fab0fdb8" />
+
+  <img width="907" height="597" alt="desk2" src="https://github.com/user-attachments/assets/d2a9cb08-c97a-44a8-8490-27b649ffefae" />
 
 
 
@@ -61,7 +61,8 @@ A根目录/
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="499" height="653" alt="card" src="https://github.com/user-attachments/assets/60f7a6bc-b555-46a1-bb5f-b48f64bd7891" />
+<img width="509" height="594" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
+
 
 
 - 封面截图，直接截图作为游戏封面
