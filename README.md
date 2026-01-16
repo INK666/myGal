@@ -13,6 +13,7 @@ A根目录/
       └── 游戏5.jpg  
   
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
+
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
   <img width="896" height="593" alt="desk" src="https://github.com/user-attachments/assets/c4fa7487-823a-4d0d-bf7e-3855fab0fdb8" />
 
