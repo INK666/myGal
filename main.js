@@ -12,11 +12,23 @@ if (isDev) {
   app.setPath('cache', path.join(__dirname, 'electron-data', 'Cache'));
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => {
+    if (app.isReady()) {
+      showMainWindow();
+      return;
+    }
+    app.once('ready', () => showMainWindow());
+  });
+}
+
 let mainWindow;
 let db;
 let tray;
 let isQuitting = false;
-let hasShownCloseToTrayBalloon = false;
 
 const getCoversDir = () => path.join(app.getPath('userData'), 'covers');
 const getBackgroundsDir = () => path.join(app.getPath('userData'), 'backgrounds');
@@ -120,7 +132,7 @@ const normalizeGameTitle = (rawName) => {
   }
 
   name = name
-    .replace(/[\[\(（【].*?[\]\)）】]/g, ' ')
+    .replace(/[\[\(（【［].*?[\]\)）】］]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -809,19 +821,7 @@ function createWindow() {
     if (isQuitting) return;
     event.preventDefault();
     mainWindow.hide();
-    if (!hasShownCloseToTrayBalloon) {
-      if (!tray) createTray();
-      if (tray && typeof tray.displayBalloon === 'function') {
-        try {
-          tray.displayBalloon({
-            title: '已最小化到托盘',
-            content: '应用仍在后台运行。右键托盘图标可退出。',
-            icon: nativeImage.createFromPath(resolveTrayIconPath())
-          });
-        } catch {}
-      }
-      hasShownCloseToTrayBalloon = true;
-    }
+    if (!tray) createTray();
   });
 
   mainWindow.on('closed', () => {

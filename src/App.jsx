@@ -773,6 +773,7 @@ function App() {
     const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds) ? bulkScrapeScopeRootPathIds : defaultScopeIds;
     const [draftIds, setDraftIds] = useState(effectiveScopeIds);
     const [scrapeSourceExpanded, setScrapeSourceExpanded] = useState(false);
+    const [credentialsExpanded, setCredentialsExpanded] = useState(false);
     const [scrapeEnabled, setScrapeEnabled] = useState({
       VNDBv2: true,
       Ymgal: true,
@@ -784,6 +785,16 @@ function App() {
       DLsite: false
     });
     const [autoScrapeAfterRefresh, setAutoScrapeAfterRefresh] = useState(true);
+    const [steamGridDbKey, setSteamGridDbKey] = useState('');
+    const [igdbClientId, setIgdbClientId] = useState('');
+    const [igdbClientSecret, setIgdbClientSecret] = useState('');
+    const [vndbToken, setVndbToken] = useState('');
+    const [steamGridDbKeyVisible, setSteamGridDbKeyVisible] = useState(false);
+    const [igdbClientIdVisible, setIgdbClientIdVisible] = useState(false);
+    const [igdbClientSecretVisible, setIgdbClientSecretVisible] = useState(false);
+    const [vndbTokenVisible, setVndbTokenVisible] = useState(false);
+    const [bulkScrapeIntervalMs, setBulkScrapeIntervalMs] = useState('800');
+    const [bulkScrapeMaxConcurrent, setBulkScrapeMaxConcurrent] = useState('1');
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -822,6 +833,20 @@ function App() {
             DLsite: toEnabled(settings?.scrapeEnableDLsite, false)
           });
           setAutoScrapeAfterRefresh(toEnabled(settings?.autoScrapeAfterRefresh, true));
+          setSteamGridDbKey(settings?.steamgriddbApiKey || '');
+          setIgdbClientId(settings?.igdbClientId || '');
+          setIgdbClientSecret(settings?.igdbClientSecret || '');
+          setVndbToken(settings?.vndbToken || '');
+          setBulkScrapeIntervalMs(
+            settings?.bulkScrapeIntervalMs !== undefined && settings?.bulkScrapeIntervalMs !== null && String(settings?.bulkScrapeIntervalMs).trim() !== ''
+              ? String(settings.bulkScrapeIntervalMs)
+              : '800'
+          );
+          setBulkScrapeMaxConcurrent(
+            settings?.bulkScrapeMaxConcurrent !== undefined && settings?.bulkScrapeMaxConcurrent !== null && String(settings?.bulkScrapeMaxConcurrent).trim() !== ''
+              ? String(settings.bulkScrapeMaxConcurrent)
+              : '1'
+          );
         } catch {}
       };
       load();
@@ -835,12 +860,26 @@ function App() {
       if (saving) return;
       setSaving(true);
       try {
+        const parsedIntervalMs = Number.parseInt(String(bulkScrapeIntervalMs || '').trim(), 10);
+        const normalizedIntervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 800;
+        const parsedMaxConcurrent = Number.parseInt(String(bulkScrapeMaxConcurrent || '').trim(), 10);
+        const normalizedMaxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
+
+        setBulkScrapeIntervalMs(String(normalizedIntervalMs));
+        setBulkScrapeMaxConcurrent(String(normalizedMaxConcurrent));
+
         const includeOthers = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
         const normalized = [...new Set(draftIds.map((v) => Number.parseInt(String(v), 10)).filter((n) => Number.isFinite(n)))];
         normalized.sort((a, b) => a - b);
         const nextScope = [...normalized, ...(includeOthers ? ['others'] : [])];
         await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(nextScope));
         await window.electronAPI.saveSetting('autoScrapeAfterRefresh', autoScrapeAfterRefresh ? '1' : '0');
+        await window.electronAPI.saveSetting('steamgriddbApiKey', String(steamGridDbKey || '').trim());
+        await window.electronAPI.saveSetting('igdbClientId', String(igdbClientId || '').trim());
+        await window.electronAPI.saveSetting('igdbClientSecret', String(igdbClientSecret || '').trim());
+        await window.electronAPI.saveSetting('vndbToken', String(vndbToken || '').trim());
+        await window.electronAPI.saveSetting('bulkScrapeIntervalMs', String(normalizedIntervalMs));
+        await window.electronAPI.saveSetting('bulkScrapeMaxConcurrent', String(normalizedMaxConcurrent));
         await window.electronAPI.saveSetting('scrapeEnableSteamGridDB', scrapeEnabled.SteamGridDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableIGDB', scrapeEnabled.IGDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableVNDBv2', scrapeEnabled.VNDBv2 ? '1' : '0');
@@ -851,6 +890,7 @@ function App() {
         await window.electronAPI.saveSetting('scrapeEnableDLsite', scrapeEnabled.DLsite ? '1' : '0');
         setBulkScrapeScopeRootPathIds(nextScope);
         setShowBulkScrapeScope(false);
+        showStatus('success', '刮削配置已保存');
       } catch (error) {
         showStatus('error', '保存失败：' + (error?.message || String(error)));
       } finally {
@@ -879,99 +919,91 @@ function App() {
           </div>
 
           <div className="p-6 space-y-4 flex-1 overflow-y-auto">
-            <div className="space-y-2">
-              <div className="text-sm font-medium text-gray-300">批量刮削范围</div>
-              {rootPaths.map((rp) => {
-                const checked = draftIds.includes(rp.id);
-                return (
-                  <button
-                    key={rp.id}
-                    onClick={() => toggle(rp.id)}
-                    className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-300 ${
-                      checked
-                        ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
-                        : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
-                    }`}
-                  >
-                    <span className="text-sm font-medium truncate">{rp.path}</span>
-                    <span
-                      className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                        checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
-                      }`}
-                    >
-                      {checked && (
-                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-              {(() => {
-                const checked = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
-                return (
-                  <button
-                    key="others"
-                    onClick={() => toggle('others')}
-                    className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-300 ${
-                      checked
-                        ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
-                        : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
-                    }`}
-                  >
-                    <span className="text-sm font-medium truncate">Others（单独加入）</span>
-                    <span
-                      className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                        checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
-                      }`}
-                    >
-                      {checked && (
-                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
-                  </button>
-                );
-              })()}
-              {rootPaths.length === 0 && (
-                <div className="text-sm text-gray-400 bg-gray-900/40 border border-gray-800/80 rounded-xl p-4">
-                  当前没有根目录
-                </div>
-              )}
-            </div>
-
-            <div className="pt-2">
-              <div className="flex items-center justify-between gap-3 p-4 bg-gray-850/60 rounded-xl border border-gray-800/80">
+            <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刷新后自动刮削本次新增</div>
-                  <div className="text-xs text-gray-500 mt-1 truncate">仅对新入库且缺失封面的游戏生效</div>
+                  <div className="text-sm font-medium text-gray-200">批量刮削范围</div>
+                  <div className="text-xs text-gray-500 mt-1">选择参与批量刮削的根目录</div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
-                  className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
-                    autoScrapeAfterRefresh
-                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-                      : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
-                  }`}
-                >
-                  {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
-                </button>
+              </div>
+
+              <div className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-1">
+                {rootPaths.map((rp) => {
+                  const checked = draftIds.includes(rp.id);
+                  return (
+                    <button
+                      key={rp.id}
+                      type="button"
+                      onClick={() => toggle(rp.id)}
+                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
+                        checked
+                          ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
+                          : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
+                      }`}
+                    >
+                      <span className="text-sm font-medium truncate">{rp.path}</span>
+                      <span
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                          checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
+                        }`}
+                      >
+                        {checked && (
+                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {(() => {
+                  const checked = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+                  return (
+                    <button
+                      key="others"
+                      type="button"
+                      onClick={() => toggle('others')}
+                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
+                        checked
+                          ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
+                          : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
+                      }`}
+                    >
+                      <span className="text-sm font-medium truncate">Others（单独加入）</span>
+                      <span
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                          checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
+                        }`}
+                      >
+                        {checked && (
+                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })()}
+
+                {rootPaths.length === 0 && (
+                  <div className="text-sm text-gray-400 bg-gray-900/40 border border-gray-800/80 rounded-xl p-4">
+                    当前没有根目录
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="pt-2">
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刮削源开关</div>
-                  <div className="text-xs text-gray-500 truncate">过多刮削源会影响速度</div>
+            <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-200">刮削源</div>
+                  <div className="text-xs text-gray-500 mt-1">启用越多，速度越慢；需要凭据的源可在下方配置</div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setScrapeSourceExpanded(v => !v)}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-400 hover:text-gray-200 bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all"
+                  onClick={() => setScrapeSourceExpanded((v) => !v)}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
                   aria-expanded={scrapeSourceExpanded}
                 >
                   {scrapeSourceExpanded ? '收起' : '展开'}
@@ -985,43 +1017,305 @@ function App() {
                   </svg>
                 </button>
               </div>
-              {scrapeSourceExpanded && (
-                <div className="space-y-2">
+
+              {scrapeSourceExpanded ? (
+                <div className="mt-3 space-y-2">
                   {[
-                    { key: 'VNDBv2', label: 'VNDB Kana v2' },
-                    { key: 'Ymgal', label: '月幕Galgame' },
-                    { key: 'Bangumi', label: 'Bangumi' },
-                    { key: 'Steam', label: 'steam（裸连容易超时）' },
-                    { key: 'SteamGridDB', label: 'SteamGridDB（需要 Key）' },
-                    { key: 'IGDB', label: 'IGDB（需要 Client ID/Secret）' },
-                    { key: 'VNDB', label: 'VNDB（需要 Token）' },
-                    { key: 'DLsite', label: 'DLsite（RJ/VJ 号）' }
-                  ].map(item => (
-                    <div
+                    { key: 'VNDBv2', label: 'VNDB Kana v2', desc: '' },
+                    { key: 'Ymgal', label: '月幕Galgame', desc: '' },
+                    { key: 'Bangumi', label: 'Bangumi', desc: '' },
+                    { key: 'Steam', label: 'Steam', desc: '裸连容易超时' },
+                    { key: 'SteamGridDB', label: 'SteamGridDB', desc: '需要 API Key' },
+                    { key: 'IGDB', label: 'IGDB', desc: '需要 Client ID/Secret' },
+                    { key: 'VNDB', label: 'VNDB', desc: '需要 Token' },
+                    { key: 'DLsite', label: 'DLsite', desc: 'RJ/VJ 号' }
+                  ].map((item) => (
+                    <button
                       key={item.key}
-                      className="flex items-center justify-between gap-3 p-3 bg-gray-850/60 rounded-xl border border-gray-800/80"
+                      type="button"
+                      onClick={() => setScrapeEnabled((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
+                      className="w-full flex items-center justify-between gap-3 p-3 bg-gray-850/60 rounded-xl border border-gray-800/80 hover:border-gray-700/80 hover:bg-gray-800/70 transition-all cursor-pointer text-left"
+                      aria-pressed={scrapeEnabled[item.key]}
                     >
-                      <div className="text-sm text-gray-300">{item.label}</div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setScrapeEnabled(prev => ({ ...prev, [item.key]: !prev[item.key] }))
-                        }
+                      <div className="min-w-0 text-left">
+                        <div className="text-sm text-gray-300">{item.label}</div>
+                        {item.desc ? <div className="text-xs text-gray-500 mt-0.5 truncate">{item.desc}</div> : null}
+                      </div>
+                      <span
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                           scrapeEnabled[item.key] ? 'bg-emerald-600' : 'bg-gray-700'
                         }`}
-                        aria-pressed={scrapeEnabled[item.key]}
                       >
                         <span
                           className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
                             scrapeEnabled[item.key] ? 'translate-x-5' : 'translate-x-1'
                           }`}
                         />
-                      </button>
-                    </div>
+                      </span>
+                    </button>
                   ))}
                 </div>
-              )}
+              ) : null}
+            </div>
+
+            <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-200">凭据</div>
+                  <div className="text-xs text-gray-500 mt-1">Key/Token 仅本地保存；仅对启用的刮削源生效</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCredentialsExpanded((v) => !v)}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
+                  aria-expanded={credentialsExpanded}
+                >
+                  {credentialsExpanded ? '收起' : '展开'}
+                  <svg
+                    className={`w-4 h-4 transition-transform ${credentialsExpanded ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              </div>
+
+              {credentialsExpanded ? (
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">SteamGridDB API Key</div>
+                    <div className="relative">
+                      <input
+                        type={steamGridDbKeyVisible ? 'text' : 'password'}
+                        value={steamGridDbKey}
+                        onChange={(e) => setSteamGridDbKey(e.target.value)}
+                        placeholder="可选：用于 SteamGridDB 刮削"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSteamGridDbKeyVisible((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors cursor-pointer"
+                        title={steamGridDbKeyVisible ? '隐藏' : '显示'}
+                        aria-label={steamGridDbKeyVisible ? '隐藏' : '显示'}
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      >
+                        {steamGridDbKeyVisible ? (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M10.478 10.49a3 3 0 104.03 4.03M9.88 5.09A9.96 9.96 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.965 9.965 0 01-4.13 5.368M6.228 6.228A9.965 9.965 0 002.458 12c1.274 4.057 5.064 7 9.542 7a9.96 9.96 0 003.21-.53"
+                            />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">IGDB Client ID</div>
+                      <div className="relative">
+                        <input
+                          type={igdbClientIdVisible ? 'text' : 'password'}
+                          value={igdbClientId}
+                          onChange={(e) => setIgdbClientId(e.target.value)}
+                          placeholder="可选：IGDB Client ID"
+                          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                          style={{ WebkitAppRegion: 'no-drag' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setIgdbClientIdVisible((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors cursor-pointer"
+                          title={igdbClientIdVisible ? '隐藏' : '显示'}
+                          aria-label={igdbClientIdVisible ? '隐藏' : '显示'}
+                          style={{ WebkitAppRegion: 'no-drag' }}
+                        >
+                          {igdbClientIdVisible ? (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M10.478 10.49a3 3 0 104.03 4.03M9.88 5.09A9.96 9.96 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.965 9.965 0 01-4.13 5.368M6.228 6.228A9.965 9.965 0 002.458 12c1.274 4.057 5.064 7 9.542 7a9.96 9.96 0 003.21-.53"
+                              />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                              />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">IGDB Client Secret</div>
+                      <div className="relative">
+                        <input
+                          type={igdbClientSecretVisible ? 'text' : 'password'}
+                          value={igdbClientSecret}
+                          onChange={(e) => setIgdbClientSecret(e.target.value)}
+                          placeholder="可选：IGDB Client Secret"
+                          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                          style={{ WebkitAppRegion: 'no-drag' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setIgdbClientSecretVisible((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors cursor-pointer"
+                          title={igdbClientSecretVisible ? '隐藏' : '显示'}
+                          aria-label={igdbClientSecretVisible ? '隐藏' : '显示'}
+                          style={{ WebkitAppRegion: 'no-drag' }}
+                        >
+                          {igdbClientSecretVisible ? (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M10.478 10.49a3 3 0 104.03 4.03M9.88 5.09A9.96 9.96 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.965 9.965 0 01-4.13 5.368M6.228 6.228A9.965 9.965 0 002.458 12c1.274 4.057 5.064 7 9.542 7a9.96 9.96 0 003.21-.53"
+                              />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                              />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">VNDB Token</div>
+                    <div className="relative">
+                      <input
+                        type={vndbTokenVisible ? 'text' : 'password'}
+                        value={vndbToken}
+                        onChange={(e) => setVndbToken(e.target.value)}
+                        placeholder="可选：用于 VNDB 刮削"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setVndbTokenVisible((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors cursor-pointer"
+                        title={vndbTokenVisible ? '隐藏' : '显示'}
+                        aria-label={vndbTokenVisible ? '隐藏' : '显示'}
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      >
+                        {vndbTokenVisible ? (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M10.478 10.49a3 3 0 104.03 4.03M9.88 5.09A9.96 9.96 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.965 9.965 0 01-4.13 5.368M6.228 6.228A9.965 9.965 0 002.458 12c1.274 4.057 5.064 7 9.542 7a9.96 9.96 0 003.21-.53"
+                            />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
+              <div className="text-sm font-medium text-gray-200">执行策略</div>
+              <div className="text-xs text-gray-500 mt-1">影响刷新后自动刮削与批量刮削速度</div>
+
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center justify-between gap-3 p-4 bg-gray-850/60 rounded-xl border border-gray-800/80">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刷新后自动刮削本次新增</div>
+                    <div className="text-xs text-gray-500 mt-1 truncate">仅对新入库且缺失封面的游戏生效</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
+                    className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                      autoScrapeAfterRefresh
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                        : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
+                    }`}
+                  >
+                    {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">批量刮削间隔（毫秒）</div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={bulkScrapeIntervalMs}
+                      onChange={(e) => setBulkScrapeIntervalMs(e.target.value)}
+                      placeholder="例如 800"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                      style={{ WebkitAppRegion: 'no-drag' }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">最大并发数</div>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={bulkScrapeMaxConcurrent}
+                      onChange={(e) => setBulkScrapeMaxConcurrent(e.target.value)}
+                      placeholder="例如 2"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                      style={{ WebkitAppRegion: 'no-drag' }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 

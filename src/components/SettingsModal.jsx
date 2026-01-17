@@ -44,12 +44,6 @@ function SettingsModal({
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshingRootId, setRefreshingRootId] = useState(null);
-  const [steamGridDbKey, setSteamGridDbKey] = useState('');
-  const [igdbClientId, setIgdbClientId] = useState('');
-  const [igdbClientSecret, setIgdbClientSecret] = useState('');
-  const [vndbToken, setVndbToken] = useState('');
-  const [bulkScrapeIntervalMs, setBulkScrapeIntervalMs] = useState('800');
-  const [bulkScrapeMaxConcurrent, setBulkScrapeMaxConcurrent] = useState('1');
   const projectBackgroundSettingKey = 'projectBackgroundPath';
   const [projectBackgroundPath, setProjectBackgroundPath] = useState('');
 
@@ -112,47 +106,11 @@ function SettingsModal({
     const load = async () => {
       try {
         const settings = await window.electronAPI.getSettings();
-        setSteamGridDbKey(settings?.steamgriddbApiKey || '');
-        setIgdbClientId(settings?.igdbClientId || '');
-        setIgdbClientSecret(settings?.igdbClientSecret || '');
-        setVndbToken(settings?.vndbToken || '');
-        setBulkScrapeIntervalMs(
-          settings?.bulkScrapeIntervalMs !== undefined && settings?.bulkScrapeIntervalMs !== null && String(settings?.bulkScrapeIntervalMs).trim() !== ''
-            ? String(settings.bulkScrapeIntervalMs)
-            : '800'
-        );
-        setBulkScrapeMaxConcurrent(
-          settings?.bulkScrapeMaxConcurrent !== undefined && settings?.bulkScrapeMaxConcurrent !== null && String(settings?.bulkScrapeMaxConcurrent).trim() !== ''
-            ? String(settings.bulkScrapeMaxConcurrent)
-            : '1'
-        );
         setProjectBackgroundPath(settings?.[projectBackgroundSettingKey] ? String(settings[projectBackgroundSettingKey]) : '');
       } catch {}
     };
     load();
   }, []);
-
-  const handleSaveScrapeSettings = async () => {
-    try {
-      const parsedIntervalMs = Number.parseInt(String(bulkScrapeIntervalMs || '').trim(), 10);
-      const normalizedIntervalMs = Number.isFinite(parsedIntervalMs) && parsedIntervalMs >= 0 ? parsedIntervalMs : 800;
-      const parsedMaxConcurrent = Number.parseInt(String(bulkScrapeMaxConcurrent || '').trim(), 10);
-      const normalizedMaxConcurrent = Number.isFinite(parsedMaxConcurrent) && parsedMaxConcurrent >= 1 ? parsedMaxConcurrent : 1;
-
-      setBulkScrapeIntervalMs(String(normalizedIntervalMs));
-      setBulkScrapeMaxConcurrent(String(normalizedMaxConcurrent));
-
-      await window.electronAPI.saveSetting('steamgriddbApiKey', steamGridDbKey.trim());
-      await window.electronAPI.saveSetting('igdbClientId', igdbClientId.trim());
-      await window.electronAPI.saveSetting('igdbClientSecret', igdbClientSecret.trim());
-      await window.electronAPI.saveSetting('vndbToken', vndbToken.trim());
-      await window.electronAPI.saveSetting('bulkScrapeIntervalMs', String(normalizedIntervalMs));
-      await window.electronAPI.saveSetting('bulkScrapeMaxConcurrent', String(normalizedMaxConcurrent));
-      showStatus('success', '刮削配置已保存');
-    } catch (error) {
-      showStatus('error', '保存失败：' + (error?.message || String(error)));
-    }
-  };
 
   const handleSelectProjectBackground = async () => {
     try {
@@ -671,93 +629,6 @@ function SettingsModal({
               </div>
               <div className="text-xs text-gray-500 mt-2">
                 支持 jpg / png
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-2">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <label className="block text-sm font-medium text-gray-300">
-                封面刮削配置
-              </label>
-              <button
-                onClick={handleSaveScrapeSettings}
-                className="bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white font-medium py-2 px-3 rounded-xl hover:shadow-lg hover:shadow-fuchsia-600/30 transition-all duration-350 transform hover:-translate-y-0.5 text-sm"
-              >
-                保存
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <div className="text-xs text-gray-400">批量刮削间隔（毫秒）</div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="100"
-                    value={bulkScrapeIntervalMs}
-                    onChange={(e) => setBulkScrapeIntervalMs(e.target.value)}
-                    placeholder="例如 800"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs text-gray-400">最大并发数</div>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={bulkScrapeMaxConcurrent}
-                    onChange={(e) => setBulkScrapeMaxConcurrent(e.target.value)}
-                    placeholder="例如 2"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs text-gray-400">SteamGridDB API Key</div>
-                <input
-                  type="password"
-                  value={steamGridDbKey}
-                  onChange={(e) => setSteamGridDbKey(e.target.value)}
-                  placeholder="可选：用于 SteamGridDB 刮削"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <div className="text-xs text-gray-400">IGDB Client ID</div>
-                  <input
-                    type="password"
-                    value={igdbClientId}
-                    onChange={(e) => setIgdbClientId(e.target.value)}
-                    placeholder="可选：IGDB Client ID"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs text-gray-400">IGDB Client Secret</div>
-                  <input
-                    type="password"
-                    value={igdbClientSecret}
-                    onChange={(e) => setIgdbClientSecret(e.target.value)}
-                    placeholder="可选：IGDB Client Secret"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-xs text-gray-400">VNDB Token</div>
-                <input
-                  type="password"
-                  value={vndbToken}
-                  onChange={(e) => setVndbToken(e.target.value)}
-                  placeholder="可选：用于 VNDB 刮削"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-300"
-                />
               </div>
             </div>
           </div>
