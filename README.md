@@ -13,10 +13,11 @@ A根目录/
       └── 游戏5.jpg  
   
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
+
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
-  
-<img width="1280" height="677" alt="desk" src="https://github.com/user-attachments/assets/c50f9516-1e5a-404c-b88b-e93184e9d0dc" />
-<img width="899" height="599" alt="list2" src="https://github.com/user-attachments/assets/dc927f23-a3cb-4586-8725-c2ce500b3544" />
+  <img width="896" height="593" alt="desk" src="https://github.com/user-attachments/assets/c4fa7487-823a-4d0d-bf7e-3855fab0fdb8" />
+
+  <img width="907" height="597" alt="desk2" src="https://github.com/user-attachments/assets/d2a9cb08-c97a-44a8-8490-27b649ffefae" />
 
 
 
@@ -24,13 +25,16 @@ A根目录/
 基于 Electron + React + Vite 的本地游戏资源管理工具：集中管理游戏目录、标签与封面，并支持按范围批量刮削。
 - **根目录管理**
   - 添加/删除多个游戏根目录，将根目录下次级文件全部作为游戏项目导入。
-  - 一键刷新导入（扫描根目录并更新库内数据）
+  - 一键刷新（扫描根目录并自动刮削更新的游戏）
 
 - **游戏库浏览**
-  - 网格化展示游戏列表
+  - 网格、列表展示游戏列表，默认按导入时间倒序排列
   - **搜索**：按游戏名称、路径、标签快速检索
   - **标签系统**：创建/编辑/删除标签，给游戏添加/移除标签
   - **置顶**：将常玩的游戏置顶显示
+
+- **游戏历史记录**
+  - 记录通过此项目打开的游戏和打开方式，可点击历史记录快速打开游戏。
 
 - **封面管理**
   - 手动选择封面文件更新
@@ -47,26 +51,28 @@ A根目录/
     
     DLsite
     
-    SteamGridDB（需要 Key 未测试）
+    SteamGridDB（需要 Key）
     
-    IGDB（需要 Client ID/Secret 未测试）
+    IGDB（需要 Client ID/Secret ）
     
-    VNDB（需要 Token 未测试）
+    VNDB（需要 Token）
     
   - **批量刮削封面、厂商名**：对缺失封面的游戏进行自动抓取，刮削得到的厂商名作为标签添加在游戏上
-  - **刮削范围配置**：可选择“哪些根目录参与批量刮削”，新增根目录默认勾选
+  - **刮削范围配置**：可选择“根目录参与批量刮削”，新增根目录默认勾选
 
 - **背景图片**
   - 支持自定义项目背景图（jpg/png）
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="499" height="653" alt="card" src="https://github.com/user-attachments/assets/60f7a6bc-b555-46a1-bb5f-b48f64bd7891" />
+<img width="509" height="594" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
+
 
 
 - 封面截图，直接截图作为游戏封面
-- 扫描文件夹内部exe文件，左键单击直接运行，右键点击弹出右键菜单
-- 打开游戏所在文件夹
+- 扫描文件夹内部exe文件，左键单击直接运行，右键点击弹出右键转区菜单
+- 快速定位游戏文件
+- 打开进入游戏所在文件夹
 - 删除游戏条目（删除后不删除本地文件，只添加进ignore名单，可在配置窗口内恢复）
  
 
