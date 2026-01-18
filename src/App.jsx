@@ -146,7 +146,7 @@ function App() {
   const [projectBackgroundNonce, setProjectBackgroundNonce] = useState(0);
 
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(60);
   const [totalGames, setTotalGames] = useState(0);
   const [bulkScrapeLoading, setBulkScrapeLoading] = useState(false);
   const [bulkScrapeProgress, setBulkScrapeProgress] = useState({ current: 0, total: 0 });
@@ -187,6 +187,14 @@ function App() {
     const width = Math.max(220, Math.min(maxWidth, rightLimit - left));
     const top = anchorRect.bottom + 8;
     return { position: 'fixed', left, top, width };
+  };
+
+  const formatRootPathLabel = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const trimmed = raw.replace(/[\\/]+$/, '');
+    const parts = trimmed.split(/[/\\]+/).filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : trimmed;
   };
 
   useEffect(() => {
@@ -315,7 +323,7 @@ function App() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedTag, selectedRootPathId, importedAtSortOrder]);
+  }, [searchQuery, selectedTag, selectedRootPathId, importedAtSortOrder, viewMode]);
 
   useEffect(() => {
     if (searchQuery.trim()) {
@@ -325,7 +333,7 @@ function App() {
     } else {
       loadGames();
     }
-  }, [searchQuery, selectedTag, selectedRootPathId, currentPage, importedAtSortOrder]);
+  }, [searchQuery, selectedTag, selectedRootPathId, currentPage, importedAtSortOrder, viewMode, pageSize]);
 
   useLayoutEffect(() => {
     if (!rootFilterOpen) return;
@@ -429,6 +437,7 @@ function App() {
   const selectedRootPathInfo = typeof selectedRootPathId === 'number' && Number.isFinite(selectedRootPathId)
     ? rootPaths.find((rp) => rp.id === selectedRootPathId)
     : null;
+  const effectivePageSize = pageSize;
 
   const loadTags = async () => {
     const allTags = await window.electronAPI.getAllTags();
@@ -437,7 +446,7 @@ function App() {
 
   const loadGames = async () => {
     setLoading(true);
-    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(allGames);
     setTotalGames(total);
     setLoading(false);
@@ -445,7 +454,7 @@ function App() {
 
   const searchGames = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -453,7 +462,7 @@ function App() {
 
   const loadGamesByTag = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -551,6 +560,173 @@ function App() {
 
   const handleGameClick = (game) => {
     setSelectedGame(game);
+  };
+
+  const resolveLauncherByHistoryMethod = (api, method) => {
+    const m = String(method || '').trim();
+    if (m === 'powershell-runas') return api?.launchExecutableAdmin;
+    if (m === 'leproc') return api?.launchExecutableLocaleEmulator;
+    if (m === 'lrproc') return api?.launchExecutableLocaleRemulator;
+    return api?.launchExecutable;
+  };
+
+  const launchFromHistoryItem = async (it) => {
+    const api = window.electronAPI;
+    if (!api) return { ok: false, error: '当前环境不支持运行' };
+
+    const exePath = String(it?.exe_path || '').trim();
+    if (!exePath) return { ok: false, error: '启动失败：无效路径' };
+
+    const method = String(it?.method || '').trim();
+    const launcher = resolveLauncherByHistoryMethod(api, method);
+    if (typeof launcher !== 'function') return { ok: false, error: '当前环境不支持运行' };
+
+    const result = await launcher(exePath, [], {
+      gameId: it?.game_id ?? null,
+      gameName: String(it?.game_name || '')
+    });
+
+    if (result?.success) {
+      if (method === 'powershell-runas') {
+        return { ok: true, status: { type: 'success', message: '已请求以管理员身份启动' } };
+      }
+      if (method === 'leproc') {
+        return { ok: true, status: { type: 'success', message: '已通过 Locale Emulator 启动' } };
+      }
+      if (method === 'lrproc') {
+        return { ok: true, status: { type: 'success', message: '已通过 Locale Remulator 启动' } };
+      }
+      if (result?.needsUserConfirm) {
+        return { ok: true, status: { type: 'success', message: '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”' } };
+      }
+      return { ok: true, status: { type: 'success', message: '已启动' } };
+    }
+
+    return { ok: false, error: String(result?.error || '未知错误'), details: String(result?.details || '') };
+  };
+
+  const getLatestRunHistoryForGame = async (gameId) => {
+    const api = window.electronAPI;
+    if (!api?.getRunHistory) return null;
+
+    const rawId = gameId ?? null;
+    const targetId = rawId === null || rawId === undefined ? '' : String(rawId);
+    if (!targetId) return null;
+
+    const result = await api.getRunHistory({ limit: 200, offset: 0 });
+    if (!result?.success || !Array.isArray(result.items)) return null;
+
+    for (const it of result.items) {
+      const itId = it?.game_id === null || it?.game_id === undefined ? '' : String(it.game_id);
+      if (itId && itId === targetId) return it;
+    }
+    return null;
+  };
+
+  const pickAutoExecutable = (items) => {
+    const list = Array.isArray(items) ? items : [];
+    const normalized = list
+      .map((it) => {
+        const fullPath = typeof it?.path === 'string' ? it.path.trim() : '';
+        if (!fullPath) return null;
+        const relativePath = typeof it?.relativePath === 'string' ? it.relativePath.trim() : '';
+        const relNorm = relativePath.replace(/\\/g, '/');
+        const depth = relNorm ? relNorm.split('/').filter(Boolean).length : Number.POSITIVE_INFINITY;
+        const name =
+          typeof it?.name === 'string' && it.name.trim()
+            ? it.name.trim()
+            : fullPath.replace(/\\/g, '/').split('/').filter(Boolean).slice(-1)[0] || '';
+        if (name.toLowerCase().includes('unitycrash')) return null;
+        return { ...it, path: fullPath, relativePath, __depth: depth, __name: name };
+      })
+      .filter(Boolean);
+
+    if (normalized.length === 0) return null;
+
+    let minDepth = Number.POSITIVE_INFINITY;
+    for (const it of normalized) {
+      if (Number.isFinite(it.__depth) && it.__depth < minDepth) minDepth = it.__depth;
+    }
+    const shallow = normalized.filter((it) => it.__depth === minDepth);
+    const pool = shallow.length > 0 ? shallow : normalized;
+
+    let best = pool[0];
+    let bestNameLen = String(best.__name || '').length;
+    for (let i = 1; i < pool.length; i++) {
+      const current = pool[i];
+      const len = String(current.__name || '').length;
+      if (len > bestNameLen) {
+        best = current;
+        bestNameLen = len;
+      }
+    }
+    return best;
+  };
+
+  const handleGameQuickLaunch = async (game) => {
+    try {
+      const api = window.electronAPI;
+      if (!api?.scanExecutables || !api?.launchExecutable) {
+        showStatus('error', '当前环境不支持运行');
+        return;
+      }
+
+      const history = await getLatestRunHistoryForGame(game?.id);
+      if (history) {
+        const res = await launchFromHistoryItem(history);
+        if (res?.ok) {
+          const st = res?.status;
+          if (st?.type && st?.message) {
+            showStatus(st.type, st.message);
+          }
+          await loadRunHistory({ offset: 0, append: false });
+          return;
+        }
+      }
+
+      const paths = (game?.paths && Array.isArray(game.paths) && game.paths.length > 0)
+        ? game.paths
+        : (game?.path ? [game.path] : []);
+
+      if (!paths.length) {
+        showStatus('error', '启动失败：未配置游戏路径');
+        return;
+      }
+
+      const scan = await api.scanExecutables(paths);
+      const items = Array.isArray(scan?.items) ? scan.items : [];
+      if (!scan?.success || items.length === 0) {
+        showStatus('error', '未找到 exe 文件');
+        return;
+      }
+
+      const picked = pickAutoExecutable(items);
+      const exePath = String(picked?.path || '').trim();
+      if (!exePath) {
+        showStatus('error', '未找到可执行文件');
+        return;
+      }
+
+      const result = await api.launchExecutable(exePath, paths, {
+        gameId: game?.id ?? null,
+        gameName: String((game?.alias ?? '').trim() || game?.name || '')
+      });
+
+      if (result?.success) {
+        if (result.needsUserConfirm) {
+          showStatus('success', '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”');
+        } else {
+          showStatus('success', '已启动');
+        }
+        await loadRunHistory({ offset: 0, append: false });
+        return;
+      }
+
+      const detail = result?.details ? `（${result.details}）` : '';
+      showStatus('error', '启动失败：' + (result?.error || '未知错误') + detail);
+    } catch (error) {
+      showStatus('error', '启动失败：' + (error?.message || String(error)));
+    }
   };
 
   const handleGameUpdate = async () => {
@@ -732,7 +908,7 @@ function App() {
     showStatus('success', '已停止批量刮削');
   };
 
-  const totalPages = Math.ceil(totalGames / pageSize);
+  const totalPages = Math.ceil(totalGames / effectivePageSize);
   const showFloatingPagination =
     !showSettings && !selectedGame && !showRunHistory && !showBulkScrapeScope && totalPages > 1;
 
@@ -902,10 +1078,10 @@ function App() {
       <div
         className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300"
       >
-        <div className="modal-content bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl w-full max-w-lg mx-4 border border-gray-800 shadow-2xl shadow-indigo-900/20 transform transition-all duration-300 hover:shadow-3xl flex flex-col max-h-[70vh] overflow-hidden">
-          <div className="p-6 border-b border-gray-800/80 bg-gradient-to-r from-gray-800/50 to-gray-900/50 rounded-t-2xl relative">
+        <div className="modal-content bg-slate-900 rounded-2xl w-full max-w-lg mx-4 border border-white/10 shadow-2xl shadow-black/50 transform transition-all duration-300 hover:shadow-3xl flex flex-col max-h-[70vh] overflow-hidden">
+          <div className="p-6 border-b border-white/5 bg-white/5 rounded-t-2xl relative">
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">刮削配置</h2>
+              <h2 className="text-xl font-bold text-white">刮削配置</h2>
               <button
                 onClick={() => setShowBulkScrapeScope(false)}
                 className="p-2 rounded-xl text-gray-400 hover:text-white bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 transition-all duration-300"
@@ -937,14 +1113,14 @@ function App() {
                       onClick={() => toggle(rp.id)}
                       className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
                         checked
-                          ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
-                          : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
+                          ? 'bg-white/10 border-white/20 text-white'
+                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
                       }`}
                     >
                       <span className="text-sm font-medium truncate">{rp.path}</span>
                       <span
                         className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                          checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
+                          checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
                         }`}
                       >
                         {checked && (
@@ -966,14 +1142,14 @@ function App() {
                       onClick={() => toggle('others')}
                       className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
                         checked
-                          ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
-                          : 'bg-gray-850 border-gray-800/80 text-gray-200 hover:bg-gray-800 hover:border-gray-700/80'
+                          ? 'bg-white/10 border-white/20 text-white'
+                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
                       }`}
                     >
                       <span className="text-sm font-medium truncate">Others（单独加入）</span>
                       <span
                         className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                          checked ? 'bg-indigo-600 border-indigo-500' : 'bg-transparent border-gray-600'
+                          checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
                         }`}
                       >
                         {checked && (
@@ -1137,7 +1313,7 @@ function App() {
                           value={igdbClientId}
                           onChange={(e) => setIgdbClientId(e.target.value)}
                           placeholder="可选：IGDB Client ID"
-                          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-white/20 focus:border-transparent transition-all duration-200"
                           style={{ WebkitAppRegion: 'no-drag' }}
                         />
                         <button
@@ -1365,61 +1541,17 @@ function App() {
 
     const relaunchFromHistory = async (it) => {
       try {
-        const api = window.electronAPI;
-        if (!api) return;
-        const exePath = String(it?.exe_path || '').trim();
-        if (!exePath) {
-          showStatus('error', '启动失败：无效路径');
-          return;
-        }
-
-        const method = String(it?.method || '').trim();
-        const launcher =
-          method === 'powershell-runas'
-            ? api.launchExecutableAdmin
-            : method === 'leproc'
-              ? api.launchExecutableLocaleEmulator
-              : method === 'lrproc'
-                ? api.launchExecutableLocaleRemulator
-                : api.launchExecutable;
-
-        if (typeof launcher !== 'function') {
-          showStatus('error', '当前环境不支持运行');
-          return;
-        }
-
-        const result = await launcher(exePath, [], {
-          gameId: it?.game_id ?? null,
-          gameName: String(it?.game_name || '')
-        });
-
-        if (result?.success) {
-          if (method === 'powershell-runas') {
-            showStatus('success', '已请求以管理员身份启动');
-            await loadRunHistory({ offset: 0, append: false });
-            return;
-          }
-          if (method === 'leproc') {
-            showStatus('success', '已通过 Locale Emulator 启动');
-            await loadRunHistory({ offset: 0, append: false });
-            return;
-          }
-          if (method === 'lrproc') {
-            showStatus('success', '已通过 Locale Remulator 启动');
-            await loadRunHistory({ offset: 0, append: false });
-            return;
-          }
-          if (result?.needsUserConfirm) {
-            showStatus('success', '已请求启动，如弹出 SmartScreen 请点“更多信息 → 仍要运行”');
-          } else {
-            showStatus('success', '已启动');
+        const res = await launchFromHistoryItem(it);
+        if (res?.ok) {
+          const st = res?.status;
+          if (st?.type && st?.message) {
+            showStatus(st.type, st.message);
           }
           await loadRunHistory({ offset: 0, append: false });
           return;
         }
-
-        const detail = result?.details ? `（${result.details}）` : '';
-        showStatus('error', '启动失败：' + (result?.error || '未知错误') + detail);
+        const detail = res?.details ? `（${res.details}）` : '';
+        showStatus('error', '启动失败：' + (res?.error || '未知错误') + detail);
       } catch (error) {
         showStatus('error', '启动失败：' + (error?.message || String(error)));
       }
@@ -1496,7 +1628,7 @@ function App() {
                             需确认
                           </span>
                         ) : null}
-                        <span className="text-xs px-2 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
+                        <span className="text-xs px-2 py-1 rounded-lg bg-white/5 text-gray-300 border border-white/10">
                           {formatMethod(it.method)}
                         </span>
                       </div>
@@ -1534,7 +1666,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen relative">
+    <div className="h-screen flex flex-col overflow-hidden relative">
       {projectBackgroundUrl ? (
         <div
           className="fixed inset-0 z-[-2] bg-center bg-cover bg-no-repeat"
@@ -1548,17 +1680,19 @@ function App() {
             : 'bg-gradient-to-br from-gray-950 via-gray-950 to-gray-900'
         }`}
       />
-      <Header
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
-        onOpenSettings={() => setShowSettings(true)}
-        rootPaths={rootPaths}
-        hasBackground={hasProjectBackground}
-        sticky={!showSettings && !selectedGame}
-      />
+      <div className="flex-none z-50">
+        <Header
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          onOpenSettings={() => setShowSettings(true)}
+          rootPaths={rootPaths}
+          hasBackground={hasProjectBackground}
+        />
+      </div>
       
-      <main className={`w-full max-w-[2000px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
-        <>
+      <div className="flex-1 overflow-y-auto relative scroll-smooth">
+        <main className={`w-full max-w-[2000px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
+          <>
           {status.message && (
             <div
               className={`fixed bottom-6 right-6 z-[60] px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
@@ -1590,7 +1724,7 @@ function App() {
                     className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
                       selectedTag || searchQuery || selectedRootPathId
                         ? 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                        : 'bg-indigo-600/90 text-white hover:bg-indigo-600 border border-indigo-400/30'
+                        : 'bg-white/40 text-white hover:bg-white/50 border border-white/40 shadow-sm'
                     }`}
                   >
                     全部
@@ -1611,12 +1745,12 @@ function App() {
                         }}
                         className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
                           selectedTag && !searchQuery
-                            ? 'text-white'
+                            ? 'text-white shadow-sm'
                             : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                         }`}
                         style={{
-                          backgroundColor: selectedTag && !searchQuery ? selectedTagInfo?.color : undefined,
-                          border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid ${selectedTagInfo.color}` : undefined
+                          backgroundColor: selectedTag && !searchQuery ? (selectedTagInfo?.color ? `color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined) : undefined,
+                          border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined
                         }}
                         aria-expanded={tagFilterOpen ? 'true' : 'false'}
                         aria-label="展开标签筛选"
@@ -1656,12 +1790,12 @@ function App() {
                                   }}
                                   className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                                     selectedTag === tag.name && !searchQuery
-                                      ? 'text-white'
+                                      ? 'text-white shadow-sm'
                                       : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                   }`}
                                   style={{
-                                    backgroundColor: selectedTag === tag.name && !searchQuery ? tag.color : undefined,
-                                    border: selectedTag === tag.name && !searchQuery ? `1px solid ${tag.color}` : undefined
+                                    backgroundColor: selectedTag === tag.name && !searchQuery ? `color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined,
+                                    border: selectedTag === tag.name && !searchQuery ? `1px solid color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined
                                   }}
                                 >
                                   {tag.name}
@@ -1689,14 +1823,16 @@ function App() {
                         }}
                         className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
                           selectedRootPathId
-                            ? 'bg-emerald-600/90 text-white hover:bg-emerald-600 border border-emerald-400/30'
+                            ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
                             : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                         }`}
                         aria-expanded={rootFilterOpen ? 'true' : 'false'}
                         aria-label="展开根目录筛选"
                       >
                         <span className="truncate">
-                          {selectedRootPathId === 'others' ? 'Others' : (selectedRootPathInfo?.path ? selectedRootPathInfo.path : '根目录')}
+                          {selectedRootPathId === 'others'
+                            ? 'Others'
+                            : (selectedRootPathInfo?.path ? formatRootPathLabel(selectedRootPathInfo.path) : '根目录')}
                         </span>
                         <svg className={`w-4 h-4 transition-transform ${rootFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1731,12 +1867,12 @@ function App() {
                                   }}
                                   className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
                                     selectedRootPathId === rp.id
-                                      ? 'bg-emerald-600/90 text-white border border-emerald-400/30'
+                                      ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
                                       : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                   }`}
                                   title={rp.path}
                                 >
-                                  {rp.path}
+                                  {formatRootPathLabel(rp.path)}
                                 </button>
                               ))}
                               <button
@@ -1747,7 +1883,7 @@ function App() {
                                 }}
                                 className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
                                   selectedRootPathId === 'others'
-                                    ? 'bg-emerald-600/90 text-white border border-emerald-400/30'
+                                    ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
                                     : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                                 }`}
                                 title="单独加入的游戏"
@@ -1785,7 +1921,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setAndPersistViewMode('grid')}
-                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${
                     viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
                   }`}
                   title="卡片视图"
@@ -1798,7 +1934,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setAndPersistViewMode('list')}
-                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${
                     viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
                   }`}
                   title="列表视图"
@@ -1828,7 +1964,7 @@ function App() {
                   </svg>
                 </button>
               </div>
-              <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-600/90 hover:bg-indigo-600 border border-indigo-400/30 transition-colors">
+              <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-500/30 hover:bg-indigo-500/40 border border-indigo-400/30 shadow-sm transition-colors">
                 <button
                   onClick={handleBulkScrape}
                   disabled={loading || bulkScrapeLoading}
@@ -1864,12 +2000,14 @@ function App() {
             games={games}
             loading={loading}
             onGameClick={handleGameClick}
+            onGameQuickLaunch={handleGameQuickLaunch}
             tags={tags}
             onTogglePinned={handleTogglePinned}
             viewMode={viewMode}
           />
         </>
       </main>
+      </div>
 
       {showFloatingPagination ? (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[45]">
@@ -1914,7 +2052,7 @@ function App() {
         <>
           <button
             type="button"
-            className="fixed bottom-10 right-0 z-[60] h-7 w-14 rounded-l-full bg-indigo-500/25 hover:bg-indigo-500/40 border border-white/10 backdrop-blur-sm text-white/90 transition-all duration-300 flex items-center justify-center shadow-lg shadow-black/20"
+            className="fixed bottom-10 right-0 z-[60] h-7 w-14 rounded-l-full bg-white/5 hover:bg-white/10 border border-white/10 backdrop-blur-sm text-white/90 transition-all duration-300 flex items-center justify-center shadow-lg shadow-black/20"
             onClick={() => setShowRunHistory(true)}
             title="查看运行历史"
           >

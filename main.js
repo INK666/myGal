@@ -802,10 +802,11 @@ function createWindow() {
     },
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#1a1a2e',
-      symbolColor: '#ffffff'
+      color: 'rgba(0,0,0,0)',
+      symbolColor: '#ffffff',
+      height: 40
     },
-    backgroundColor: '#1a1a2e'
+    backgroundColor: '#0f172a'
   });
 
   if (isDev) {
@@ -1014,6 +1015,32 @@ function initDatabase() {
   } catch (error) {
     console.error('数据迁移失败:', error);
   }
+
+  try {
+    const gameIds = db.prepare('SELECT DISTINCT game_id AS id FROM run_history WHERE game_id IS NOT NULL').all()
+      .map(r => r.id)
+      .filter((v) => Number.isFinite(Number(v)))
+      .map((v) => Number(v));
+
+    if (gameIds.length > 0) {
+      const pickKeepStmt = db.prepare(`
+        SELECT id
+        FROM run_history
+        WHERE game_id = ?
+        ORDER BY launched_at DESC, id DESC
+        LIMIT 1
+      `);
+      const deleteOthersStmt = db.prepare('DELETE FROM run_history WHERE game_id = ? AND id <> ?');
+      db.transaction(() => {
+        for (const gid of gameIds) {
+          const keepId = pickKeepStmt.get(gid)?.id ?? null;
+          if (Number.isFinite(Number(keepId))) {
+            deleteOthersStmt.run(gid, Number(keepId));
+          }
+        }
+      })();
+    }
+  } catch {}
 }
 
 ipcMain.handle('select-directory', async () => {
@@ -1133,9 +1160,6 @@ try {
         const deleteGamePathsByRoot = db.prepare('DELETE FROM game_paths WHERE root_path_id = ?');
         deleteGamePathsByRoot.run(rootPathId);
 
-        const deleteRoot = db.prepare('DELETE FROM root_paths WHERE id = ?');
-        deleteRoot.run(rootPathId);
-
         const resyncGames = db.prepare(`
           UPDATE games
           SET
@@ -1163,6 +1187,9 @@ try {
           WHERE id NOT IN (SELECT DISTINCT game_id FROM game_paths)
         `);
         deleteGamesWithoutPaths.run();
+
+        const deleteRoot = db.prepare('DELETE FROM root_paths WHERE id = ?');
+        deleteRoot.run(rootPathId);
 
         const cleanupOrphanGameTags = db.prepare(`
           DELETE FROM game_tags
@@ -1211,10 +1238,18 @@ try {
       INSERT OR IGNORE INTO game_paths (game_id, path, root_path_id)
       VALUES (?, ?, NULL)
     `);
+
+    const updateImportedAtStmt = db.prepare(`
+      UPDATE games SET imported_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `);
     
     const existingByName = findManualGameByNameStmt.get(name);
     if (existingByName) {
-      insertGamePathStmt.run(existingByName.id, gamePath);
+      const now = Date.now();
+      const info = insertGamePathStmt.run(existingByName.id, gamePath);
+      if ((info?.changes || 0) > 0) {
+        updateImportedAtStmt.run(now, existingByName.id);
+      }
       return { success: true, id: existingByName.id };
     }
     
@@ -1361,6 +1396,10 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   const updateGameNameStmt = db.prepare(`
     UPDATE games SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
   `);
+
+  const updateImportedAtStmt = db.prepare(`
+    UPDATE games SET imported_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+  `);
   
   let totalImported = 0;
   const importedGameIds = [];
@@ -1395,11 +1434,17 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
       
       if (existing) {
         updateGameNameStmt.run(name, existing.id);
-        insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
+        const info = insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
+        if ((info?.changes || 0) > 0) {
+          updateImportedAtStmt.run(refreshedAt, existing.id);
+        }
       } else {
         const existingByName = findScannedGameByNameStmt.get(name);
         if (existingByName) {
-          insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+          const info = insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+          if ((info?.changes || 0) > 0) {
+            updateImportedAtStmt.run(refreshedAt, existingByName.id);
+          }
         } else {
           const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
           insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
@@ -1629,16 +1674,16 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+      WHERE (g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
         AND g.is_manual = 1
-    `).get(searchPattern, searchPattern, searchPattern).count
+    `).get(searchPattern, searchPattern, searchPattern, searchPattern).count
     : rootPathId
     ? db.prepare(`
       SELECT COUNT(DISTINCT g.id) as count
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+      WHERE (g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
         AND (
           g.root_path_id = ?
           OR EXISTS (
@@ -1646,14 +1691,14 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
             WHERE gp.game_id = g.id AND gp.root_path_id = ?
           )
         )
-    `).get(searchPattern, searchPattern, searchPattern, rootPathId, rootPathId).count
+    `).get(searchPattern, searchPattern, searchPattern, searchPattern, rootPathId, rootPathId).count
     : db.prepare(`
       SELECT COUNT(DISTINCT g.id) as count
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
-    `).get(searchPattern, searchPattern, searchPattern).count;
+      WHERE g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?
+    `).get(searchPattern, searchPattern, searchPattern, searchPattern).count;
   
   const games = isOthers
     ? db.prepare(`
@@ -1661,19 +1706,19 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+      WHERE (g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
         AND g.is_manual = 1
       GROUP BY g.id
       ${orderByClause}
       LIMIT ? OFFSET ?
-    `).all(searchPattern, searchPattern, searchPattern, pageSize, offset)
+    `).all(searchPattern, searchPattern, searchPattern, searchPattern, pageSize, offset)
     : rootPathId
     ? db.prepare(`
       SELECT g.*, GROUP_CONCAT(t.name) as tags
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE (g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
+      WHERE (g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?)
         AND (
           g.root_path_id = ?
           OR EXISTS (
@@ -1684,17 +1729,17 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
       GROUP BY g.id
       ${orderByClause}
       LIMIT ? OFFSET ?
-    `).all(searchPattern, searchPattern, searchPattern, rootPathId, rootPathId, pageSize, offset)
+    `).all(searchPattern, searchPattern, searchPattern, searchPattern, rootPathId, rootPathId, pageSize, offset)
     : db.prepare(`
       SELECT g.*, GROUP_CONCAT(t.name) as tags
       FROM games g
       LEFT JOIN game_tags gt ON g.id = gt.game_id
       LEFT JOIN tags t ON gt.tag_id = t.id
-      WHERE g.name LIKE ? OR g.path LIKE ? OR t.name LIKE ?
+      WHERE g.name LIKE ? OR g.alias LIKE ? OR g.path LIKE ? OR t.name LIKE ?
       GROUP BY g.id
       ${orderByClause}
       LIMIT ? OFFSET ?
-    `).all(searchPattern, searchPattern, searchPattern, pageSize, offset);
+    `).all(searchPattern, searchPattern, searchPattern, searchPattern, pageSize, offset);
   
   return {
     games: processGames(games),
@@ -1954,7 +1999,7 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   }
 });
 
-ipcMain.handle('delete-game', async (event, gameId) => {
+ipcMain.handle('delete-game', async (event, gameId, deleteFiles = false) => {
   try {
     const game = db.prepare('SELECT id, cover_path, path FROM games WHERE id = ?').get(gameId);
     if (!game) return false;
@@ -1965,19 +2010,44 @@ ipcMain.handle('delete-game', async (event, gameId) => {
       ...extraPaths.map((r) => r?.path).filter(Boolean)
     ]);
 
+    // 获取所有根目录路径，防止误删
+    const rootPaths = db.prepare('SELECT path FROM root_paths').all().map(r => r.path.toLowerCase());
+
     const insertIgnoredPathStmt = db.prepare(
       'INSERT OR IGNORE INTO ignored_game_paths (path) VALUES (?)'
     );
 
     const tx = db.transaction(() => {
-      for (const p of pathSet) {
-        if (p) insertIgnoredPathStmt.run(p);
+      // 只有在仅移除记录（不删除文件）时，才加入忽略列表，防止下次扫描又出来
+      if (!deleteFiles) {
+        for (const p of pathSet) {
+          if (p) insertIgnoredPathStmt.run(p);
+        }
       }
       db.prepare('DELETE FROM game_tags WHERE game_id = ?').run(gameId);
       db.prepare('DELETE FROM game_paths WHERE game_id = ?').run(gameId);
       db.prepare('DELETE FROM games WHERE id = ?').run(gameId);
     });
     tx();
+
+    if (deleteFiles) {
+      for (const p of pathSet) {
+        if (!p) continue;
+        try {
+          // 安全检查：如果是根目录，则不删除
+          if (rootPaths.includes(p.toLowerCase())) {
+            console.warn(`Skipping deletion of root path: ${p}`);
+            continue;
+          }
+          if (fs.existsSync(p)) {
+            // 彻底删除文件/目录
+            fs.rmSync(p, { recursive: true, force: true });
+          }
+        } catch (err) {
+          console.error(`Failed to delete file/directory: ${p}`, err);
+        }
+      }
+    }
 
     safeUnlinkCover(game.cover_path);
     return true;
@@ -2572,6 +2642,7 @@ const toPowerShellSingleQuoted = (value) => `'${String(value ?? '').replace(/'/g
 
 let runHistoryInsertStmt = null;
 let runHistoryCountStmt = null;
+let runHistoryDeleteByGameIdStmt = null;
 
 const tryLogRunHistory = (meta) => {
   try {
@@ -2595,25 +2666,42 @@ const tryLogRunHistory = (meta) => {
     if (!runHistoryCountStmt) {
       runHistoryCountStmt = db.prepare('SELECT COUNT(1) AS c FROM run_history');
     }
-
-    runHistoryInsertStmt.run(gameId, gameName ? String(gameName) : null, String(exePath), method ? String(method) : null, needsUserConfirm, Date.now());
-
-    const count = runHistoryCountStmt.get()?.c || 0;
-    const keep = 500;
-    const threshold = 800;
-    if (count > threshold) {
-      const over = count - keep;
-      if (over > 0) {
-        db.prepare(`
-          DELETE FROM run_history
-          WHERE id IN (
-            SELECT id FROM run_history
-            ORDER BY launched_at ASC, id ASC
-            LIMIT ?
-          )
-        `).run(over);
-      }
+    if (!runHistoryDeleteByGameIdStmt) {
+      runHistoryDeleteByGameIdStmt = db.prepare('DELETE FROM run_history WHERE game_id = ?');
     }
+
+    const now = Date.now();
+    db.transaction(() => {
+      if (gameId !== null) {
+        runHistoryDeleteByGameIdStmt.run(gameId);
+      }
+
+      runHistoryInsertStmt.run(
+        gameId,
+        gameName ? String(gameName) : null,
+        String(exePath),
+        method ? String(method) : null,
+        needsUserConfirm,
+        now
+      );
+
+      const count = runHistoryCountStmt.get()?.c || 0;
+      const keep = 500;
+      const threshold = 800;
+      if (count > threshold) {
+        const over = count - keep;
+        if (over > 0) {
+          db.prepare(`
+            DELETE FROM run_history
+            WHERE id IN (
+              SELECT id FROM run_history
+              ORDER BY launched_at ASC, id ASC
+              LIMIT ?
+            )
+          `).run(over);
+        }
+      }
+    })();
   } catch {}
 };
 

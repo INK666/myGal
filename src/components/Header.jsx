@@ -6,7 +6,7 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
       className={`${sticky ? 'sticky top-0 z-40' : ''} backdrop-blur-md border-b ${
         hasBackground
           ? 'bg-black/20 border-white/10'
-          : 'bg-gray-950/55 border-gray-800/80'
+          : 'bg-slate-950/60 border-white/5'
       }`}
       style={{ WebkitAppRegion: 'drag' }}
     >
@@ -33,7 +33,7 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
                 className={`-ml-2 text-sm font-medium px-3 py-2 rounded-lg transition-colors ${
                   hasBackground
                     ? 'bg-black/25 hover:bg-black/35 text-gray-100 border border-white/10'
-                    : 'bg-gray-900/70 hover:bg-gray-900 text-gray-200 border border-gray-700/80'
+                    : 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/5'
                 }`}
                 style={{ WebkitAppRegion: 'no-drag' }}
                 title="打开 GitHub"
@@ -43,7 +43,7 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
             </div>
             <div className="w-full">
               <div className="relative group">
-                <svg className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 transition-colors duration-300 group-focus-within:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 transition-colors duration-300 group-focus-within:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
                 <input
@@ -51,8 +51,8 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
                   placeholder="搜索游戏名称、路径或标签..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`w-full rounded-lg py-2.5 pl-12 pr-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-colors ${
-                    hasBackground ? 'bg-black/25 border border-white/10' : 'bg-gray-900/70 border border-gray-700/80'
+                  className={`w-full rounded-lg py-2.5 pl-12 pr-4 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-white/20 focus:border-transparent transition-colors ${
+                    hasBackground ? 'bg-black/25 border border-white/10' : 'bg-white/5 border border-white/5'
                   }`}
                   style={{ WebkitAppRegion: 'no-drag' }}
                 />
@@ -73,15 +73,15 @@ function Header({ searchQuery, setSearchQuery, onOpenSettings, rootPaths, hasBac
             <div className="flex justify-end -mr-1 sm:-mr-2 lg:-mr-3">
               <button
                 onClick={onOpenSettings}
-                className={`group relative overflow-hidden text-white font-medium py-2.5 px-3 rounded-lg inline-flex items-center gap-2 transition-colors ${
+                className={`group relative overflow-hidden text-white font-medium py-2.5 px-3 rounded-lg inline-flex items-center gap-2 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20 active:scale-95 ${
                   hasBackground
-                    ? 'bg-black/25 hover:bg-black/35 border border-white/10'
-                    : 'bg-gray-900/70 hover:bg-gray-900 border border-gray-700/80'
+                    ? 'bg-black/25 hover:bg-black/40 border border-white/10 hover:border-white/30 hover:shadow-[0_0_15px_rgba(255,255,255,0.1)]'
+                    : 'bg-white/5 hover:bg-white/15 border border-white/5 hover:border-white/20 hover:shadow-[0_0_15px_rgba(255,255,255,0.08)]'
                 }`}
                 style={{ WebkitAppRegion: 'no-drag' }}
                 title="设置"
               >
-                <svg className="w-5 h-5 transition-colors duration-300 group-hover:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 transition-colors duration-300 group-hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>

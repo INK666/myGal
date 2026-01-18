@@ -475,7 +475,7 @@ function SettingsModal({
                 {currentPaths.map((rootPath) => (
                   <div 
                     key={rootPath.id} 
-                    className="flex items-center justify-between p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 hover:border-indigo-700/50 transition-all"
+                    className="flex items-center justify-between p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 hover:border-white/20 transition-all"
                   >
                     <div className="flex-1 min-w-0">
                       <p className="text-gray-300 font-medium break-all text-sm">{rootPath.path}</p>
@@ -723,7 +723,7 @@ function SettingsModal({
                 type="button"
                 onClick={handleRestoreAllIgnored}
                 disabled={restoreLoading || ignoredLoading || ignoredItems.length === 0}
-                className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium py-2.5 px-4 rounded-xl hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-350 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white/10 text-white font-medium py-2.5 px-4 rounded-xl hover:bg-white/15 transition-all duration-350 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 全部恢复
               </button>
@@ -765,6 +765,7 @@ function SettingsModal({
 
             <div className="mt-4 flex items-center justify-between gap-3">
               <div className="text-xs text-gray-500">
+                {/* 仅"移除记录"的游戏会加入忽略列表，"彻底删除"的游戏无法恢复 */}
                 删除游戏不会删本地文件，只是加入忽略列表
               </div>
               <button

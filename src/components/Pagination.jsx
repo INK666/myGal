@@ -30,13 +30,13 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
 
   return (
     <div className={`flex justify-center items-center gap-6 ${floating ? '' : 'mt-12 pb-12'}`}>
-      <div className="flex items-center gap-2 bg-gray-900/40 p-1 rounded-2xl border border-gray-800/50 backdrop-blur-sm shadow-xl">
+      <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/5 backdrop-blur-sm shadow-xl">
         {/* 首页 */}
         <button
           onClick={() => onPageChange(1)}
           disabled={currentPage === 1}
           title="首页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+          className="p-2.5 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
@@ -48,7 +48,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage === 1}
           title="上一页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+          className="p-2.5 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -61,11 +61,11 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
             <>
               <button
                 onClick={() => onPageChange(1)}
-                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+                className="w-10 h-10 rounded-xl text-sm font-medium bg-white/5 text-gray-400 hover:bg-white/10 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
               >
                 1
               </button>
-              {startPage > 2 && <span className="text-gray-600 px-1 font-bold">...</span>}
+              {startPage > 2 && <span className="text-gray-500 px-1 font-bold">...</span>}
             </>
           )}
 
@@ -73,10 +73,10 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
             <button
               key={page}
               onClick={() => onPageChange(page)}
-              className={`w-10 h-10 rounded-xl text-sm font-bold transition-all transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 ${
+              className={`w-10 h-10 rounded-xl text-sm font-bold transition-all transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${
                 currentPage === page
-                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/30'
-                  : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700 hover:text-white'
+                  ? 'bg-white text-slate-900 shadow-lg shadow-white/10'
+                  : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
               }`}
             >
               {page}
@@ -85,10 +85,10 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
 
           {endPage < totalPages && (
             <>
-              {endPage < totalPages - 1 && <span className="text-gray-600 px-1 font-bold">...</span>}
+              {endPage < totalPages - 1 && <span className="text-gray-500 px-1 font-bold">...</span>}
               <button
                 onClick={() => onPageChange(totalPages)}
-                className="w-10 h-10 rounded-xl text-sm font-medium bg-gray-800/50 text-gray-400 hover:bg-gray-700 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+                className="w-10 h-10 rounded-xl text-sm font-medium bg-white/5 text-gray-400 hover:bg-white/10 transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
               >
                 {totalPages}
               </button>
@@ -101,7 +101,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage === totalPages}
           title="下一页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+          className="p-2.5 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -113,7 +113,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
           onClick={() => onPageChange(totalPages)}
           disabled={currentPage === totalPages}
           title="末页"
-          className="p-2.5 rounded-xl bg-gray-800/50 text-gray-400 hover:bg-gray-700 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70"
+          className="p-2.5 rounded-xl bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-20 disabled:cursor-not-allowed transition-all hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
@@ -121,7 +121,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
         </button>
 
         {/* 分隔线 */}
-        <div className="w-px h-6 bg-gray-800 mx-2"></div>
+        <div className="w-px h-6 bg-white/10 mx-2"></div>
 
         {/* 跳转页面 */}
         <form onSubmit={handleJump} className="flex items-center gap-2 pr-2">
@@ -131,12 +131,12 @@ const Pagination = ({ currentPage, totalPages, onPageChange, floating = false })
             max={totalPages}
             value={jumpPage}
             onChange={(e) => setJumpPage(e.target.value)}
-            className="w-14 bg-gray-800/80 border border-gray-700/50 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all text-center placeholder-gray-600"
+            className="w-14 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all text-center placeholder-gray-500"
             placeholder={currentPage}
           />
           <button
             type="submit"
-            className="bg-indigo-600/90 hover:bg-indigo-600 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg transition-all shadow-md active:scale-95 uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+            className="bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg transition-all shadow-md active:scale-95 uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
           >
             Go
           </button>

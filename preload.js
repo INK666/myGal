@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateGamePinned: (gameId, pinned) => ipcRenderer.invoke('update-game-pinned', gameId, pinned),
   updateGameCover: (gameId, coverPath) => ipcRenderer.invoke('update-game-cover', gameId, coverPath),
   scrapeGameCover: (gameId) => ipcRenderer.invoke('scrape-game-cover', gameId),
-  deleteGame: (gameId) => ipcRenderer.invoke('delete-game', gameId),
+  deleteGame: (gameId, deleteFiles) => ipcRenderer.invoke('delete-game', gameId, deleteFiles),
   getTags: () => ipcRenderer.invoke('get-tags'),
   createTag: (name, color) => ipcRenderer.invoke('create-tag', name, color),
   updateTag: (tagId, name, color) => ipcRenderer.invoke('update-tag', tagId, name, color),

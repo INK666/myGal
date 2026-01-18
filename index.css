@@ -10,7 +10,7 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  background: #0f172a; /* Slate 950 - Neutral Dark */
   min-height: 100vh;
   color: #e2e8f0;
 }
@@ -20,16 +20,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1e1e3f;
+  background: #020617; /* Slate 950 darker */
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #4f46e5;
+  background: #475569; /* Slate 600 */
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #6366f1;
+  background: #64748b; /* Slate 500 */
 }
 
 .hide-scrollbar {
