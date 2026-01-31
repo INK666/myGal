@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, shell, protocol, screen, desktopCap
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { Worker } = require('worker_threads');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
 
@@ -1404,58 +1405,82 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   let totalImported = 0;
   const importedGameIds = [];
   
-  // 从每个根目录导入游戏
-  for (const rootPath of rootPaths) {
-    const refreshedAt = Date.now();
-    const entries = fs.readdirSync(rootPath.path, { withFileTypes: true });
+  // 优化：异步并发扫描根目录，限制并发数为 4
+  const batchSize = 4;
+  const allScannedGames = [];
+  
+  for (let i = 0; i < rootPaths.length; i += batchSize) {
+    const batch = rootPaths.slice(i, i + batchSize);
     
-    const gameItems = entries
-      .filter(entry => {
-        if (entry.isDirectory()) {
-          return true;
+    // 并发扫描这一批根目录
+    const batchResults = await Promise.all(
+      batch.map(async (rootPath) => {
+        try {
+          const entries = await fs.promises.readdir(rootPath.path, { withFileTypes: true });
+          const gameItems = entries
+            .filter(entry => {
+              if (entry.isDirectory()) {
+                return true;
+              }
+              if (entry.isFile()) {
+                const lower = entry.name.toLowerCase();
+                if (lower.startsWith('.')) return false;
+                if (lower === 'desktop.ini') return false;
+                if (lower === 'thumbs.db') return false;
+                return true;
+              }
+              return false;
+            })
+            .map(entry => entry.name);
+          
+          return { rootPath, gameItems, success: true };
+        } catch (error) {
+          console.error(`Failed to scan root path ${rootPath.path}:`, error);
+          return { rootPath, gameItems: [], success: false };
         }
-        if (entry.isFile()) {
-          const lower = entry.name.toLowerCase();
-          if (lower.startsWith('.')) return false;
-          if (lower === 'desktop.ini') return false;
-          if (lower === 'thumbs.db') return false;
-          return true;
-        }
-        return false;
       })
-      .map(entry => entry.name);
+    );
     
-    gameItems.forEach(name => {
-      const gamePath = path.join(rootPath.path, name);
-      if (isIgnoredPathStmt.get(gamePath)) {
-        return;
-      }
-      const existing = findGameByPathStmt.get(gamePath, gamePath);
+    // 处理这一批扫描结果
+    for (const { rootPath, gameItems, success } of batchResults) {
+      if (!success) continue;
       
-      if (existing) {
-        updateGameNameStmt.run(name, existing.id);
-        const info = insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
-        if ((info?.changes || 0) > 0) {
-          updateImportedAtStmt.run(refreshedAt, existing.id);
+      const refreshedAt = Date.now();
+      
+      gameItems.forEach(name => {
+        const gamePath = path.join(rootPath.path, name);
+        if (isIgnoredPathStmt.get(gamePath)) {
+          return;
         }
-      } else {
-        const existingByName = findScannedGameByNameStmt.get(name);
-        if (existingByName) {
-          const info = insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+        const existing = findGameByPathStmt.get(gamePath, gamePath);
+        
+        if (existing) {
+          updateGameNameStmt.run(name, existing.id);
+          const info = insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
           if ((info?.changes || 0) > 0) {
-            updateImportedAtStmt.run(refreshedAt, existingByName.id);
+            updateImportedAtStmt.run(refreshedAt, existing.id);
           }
         } else {
-          const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
-          insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
-          importedGameIds.push(result.lastInsertRowid);
+          const existingByName = findScannedGameByNameStmt.get(name);
+          if (existingByName) {
+            const info = insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+            if ((info?.changes || 0) > 0) {
+              updateImportedAtStmt.run(refreshedAt, existingByName.id);
+            }
+          } else {
+            const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
+            insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
+            importedGameIds.push(result.lastInsertRowid);
+          }
+          totalImported++;
         }
-        totalImported++;
-      }
-    });
+      });
 
-    updateRootLastRefreshedAtStmt.run(refreshedAt, rootPath.id);
+      updateRootLastRefreshedAtStmt.run(refreshedAt, rootPath.id);
+    }
   }
+  
+  // ========== 使用 Worker 线程检查文件 ==========
   
   const allGames = db.prepare('SELECT id, path, root_path_id FROM games').all();
   let totalDeleted = 0;
@@ -1470,45 +1495,135 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
     return validRootPaths.some(rp => rp.id === rootPathId);
   };
 
-  allGames.forEach(game => {
-    const paths = db.prepare('SELECT id, path, root_path_id, created_at FROM game_paths WHERE game_id = ?').all(game.id);
-    const pathList = paths.length > 0 ? paths : [{ id: null, path: game.path, root_path_id: game.root_path_id, created_at: null }];
+  // 一次性获取所有游戏路径
+  const allGamePaths = db.prepare(`
+    SELECT game_id, id, path, root_path_id, created_at 
+    FROM game_paths
+  `).all();
 
-    const validPaths = pathList.filter(p => {
-      if (!p.path || !fs.existsSync(p.path)) {
-        return false;
-      }
-      return hasValidRoot(p.root_path_id);
-    });
-
-    if (validPaths.length === 0) {
-      const row = db.prepare('SELECT cover_path FROM games WHERE id = ?').get(game.id);
-      safeUnlinkCover(row?.cover_path);
-      db.prepare('DELETE FROM games WHERE id = ?').run(game.id);
-      totalDeleted++;
-      return;
+  // 按 game_id 分组
+  const pathsByGameId = new Map();
+  allGamePaths.forEach(p => {
+    if (!pathsByGameId.has(p.game_id)) {
+      pathsByGameId.set(p.game_id, []);
     }
+    pathsByGameId.get(p.game_id).push(p);
+  });
 
-    validPaths.sort((a, b) => {
-      const aManualScore = a.root_path_id === null || a.root_path_id === undefined ? 1 : 0;
-      const bManualScore = b.root_path_id === null || b.root_path_id === undefined ? 1 : 0;
-      if (aManualScore !== bManualScore) {
-        return bManualScore - aManualScore;
+  // 收集所有需要检查的路径
+  const pathsToCheck = [];
+  const pathCheckMap = new Map();
+  
+  allGames.forEach(game => {
+    const paths = pathsByGameId.get(game.id) || [];
+    const pathList = paths.length > 0 ? paths : [{ 
+      id: null, 
+      path: game.path, 
+      root_path_id: game.root_path_id, 
+      created_at: null 
+    }];
+
+    pathList.forEach(p => {
+      if (p.path) {
+        pathsToCheck.push(p.path);
+        if (!pathCheckMap.has(p.path)) {
+          pathCheckMap.set(p.path, []);
+        }
+        pathCheckMap.get(p.path).push({ gameId: game.id, pathInfo: p });
       }
-      const aCreated = a.created_at || '';
-      const bCreated = b.created_at || '';
-      if (aCreated !== bCreated) {
-        return bCreated.localeCompare(aCreated);
-      }
-      const aId = a.id || 0;
-      const bId = b.id || 0;
-      return bId - aId;
+    });
+  });
+
+  // 使用 Worker 线程异步检查文件（完全不阻塞主进程）
+  const pathExistsMap = await new Promise((resolve, reject) => {
+    const workerPath = path.join(__dirname, 'workers', 'pathChecker.js');
+    const worker = new Worker(workerPath, {
+      workerData: { paths: pathsToCheck }
     });
 
-    const primary = validPaths[0];
-    db.prepare('UPDATE games SET path = ?, root_path_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(primary.path, primary.root_path_id, game.id);
+    worker.on('message', (msg) => {
+      if (msg.type === 'progress') {
+        // 可以在这里发送进度事件给前端
+        // event.sender.send('import-progress', msg);
+      } else if (msg.type === 'complete') {
+        resolve(new Map(Object.entries(msg.results)));
+        worker.terminate();
+      } else if (msg.type === 'error') {
+        reject(new Error(msg.error));
+        worker.terminate();
+      }
+    });
+
+    worker.on('error', (error) => {
+      reject(error);
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
+      }
+    });
   });
+
+  // 使用检查结果处理游戏
+  // 优化：收集要删除的封面，避免在事务中进行文件 I/O
+  const coversToDelete = [];
+  
+  // 优化：预先准备 SQL 语句
+  const selectCoverStmt = db.prepare('SELECT cover_path FROM games WHERE id = ?');
+  const deleteGameStmt = db.prepare('DELETE FROM games WHERE id = ?');
+  const updateGameStmt = db.prepare('UPDATE games SET path = ?, root_path_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+  
+  // 优化：使用事务批量处理所有数据库操作（关键优化！）
+  db.transaction(() => {
+    allGames.forEach(game => {
+      const paths = pathsByGameId.get(game.id) || [];
+      const pathList = paths.length > 0 ? paths : [{ 
+        id: null, 
+        path: game.path, 
+        root_path_id: game.root_path_id, 
+        created_at: null 
+      }];
+
+      const validPaths = pathList.filter(p => {
+        if (!p.path) return false;
+        if (!pathExistsMap.get(p.path)) return false;
+        return hasValidRoot(p.root_path_id);
+      });
+
+      if (validPaths.length === 0) {
+        const row = selectCoverStmt.get(game.id);
+        if (row?.cover_path) {
+          coversToDelete.push(row.cover_path);
+        }
+        deleteGameStmt.run(game.id);
+        totalDeleted++;
+        return;
+      }
+
+      validPaths.sort((a, b) => {
+        const aManualScore = a.root_path_id === null || a.root_path_id === undefined ? 1 : 0;
+        const bManualScore = b.root_path_id === null || b.root_path_id === undefined ? 1 : 0;
+        if (aManualScore !== bManualScore) {
+          return bManualScore - aManualScore;
+        }
+        const aCreated = a.created_at || '';
+        const bCreated = b.created_at || '';
+        if (aCreated !== bCreated) {
+          return bCreated.localeCompare(aCreated);
+        }
+        const aId = a.id || 0;
+        const bId = b.id || 0;
+        return bId - aId;
+      });
+
+      const primary = validPaths[0];
+      updateGameStmt.run(primary.path, primary.root_path_id, game.id);
+    });
+  })();  // 事务结束，一次性提交所有更改
+  
+  // 事务完成后再删除封面文件（不阻塞数据库操作）
+  coversToDelete.forEach(p => safeUnlinkCover(p));
 
   return { success: true, imported: totalImported, deleted: totalDeleted, importedGameIds };
 });

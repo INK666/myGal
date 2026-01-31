@@ -46,6 +46,8 @@ function SettingsModal({
   const [refreshingRootId, setRefreshingRootId] = useState(null);
   const projectBackgroundSettingKey = 'projectBackgroundPath';
   const [projectBackgroundPath, setProjectBackgroundPath] = useState('');
+  const [showDeleteRootConfirm, setShowDeleteRootConfirm] = useState(false);
+  const [rootPathToDelete, setRootPathToDelete] = useState(null);
 
   // 3秒后自动清除状态消息
   useEffect(() => {
@@ -260,6 +262,13 @@ function SettingsModal({
     } else {
       showStatus('error', '删除根目录失败');
     }
+    setShowDeleteRootConfirm(false);
+    setRootPathToDelete(null);
+  };
+
+  const handleDeleteRootClick = (rootPath) => {
+    setRootPathToDelete(rootPath);
+    setShowDeleteRootConfirm(true);
   };
 
   const handleResetData = async () => {
@@ -505,7 +514,7 @@ function SettingsModal({
                         </svg>
                       </button>
                       <button
-                        onClick={() => handleDeletePath(rootPath.id)}
+                        onClick={() => handleDeleteRootClick(rootPath)}
                         disabled={refreshingAll || refreshingRootId !== null || resetLoading}
                         className="p-2 text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-all disabled:opacity-50"
                         title="删除根目录"
@@ -678,6 +687,49 @@ function SettingsModal({
                 className="flex-1 bg-gradient-to-r from-red-600 to-pink-600 text-white font-medium py-2.5 rounded-xl hover:shadow-lg hover:shadow-red-600/30 transition-all transform active:scale-95 disabled:opacity-60"
               >
                 {resetLoading ? '正在删除...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteRootConfirm && rootPathToDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+            <div className="flex items-center gap-3 text-orange-400 mb-4">
+              <div className="p-3 bg-orange-500/10 rounded-xl">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-bold text-white">删除根目录？</h3>
+            </div>
+            <div className="mb-6">
+              <p className="text-gray-400 text-sm mb-3 leading-relaxed">
+                确定要删除以下根目录吗？
+              </p>
+              <div className="p-3 bg-gray-850/80 rounded-xl border border-gray-800/80">
+                <p className="text-gray-300 font-medium text-sm break-all">{rootPathToDelete.path}</p>
+              </div>
+              <p className="text-gray-500 text-xs mt-3 leading-relaxed">
+                删除后，该根目录下的所有游戏记录将被移除（不会删除本地文件）
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowDeleteRootConfirm(false);
+                  setRootPathToDelete(null);
+                }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-2.5 rounded-xl transition-all"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => handleDeletePath(rootPathToDelete.id)}
+                className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 text-white font-medium py-2.5 rounded-xl hover:shadow-lg hover:shadow-orange-600/30 transition-all transform active:scale-95"
+              >
+                确认删除
               </button>
             </div>
           </div>
