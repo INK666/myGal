@@ -671,10 +671,53 @@ const tryBangumiCover = async (title) => {
 };
 
 const tryDlsiteCover = async (title) => {
-  const match = String(title || '').match(/((?:RJ|VJ|BJ|RE)\d{6,8})/i);
-  const workno = match?.[1] ? match[1].toUpperCase() : '';
-  if (!workno) return null;
+  // DLsite 特殊处理：只通过作品编号刮削，不进行名称搜索
+  // 常见格式：
+  // [VJ01001150][HolicWorks] 水都は薄明
+  // (RJ298544) [あきらめ部] 魔法少女ルミエ v1.02
+  // [RJ288122][CANDY VOICE] ねこぐらし。
+  
+  const titleStr = String(title || '');
+  
+  // 从各种括号和位置中提取编号
+  const patterns = [
+    // 匹配方括号内的编号：[RJ123456] 或 [VJ01001150]
+    /\[((?:RJ|VJ|BJ|RE)\d{6,8})\]/i,
+    // 匹配圆括号内的编号：(RJ123456)
+    /\(((?:RJ|VJ|BJ|RE)\d{6,8})\)/i,
+    // 匹配任意位置的编号（不在括号内）
+    /((?:RJ|VJ|BJ|RE)\d{6,8})/i
+  ];
+  
+  let workno = '';
+  for (const pattern of patterns) {
+    const match = titleStr.match(pattern);
+    if (match && match[1]) {
+      workno = match[1].toUpperCase();
+      console.log(`[DLsite] 从标题中提取到编号: ${workno}`);
+      break;
+    }
+  }
+  
+  // 如果有作品编号，直接用编号查询
+  if (workno) {
+    const result = await tryDlsiteByWorkno(workno);
+    if (result) {
+      console.log(`[DLsite] 通过编号成功获取: ${workno}`);
+      return result;
+    } else {
+      console.log(`[DLsite] 编号 ${workno} 查询失败`);
+    }
+  } else {
+    console.log(`[DLsite] 未找到编号，跳过刮削（DLsite 必须有 RJ/VJ/BJ/RE 编号）`);
+  }
+  
+  // DLsite 不进行名称搜索，避免错误匹配
+  return null;
+};
 
+// 通过作品编号查询（原有逻辑）
+const tryDlsiteByWorkno = async (workno) => {
   const pickObject = (value) => {
     if (!value) return null;
     if (Array.isArray(value)) return value[0] || null;
@@ -727,14 +770,14 @@ const tryDlsiteCover = async (title) => {
     Accept: 'application/json'
   };
 
-  const locales = ['zh_cn', 'ja_jp', 'en_us'];
-  const sections = ['maniax', 'home', 'pro'];
+  const locales = ['ja_jp', 'zh_cn', 'en_us'];  // 优先日语
+  const sections = ['maniax', 'girls-pro', 'home', 'pro'];  // 添加 girls-pro (女性向BL区)
 
   const fetchOne = async (section, locale) => {
     const apiUrl = `https://www.dlsite.com/${section}/api/=/product.json?workno=${encodeURIComponent(workno)}&locale=${encodeURIComponent(locale)}`;
     let res = null;
     try {
-      res = await fetchWithTimeout(apiUrl, { headers }, 18000);
+      res = await fetchWithTimeout(apiUrl, { headers }, 10000);
     } catch {
       return null;
     }
@@ -772,6 +815,7 @@ const tryDlsiteCover = async (title) => {
     return { provider: 'DLsite', url: urlOut, vendors };
   };
 
+  // 优先尝试成人区（maniax），因为大部分游戏在这里
   for (const section of sections) {
     for (const locale of locales) {
       const result = await fetchOne(section, locale);
@@ -779,6 +823,106 @@ const tryDlsiteCover = async (title) => {
     }
   }
 
+  return null;
+};
+
+// 通过名称搜索（新增功能）
+const tryDlsiteByName = async (title) => {
+  if (!title || !title.trim()) return null;
+  
+  // 清理标题：移除常见的文件扩展名、括号内容等
+  let cleanTitle = title.trim()
+    .replace(/\.(zip|rar|7z|exe)$/i, '')  // 移除文件扩展名
+    .replace(/\[.*?\]/g, '')  // 移除方括号内容
+    .replace(/\(.*?\)/g, '')  // 移除圆括号内容
+    .replace(/【.*?】/g, '')  // 移除中文书名号内容
+    .trim();
+  
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'ja,zh-CN,zh;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br'
+  };
+
+  // 尝试多个分区和搜索策略（保守策略：只用完整标题）
+  const searchStrategies = [
+    { section: 'girls-pro', keyword: cleanTitle },  // 优先女性向BL区
+    { section: 'maniax', keyword: cleanTitle },
+    { section: 'home', keyword: cleanTitle },
+    // 如果清理后的标题和原标题不同，也尝试原标题
+    ...(cleanTitle !== title.trim() ? [
+      { section: 'girls-pro', keyword: title.trim() },
+      { section: 'maniax', keyword: title.trim() },
+      { section: 'home', keyword: title.trim() }
+    ] : [])
+  ];
+  
+  for (const { section, keyword } of searchStrategies) {
+    try {
+      // 使用更简单的搜索URL格式
+      const searchUrl = `https://www.dlsite.com/${section}/fsr/=/language/jp/keyword/${encodeURIComponent(keyword)}/order/trend`;
+      
+      console.log(`[DLsite] 搜索: ${keyword} (${section})`);
+      
+      const res = await fetchWithTimeout(searchUrl, { 
+        headers,
+        redirect: 'follow'
+      }, 10000);
+      
+      if (!res?.ok) {
+        console.log(`[DLsite] 搜索失败 (HTTP ${res?.status}): ${keyword}`);
+        continue;
+      }
+      
+      const html = await res.text();
+      
+      // 尝试多种正则模式来匹配作品编号
+      const patterns = [
+        // 模式1：标准的作品链接
+        /\/work\/=\/product_id\/((?:RJ|VJ|BJ|RE)\d{6,8})\.html/gi,
+        // 模式2：直接的作品ID（可能在data属性中）
+        /product_id["\s:=]+((?:RJ|VJ|BJ|RE)\d{6,8})/gi,
+        // 模式3：作品页面链接的另一种格式
+        /\/((?:RJ|VJ|BJ|RE)\d{6,8})\.html/gi
+      ];
+      
+      let foundWorknos = new Set();
+      
+      for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(html)) !== null) {
+          if (match[1]) {
+            foundWorknos.add(match[1].toUpperCase());
+          }
+        }
+      }
+      
+      console.log(`[DLsite] 找到 ${foundWorknos.size} 个作品编号`);
+      
+      // 只尝试第一个作品编号（最相关的结果）
+      const worknos = Array.from(foundWorknos).slice(0, 1);
+      for (const workno of worknos) {
+        console.log(`[DLsite] 尝试作品编号: ${workno}`);
+        const result = await tryDlsiteByWorkno(workno);
+        if (result) {
+          console.log(`[DLsite] 成功获取封面: ${workno}`);
+          return result;
+        }
+      }
+      
+      if (foundWorknos.size === 0) {
+        console.log(`[DLsite] 未找到作品编号，可能没有搜索结果`);
+      }
+      
+    } catch (error) {
+      console.error(`[DLsite] 搜索异常 (${section}):`, error.message);
+      continue;
+    }
+  }
+  
+  console.log(`[DLsite] 所有搜索策略均失败: ${title}`);
+  console.log(`[DLsite] 提示：DLsite 搜索索引可能不完整，建议在文件名中包含作品编号（RJ/VJ/BJ/RE + 数字）`);
   return null;
 };
 
@@ -2011,24 +2155,59 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
 
   try {
     let found = null;
+    let dlsiteTriedFirst = false;
 
-    for (const query of candidates) {
-      tried.length = 0;
-      for (const p of providerFns) {
-        tried.push(p.name);
-        try {
-          const result = await p.fn(query);
-          if (result?.url) {
-            attempts.push({ query, provider: p.name, ok: true });
-            found = { ...result, query };
-            break;
+    // 特殊处理：如果是 DLsite 游戏（包含编号）且 DLsite 已启用，优先用 DLsite 刮削
+    const dlsiteEnabled = getBooleanSetting(providerToggleKeyByName.DLsite, providerDefaultEnabledByName.DLsite);
+    const hasWorkNo = candidates.some((t) => /((?:RJ|VJ|BJ|RE)\d{6,8})/i.test(String(t || '')));
+    
+    if (dlsiteEnabled && hasWorkNo) {
+      console.log('[刮削] 检测到 DLsite 编号，优先使用 DLsite 刮削');
+      dlsiteTriedFirst = true;
+      
+      for (const query of candidates) {
+        // 只对包含编号的 query 尝试 DLsite
+        if (/((?:RJ|VJ|BJ|RE)\d{6,8})/i.test(String(query || ''))) {
+          tried.push('DLsite');
+          try {
+            const result = await tryDlsiteCover(query);
+            if (result?.url) {
+              attempts.push({ query, provider: 'DLsite', ok: true });
+              found = { ...result, query };
+              console.log(`[刮削] DLsite 成功: ${query}`);
+              break;
+            }
+            attempts.push({ query, provider: 'DLsite', ok: false, error: 'not_found' });
+          } catch (e) {
+            attempts.push({ query, provider: 'DLsite', ok: false, error: e?.message || String(e) });
           }
-          attempts.push({ query, provider: p.name, ok: false, error: 'not_found' });
-        } catch (e) {
-          attempts.push({ query, provider: p.name, ok: false, error: e?.message || String(e) });
         }
       }
-      if (found?.url) break;
+    }
+
+    // 如果 DLsite 没有找到，或者不是 DLsite 游戏，使用常规流程
+    if (!found?.url) {
+      for (const query of candidates) {
+        tried.length = 0;
+        for (const p of providerFns) {
+          // 如果 DLsite 已经在上面优先尝试过了，这里跳过
+          if (p.name === 'DLsite' && dlsiteTriedFirst) continue;
+          
+          tried.push(p.name);
+          try {
+            const result = await p.fn(query);
+            if (result?.url) {
+              attempts.push({ query, provider: p.name, ok: true });
+              found = { ...result, query };
+              break;
+            }
+            attempts.push({ query, provider: p.name, ok: false, error: 'not_found' });
+          } catch (e) {
+            attempts.push({ query, provider: p.name, ok: false, error: e?.message || String(e) });
+          }
+        }
+        if (found?.url) break;
+      }
     }
 
     if (!found?.url) {
@@ -2929,7 +3108,8 @@ ipcMain.handle('launch-executable-locale-emulator', async (event, exePath, rootP
     }
 
     const leDir = path.dirname(leproc);
-    const spawned = await spawnDetachedChecked(leproc, [resolvedExe], { cwd: leDir });
+    // Locale Emulator 需要 -run 参数
+    const spawned = await spawnDetachedChecked(leproc, ['-run', resolvedExe], { cwd: leDir, windowsHide: false });
     if (!spawned.ok) {
       return { success: false, error: '启动失败：' + (spawned.error || '无法启动 LEProc.exe') };
     }
@@ -2971,7 +3151,8 @@ ipcMain.handle('launch-executable-locale-remulator', async (event, exePath, root
       return { success: false, error: '未找到 Locale Remulator 配置（LRConfig.xml 或 GUID），请先在 LREditor 中创建配置' };
     }
 
-    const spawned = await spawnDetachedChecked(lrproc, [guid, resolvedExe], { cwd: lrDir });
+    // Locale Remulator 参数：GUID + exe路径，不隐藏窗口
+    const spawned = await spawnDetachedChecked(lrproc, [guid, resolvedExe], { cwd: lrDir, windowsHide: false });
     if (!spawned.ok) {
       return { success: false, error: '启动失败：' + (spawned.error || '无法启动 LRProc.exe') };
     }
