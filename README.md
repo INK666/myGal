@@ -65,9 +65,8 @@ A根目录/
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="509" height="594" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
-
-
+ 
+<img width="400" height="500" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
 
 - 封面截图，直接截图作为游戏封面
 - 扫描文件夹内部exe文件，左键单击直接运行，右键点击弹出右键转区菜单
@@ -75,5 +74,12 @@ A根目录/
 - 打开进入游戏所在文件夹
 - 删除游戏条目（删除后不删除本地文件，只添加进ignore名单，可在配置窗口内恢复）
  
+<div align="center">
+
+**如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！**
+
+Made with ❤️ by [INK666](https://github.com/INK666)
+
+</div>
 
 
