@@ -15,9 +15,10 @@ A根目录/
 导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
 
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
-<img width="890" height="596" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
-
-<img width="893" height="602" alt="desk2" src="https://github.com/user-attachments/assets/f71076c6-2e0f-4126-8140-533eccb91359" />
+<div align="center">
+<img width="400" height="302" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
+<img width="403" height="302" alt="desk2" src="https://github.com/user-attachments/assets/f71076c6-2e0f-4126-8140-533eccb91359" />
+</div>
 
 
 ## 主要功能
