@@ -19,7 +19,7 @@ A根目录/
 刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
 <div align="center">
 <img width="400" height="302" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
-<img width="403" height="302" alt="desk2" src="https://github.com/user-attachments/assets/f71076c6-2e0f-4126-8140-533eccb91359" />
+<img width="400" height="302" alt="2" src="https://github.com/user-attachments/assets/9a2c625d-a9bf-4cc4-90ce-064d17f92c40" />
 </div>
 
 
