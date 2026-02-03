@@ -13,10 +13,11 @@ A根目录/
       ├── 游戏3/              
       ├── 游戏4.zip     
       └── 游戏5.jpg  
+      └── [VJ123456]游戏5.rar 
   
-导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
+导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg 、[VJ123456]游戏5.rar 
 
-刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
+刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5、VJ123456
 <div align="center">
 <img width="400" height="302" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
 <img width="400" height="302" alt="2" src="https://github.com/user-attachments/assets/9a2c625d-a9bf-4cc4-90ce-064d17f92c40" />
