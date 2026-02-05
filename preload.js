@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  selectDirectories: () => ipcRenderer.invoke('select-directories'),
   selectCover: () => ipcRenderer.invoke('select-cover'),
   selectBackground: () => ipcRenderer.invoke('select-background'),
   getSettings: () => ipcRenderer.invoke('get-settings'),

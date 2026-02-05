@@ -48,6 +48,9 @@ function SettingsModal({
   const [projectBackgroundPath, setProjectBackgroundPath] = useState('');
   const [showDeleteRootConfirm, setShowDeleteRootConfirm] = useState(false);
   const [rootPathToDelete, setRootPathToDelete] = useState(null);
+  const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkImportFailures, setBulkImportFailures] = useState([]);
+  const [showBulkImportResult, setShowBulkImportResult] = useState(false);
 
   // 更新检测相关状态
   const [currentVersion, setCurrentVersion] = useState('');
@@ -176,9 +179,30 @@ function SettingsModal({
   };
 
   const handleSelectFolder = async () => {
-    const selectedPath = await window.electronAPI.selectDirectory();
-    if (selectedPath) {
-      setNewPath(selectedPath);
+    try {
+      if (!window.electronAPI?.selectDirectory) {
+        showStatus('error', '当前环境不支持选择目录');
+        return;
+      }
+
+      if (window.electronAPI.selectDirectories) {
+        const selectedPaths = await window.electronAPI.selectDirectories();
+        if (Array.isArray(selectedPaths)) {
+          if (selectedPaths.length === 0) return;
+          if (selectedPaths.length === 1) {
+            setNewPath(selectedPaths[0]);
+            return;
+          }
+          setNewPath('');
+          await handleBulkAddPaths(selectedPaths);
+          return;
+        }
+      }
+
+      const selectedPath = await window.electronAPI.selectDirectory();
+      if (selectedPath) setNewPath(selectedPath);
+    } catch (error) {
+      showStatus('error', '选择目录失败：' + (error?.message || String(error)));
     }
   };
 
@@ -257,6 +281,96 @@ function SettingsModal({
     } catch (error) {
       setNewGamePath('');
       showStatus('error', '添加游戏失败：' + error.message);
+    }
+  };
+
+  const handleBulkAddPaths = async (selectedPaths) => {
+    if (bulkImportLoading) return;
+    if (!window.electronAPI?.addRootPath) {
+      showStatus('error', '当前环境不支持添加根目录');
+      return;
+    }
+
+    const normalized = (Array.isArray(selectedPaths) ? selectedPaths : [])
+      .map((p) => String(p ?? '').trim())
+      .filter(Boolean);
+
+    if (normalized.length === 0) return;
+
+    const existing = new Set((currentPaths || []).map((p) => p?.path).filter(Boolean));
+    const seen = new Set();
+    const toAdd = [];
+    const failures = [];
+
+    for (const p of normalized) {
+      if (seen.has(p)) {
+        failures.push({ path: p, reason: '本次选择重复' });
+        continue;
+      }
+      seen.add(p);
+      if (existing.has(p)) {
+        failures.push({ path: p, reason: '已存在' });
+        continue;
+      }
+      toAdd.push(p);
+    }
+
+    if (toAdd.length === 0) {
+      if (failures.length > 0) {
+        setBulkImportFailures(failures);
+        setShowBulkImportResult(true);
+      }
+      return;
+    }
+
+    setBulkImportLoading(true);
+    try {
+      const newRootIds = [];
+
+      for (const p of toAdd) {
+        try {
+          const result = await window.electronAPI.addRootPath(p);
+          if (result?.success) {
+            const newRootId = Number.parseInt(String(result.id), 10);
+            if (Number.isFinite(newRootId)) newRootIds.push(newRootId);
+          } else {
+            failures.push({ path: p, reason: '添加失败：' + (result?.error || '未知错误') });
+          }
+        } catch (error) {
+          failures.push({ path: p, reason: '添加失败：' + (error?.message || String(error)) });
+        }
+      }
+
+      if (newRootIds.length > 0) {
+        try {
+          const scopeKey = 'bulkScrapeScopeRootPathIds';
+          const settings = await window.electronAPI.getSettings?.();
+          const raw = settings?.[scopeKey];
+          if (!(raw === null || raw === undefined || String(raw).trim() === '')) {
+            const parsed = JSON.parse(String(raw));
+            if (Array.isArray(parsed)) {
+              const includeOthers = parsed.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+              const existingIds = parsed
+                .map((v) => Number.parseInt(String(v), 10))
+                .filter((n) => Number.isFinite(n));
+              const nextIds = [...new Set([...existingIds, ...newRootIds])].sort((a, b) => a - b);
+              const nextScope = [...nextIds, ...(includeOthers ? ['others'] : [])];
+              await window.electronAPI.saveSetting?.(scopeKey, JSON.stringify(nextScope));
+            }
+          }
+        } catch { }
+      }
+
+      if (newRootIds.length > 0) {
+        onSave?.();
+      }
+    } finally {
+      setBulkImportLoading(false);
+    }
+
+    if (failures.length > 0) {
+      setBulkImportFailures(failures);
+      setShowBulkImportResult(true);
     }
   };
 
@@ -544,7 +658,7 @@ function SettingsModal({
                 <p className="text-gray-400 text-sm">暂无根目录，请添加游戏根目录</p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3 max-h-[40vh] overflow-y-auto overflow-x-hidden pr-1">
                 {currentPaths.map((rootPath) => (
                   <div
                     key={rootPath.id}
@@ -613,16 +727,17 @@ function SettingsModal({
               />
               <button
                 onClick={handleSelectFolder}
+                disabled={bulkImportLoading || refreshingAll || refreshingRootId !== null || resetLoading}
                 className="bg-gray-800 hover:bg-gray-700 text-white font-medium py-2.5 px-4 rounded-xl flex items-center gap-2 transition-all duration-350 hover:shadow-lg transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
-                选择
+                {bulkImportLoading ? '导入中...' : '选择'}
               </button>
               <button
                 onClick={handleAddPath}
-                disabled={!newPath}
+                disabled={!newPath || bulkImportLoading || refreshingAll || refreshingRootId !== null || resetLoading}
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium py-2.5 px-4 rounded-xl flex items-center gap-2 hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-350 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -773,6 +888,64 @@ function SettingsModal({
               }`}
           >
             {status.message}
+          </div>
+        </div>
+      )}
+
+      {showBulkImportResult && bulkImportFailures.length > 0 && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-red-500/10 rounded-xl text-red-400">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">部分根目录导入失败</h3>
+                  <div className="text-xs text-gray-400 mt-1">失败 {bulkImportFailures.length} 项（成功的不提示）</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkImportResult(false);
+                  setBulkImportFailures([]);
+                }}
+                className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 hover:text-white transition-all"
+                title="关闭"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="max-h-80 overflow-y-auto border border-gray-800/80 rounded-xl">
+              {bulkImportFailures.map((item, idx) => (
+                <div
+                  key={`${item.path}__${idx}`}
+                  className={`px-4 py-3 ${idx === 0 ? '' : 'border-t border-gray-800/80'}`}
+                >
+                  <div className="text-sm text-gray-200 break-all font-mono">{item.path}</div>
+                  <div className="text-xs text-red-300 mt-1">{item.reason}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkImportResult(false);
+                  setBulkImportFailures([]);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 hover:text-white transition-all text-sm font-medium"
+              >
+                知道了
+              </button>
+            </div>
           </div>
         </div>
       )}

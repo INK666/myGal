@@ -1199,6 +1199,15 @@ ipcMain.handle('select-directory', async () => {
   return null;
 });
 
+ipcMain.handle('select-directories', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'multiSelections']
+  });
+
+  if (result.canceled) return [];
+  return Array.isArray(result.filePaths) ? result.filePaths : [];
+});
+
 ipcMain.handle('select-cover', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
