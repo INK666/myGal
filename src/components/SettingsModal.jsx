@@ -49,6 +49,12 @@ function SettingsModal({
   const [showDeleteRootConfirm, setShowDeleteRootConfirm] = useState(false);
   const [rootPathToDelete, setRootPathToDelete] = useState(null);
 
+  // 更新检测相关状态
+  const [currentVersion, setCurrentVersion] = useState('');
+  const [latestVersion, setLatestVersion] = useState(null);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
   // 3秒后自动清除状态消息
   useEffect(() => {
     if (status.message) {
@@ -109,7 +115,7 @@ function SettingsModal({
       try {
         const settings = await window.electronAPI.getSettings();
         setProjectBackgroundPath(settings?.[projectBackgroundSettingKey] ? String(settings[projectBackgroundSettingKey]) : '');
-      } catch {}
+      } catch { }
     };
     load();
   }, []);
@@ -217,7 +223,7 @@ function SettingsModal({
                 }
               }
             }
-          } catch {}
+          } catch { }
         }
         setNewPath('');
         showStatus('success', '根目录添加成功');
@@ -360,6 +366,64 @@ function SettingsModal({
     }
   };
 
+  // 检测更新
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true);
+    try {
+      const response = await fetch('https://happy-emu-21.deno.dev/check');
+      if (response.ok) {
+        const data = await response.json();
+        setLatestVersion(data.version);
+        setUpdateInfo(data);
+      }
+    } catch (err) {
+      console.error('检查更新失败', err);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  // 版本对比函数
+  const isNewerVersion = (latest, current) => {
+    if (!latest || !current) return false;
+    const l = latest.replace(/^v/i, '').split('.').map(n => parseInt(n) || 0);
+    const c = current.replace(/^v/i, '').split('.').map(n => parseInt(n) || 0);
+    for (let i = 0; i < Math.max(l.length, c.length); i++) {
+      const lNum = l[i] || 0;
+      const cNum = c[i] || 0;
+      if (lNum > cNum) return true;
+      if (lNum < cNum) return false;
+    }
+    return false;
+  };
+
+  // 组件加载时获取当前版本并检测更新
+  useEffect(() => {
+    const loadVersion = async () => {
+      try {
+        const api = window.electronAPI;
+        if (!api?.getAppVersion) return;
+        const result = await api.getAppVersion();
+        let version = '';
+        if (result && typeof result === 'object') {
+          if (result.success && result.version) {
+            version = String(result.version);
+          }
+        } else if (typeof result === 'string') {
+          version = result;
+        }
+        if (version) {
+          setCurrentVersion(version);
+          // 自动检测更新
+          await checkForUpdates();
+        }
+      } catch (err) {
+        console.error('获取版本失败', err);
+      }
+    };
+    loadVersion();
+  }, []);
+
   useEffect(() => {
     if (!showRestoreDeleted) return;
     setIgnoredFilter('');
@@ -373,8 +437,8 @@ function SettingsModal({
 
   return (
     <div className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300">
-      <div className="modal-content bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl w-full max-w-lg mx-4 border border-gray-800 shadow-2xl shadow-indigo-900/20 transform transition-all duration-300 hover:shadow-3xl">
-        <div className="p-6 border-b border-gray-800/80 bg-gradient-to-r from-gray-800/50 to-gray-900/50 rounded-t-2xl relative">
+      <div className="modal-content bg-white/5 backdrop-blur-2xl rounded-2xl w-full max-w-lg mx-4 border border-white/10 shadow-2xl transform transition-all duration-300">
+        <div className="p-6 border-b border-white/10 bg-white/5 rounded-t-2xl relative">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="text-xl font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">设置</h2>
@@ -474,7 +538,7 @@ function SettingsModal({
                 </button>
               </div>
             )}
-            
+
             {currentPaths.length === 0 ? (
               <div className="p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 text-center">
                 <p className="text-gray-400 text-sm">暂无根目录，请添加游戏根目录</p>
@@ -482,8 +546,8 @@ function SettingsModal({
             ) : (
               <div className="space-y-3">
                 {currentPaths.map((rootPath) => (
-                  <div 
-                    key={rootPath.id} 
+                  <div
+                    key={rootPath.id}
                     className="flex items-center justify-between p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 hover:border-white/20 transition-all"
                   >
                     <div className="flex-1 min-w-0">
@@ -538,7 +602,7 @@ function SettingsModal({
             <p className="text-xs text-gray-500 mb-3">
               该目录下的所有子文件夹将被识别为游戏
             </p>
-            
+
             <div className="flex gap-3">
               <input
                 type="text"
@@ -577,7 +641,7 @@ function SettingsModal({
             <p className="text-xs text-gray-500 mb-3">
               直接将所选文件夹添加为一个游戏（不扫描子目录）
             </p>
-            
+
             <div className="flex gap-3">
               <input
                 type="text"
@@ -641,6 +705,61 @@ function SettingsModal({
               </div>
             </div>
           </div>
+
+          {/* 更新检测 */}
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <label className="block text-sm font-medium text-gray-300">
+                版本信息
+              </label>
+              <button
+                type="button"
+                onClick={checkForUpdates}
+                disabled={checkingUpdate}
+                className="px-3 py-1.5 rounded-xl bg-gray-850 hover:bg-gray-800 border border-gray-800/80 hover:border-gray-700/80 text-gray-200 hover:text-white disabled:opacity-50 transition-all text-xs font-medium"
+              >
+                {checkingUpdate ? '检测中...' : '检测更新'}
+              </button>
+            </div>
+            <div className="p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">当前版本：</span>
+                <span className="text-sm font-medium text-gray-200">{currentVersion || '获取中...'}</span>
+              </div>
+              {latestVersion && isNewerVersion(latestVersion, currentVersion) && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-400">发现新版本：</span>
+                  <span className="text-sm font-bold text-indigo-400">
+                    {latestVersion}
+                  </span>
+                </div>
+              )}
+              {updateInfo?.body && isNewerVersion(latestVersion, currentVersion) && (
+                <div className="pt-3 border-t border-gray-800/80">
+                  <div className="text-sm font-medium text-gray-300 mb-2">更新日志</div>
+                  <div className="text-xs text-gray-400 leading-relaxed whitespace-pre-wrap max-h-32 overflow-y-auto">
+                    {updateInfo.body}
+                  </div>
+                </div>
+              )}
+              <div className="pt-3 border-t border-gray-800/80 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => window.electronAPI?.openExternal?.('https://www.bilibili.com/video/BV17RkpBAEvg/?share_source=copy_web&vd_source=57ae98281393c698316fbe5074ba027e')}
+                  className="flex-1 text-center px-3 py-2 rounded-xl bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/30 text-pink-300 hover:text-pink-200 transition-all text-xs font-medium"
+                >
+                  前往 Bilibili
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.electronAPI?.openExternal?.('https://github.com/INK666/myGal/releases')}
+                  className="flex-1 text-center px-3 py-2 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 hover:text-indigo-200 transition-all text-xs font-medium"
+                >
+                  前往 GitHub
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -648,11 +767,10 @@ function SettingsModal({
       {status.message && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 pointer-events-none z-[70]">
           <div
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
-              status.type === 'success'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
-                : 'bg-red-500/20 text-red-400 border border-red-500/50'
-            }`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${status.type === 'success'
+              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
+              : 'bg-red-500/20 text-red-400 border border-red-500/50'
+              }`}
           >
             {status.message}
           </div>

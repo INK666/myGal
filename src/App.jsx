@@ -65,7 +65,7 @@ if (!window.electronAPI) {
       return { games: sorted, total: sorted.length };
     },
     searchGames: async (query, params) => {
-      const results = mockGames.filter(game => 
+      const results = mockGames.filter(game =>
         game.name.toLowerCase().includes(query.toLowerCase()) ||
         game.path.toLowerCase().includes(query.toLowerCase()) ||
         game.tags.some(tag => tag.toLowerCase().includes(query.toLowerCase()))
@@ -134,6 +134,10 @@ function App() {
   const [tags, setTags] = useState([]);
   const [tagFilterOpen, setTagFilterOpen] = useState(false);
   const [rootFilterOpen, setRootFilterOpen] = useState(false);
+
+  // 自动更新检测相关状态
+  const [autoUpdateInfo, setAutoUpdateInfo] = useState(null);
+  const [showAutoUpdatePopup, setShowAutoUpdatePopup] = useState(false);
   const [tagFilterPopoverStyle, setTagFilterPopoverStyle] = useState(null);
   const [rootFilterPopoverStyle, setRootFilterPopoverStyle] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -223,7 +227,7 @@ function App() {
     setViewMode(next);
     try {
       localStorage.setItem('gameViewMode', next);
-    } catch {}
+    } catch { }
   };
 
   const setAndPersistImportedAtSortOrder = (next) => {
@@ -232,7 +236,7 @@ function App() {
     setCurrentPage(1);
     try {
       window.electronAPI.saveSetting(importedAtSortOrderSettingKey, normalized);
-    } catch {}
+    } catch { }
   };
   const loadRunHistory = async ({ offset = 0, append = false } = {}) => {
     try {
@@ -273,20 +277,55 @@ function App() {
 
   useEffect(() => {
     const load = async () => {
+      let currentVer = '';
       try {
         const api = window.electronAPI;
         if (!api?.getAppVersion) return;
         const result = await api.getAppVersion();
         if (result && typeof result === 'object') {
           if (result.success && result.version) {
-            setAppVersion(String(result.version));
+            currentVer = String(result.version);
+            setAppVersion(currentVer);
           }
-          return;
+        } else if (typeof result === 'string') {
+          currentVer = result;
+          setAppVersion(currentVer);
         }
-        if (typeof result === 'string') {
-          setAppVersion(result);
+      } catch { }
+
+      // 自动检查更新
+      if (currentVer) {
+        try {
+          const ignoredVer = localStorage.getItem('ignoredUpdateVersion');
+          const response = await fetch('https://happy-emu-21.deno.dev/check');
+          if (response.ok) {
+            const data = await response.json();
+
+            // 如果该版本已被忽略，则不再弹窗
+            if (ignoredVer === data.version) return;
+
+            // 复用版本对比逻辑
+            const isNewerVersion = (latest, current) => {
+              const l = latest.replace(/^v/i, '').split('.').map(n => parseInt(n) || 0);
+              const c = current.replace(/^v/i, '').split('.').map(n => parseInt(n) || 0);
+              for (let i = 0; i < Math.max(l.length, c.length); i++) {
+                const lNum = l[i] || 0;
+                const cNum = c[i] || 0;
+                if (lNum > cNum) return true;
+                if (lNum < cNum) return false;
+              }
+              return false;
+            };
+
+            if (isNewerVersion(data.version, currentVer)) {
+              setAutoUpdateInfo(data);
+              setShowAutoUpdatePopup(true);
+            }
+          }
+        } catch (err) {
+          console.error('自动检查更新失败', err);
         }
-      } catch {}
+      }
     };
     load();
   }, []);
@@ -393,7 +432,7 @@ function App() {
           if (JSON.stringify(parsed) !== JSON.stringify(nextScope)) {
             try {
               await window.electronAPI.saveSetting(bulkScrapeScopeSettingKey, JSON.stringify(nextScope));
-            } catch {}
+            } catch { }
           }
           setBulkScrapeScopeRootPathIds(nextScope);
         } else {
@@ -524,7 +563,7 @@ function App() {
       if (importedGameIds.length === 0) return;
 
       await handleBulkScrape({ gameIds: importedGameIds, ignoreLoading: true, ignoreScope: true });
-    } catch {}
+    } catch { }
   };
 
   const handleRefreshAll = async () => {
@@ -738,7 +777,7 @@ function App() {
       await loadGames();
     }
     await loadTags();
-    
+
     if (selectedGame) {
       const { games: updatedGames } = await window.electronAPI.getGames({ page: 1, pageSize: 1000 });
       const updated = updatedGames.find(g => g.id === selectedGame.id);
@@ -1023,7 +1062,7 @@ function App() {
               ? String(settings.bulkScrapeMaxConcurrent)
               : '1'
           );
-        } catch {}
+        } catch { }
       };
       load();
     }, []);
@@ -1078,8 +1117,8 @@ function App() {
       <div
         className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300"
       >
-        <div className="modal-content bg-slate-900 rounded-2xl w-full max-w-lg mx-4 border border-white/10 shadow-2xl shadow-black/50 transform transition-all duration-300 hover:shadow-3xl flex flex-col max-h-[70vh] overflow-hidden">
-          <div className="p-6 border-b border-white/5 bg-white/5 rounded-t-2xl relative">
+        <div className="modal-content bg-white/5 backdrop-blur-2xl rounded-2xl w-full max-w-lg mx-4 border border-white/10 shadow-2xl transform transition-all duration-300 flex flex-col max-h-[70vh] overflow-hidden">
+          <div className="p-6 border-b border-white/10 bg-white/5 rounded-t-2xl relative">
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-xl font-bold text-white">刮削配置</h2>
               <button
@@ -1111,17 +1150,15 @@ function App() {
                       key={rp.id}
                       type="button"
                       onClick={() => toggle(rp.id)}
-                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
-                        checked
-                          ? 'bg-white/10 border-white/20 text-white'
-                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
-                      }`}
+                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
+                        ? 'bg-white/10 border-white/20 text-white'
+                        : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
+                        }`}
                     >
                       <span className="text-sm font-medium truncate">{rp.path}</span>
                       <span
-                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                          checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
-                        }`}
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+                          }`}
                       >
                         {checked && (
                           <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1140,17 +1177,15 @@ function App() {
                       key="others"
                       type="button"
                       onClick={() => toggle('others')}
-                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${
-                        checked
-                          ? 'bg-white/10 border-white/20 text-white'
-                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
-                      }`}
+                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
+                        ? 'bg-white/10 border-white/20 text-white'
+                        : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
+                        }`}
                     >
                       <span className="text-sm font-medium truncate">Others（单独加入）</span>
                       <span
-                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                          checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
-                        }`}
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+                          }`}
                       >
                         {checked && (
                           <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1218,14 +1253,12 @@ function App() {
                         {item.desc ? <div className="text-xs text-gray-500 mt-0.5 truncate">{item.desc}</div> : null}
                       </div>
                       <span
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          scrapeEnabled[item.key] ? 'bg-emerald-600' : 'bg-gray-700'
-                        }`}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${scrapeEnabled[item.key] ? 'bg-emerald-600' : 'bg-gray-700'
+                          }`}
                       >
                         <span
-                          className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                            scrapeEnabled[item.key] ? 'translate-x-5' : 'translate-x-1'
-                          }`}
+                          className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${scrapeEnabled[item.key] ? 'translate-x-5' : 'translate-x-1'
+                            }`}
                         />
                       </span>
                     </button>
@@ -1453,11 +1486,10 @@ function App() {
                   <button
                     type="button"
                     onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
-                    className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                      autoScrapeAfterRefresh
-                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-                        : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
-                    }`}
+                    className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${autoScrapeAfterRefresh
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                      : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
+                      }`}
                   >
                     {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
                   </button>
@@ -1564,8 +1596,8 @@ function App() {
           if (e.target === e.currentTarget) setShowRunHistory(false);
         }}
       >
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl shadow-2xl transform animate-in zoom-in-95 duration-200 overflow-hidden max-h-[calc(100vh-2rem)] flex flex-col">
-          <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-800/80">
+        <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-2xl w-full max-w-2xl shadow-2xl transform animate-in zoom-in-95 duration-200 overflow-hidden max-h-[calc(100vh-2rem)] flex flex-col">
+          <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-4 border-b border-white/10">
             <div className="min-w-0">
               <div className="text-white font-semibold">运行历史</div>
               <div className="text-xs text-gray-400">共 {runHistoryTotal} 条</div>
@@ -1585,7 +1617,7 @@ function App() {
                       setRunHistoryTotal(0);
                       setRunHistoryOffset(0);
                     }
-                  } catch {}
+                  } catch { }
                 }}
               >
                 清空
@@ -1674,11 +1706,10 @@ function App() {
         />
       ) : null}
       <div
-        className={`fixed inset-0 z-[-1] ${
-          projectBackgroundUrl
-            ? 'bg-black/60'
-            : 'bg-gradient-to-br from-gray-950 via-gray-950 to-gray-900'
-        }`}
+        className={`fixed inset-0 z-[-1] ${projectBackgroundUrl
+          ? 'bg-black/60'
+          : 'bg-gradient-to-br from-gray-950 via-gray-950 to-gray-900'
+          }`}
       />
       <div className="flex-none z-50">
         <Header
@@ -1689,324 +1720,315 @@ function App() {
           hasBackground={hasProjectBackground}
         />
       </div>
-      
+
       <div className="flex-1 overflow-y-auto relative scroll-smooth">
         <main className={`w-full max-w-[2000px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 ${showFloatingPagination ? 'pb-24' : 'pb-8'}`}>
           <>
-          {status.message && (
-            <div
-              className={`fixed bottom-6 right-6 z-[60] px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
-                status.type === 'success'
+            {status.message && (
+              <div
+                className={`fixed bottom-6 right-6 z-[60] px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${status.type === 'success'
                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
                   : 'bg-red-500/20 text-red-400 border border-red-500/50'
-              }`}
-            >
-              {status.message}
-            </div>
-          )}
-
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-5 gap-4">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4 min-w-0">
-              <div className="flex items-center gap-4 shrink-0">
-                <h1 className="text-xl font-semibold text-white">我的游戏</h1>
-                <span className="text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-xs">{totalGames} 个游戏</span>
+                  }`}
+              >
+                {status.message}
               </div>
-              {(tags.length > 0 || rootPaths.length > 0) && (
-                <div className="flex items-center gap-2 py-1 min-w-0 flex-wrap">
-                  <button
-                    onClick={() => {
-                      setSelectedTag('');
-                      setSelectedRootPathId(null);
-                      setSearchQuery('');
-                      setTagFilterOpen(false);
-                      setRootFilterOpen(false);
-                    }}
-                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
-                      selectedTag || searchQuery || selectedRootPathId
+            )}
+
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-5 gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 min-w-0">
+                <div className="flex items-center gap-4 shrink-0">
+                  <h1 className="text-xl font-semibold text-white">我的游戏</h1>
+                  <span className="text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-xs">{totalGames} 个游戏</span>
+                </div>
+                {(tags.length > 0 || rootPaths.length > 0) && (
+                  <div className="flex items-center gap-2 py-1 min-w-0 flex-wrap">
+                    <button
+                      onClick={() => {
+                        setSelectedTag('');
+                        setSelectedRootPathId(null);
+                        setSearchQuery('');
+                        setTagFilterOpen(false);
+                        setRootFilterOpen(false);
+                      }}
+                      className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${selectedTag || searchQuery || selectedRootPathId
                         ? 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
                         : 'bg-white/40 text-white hover:bg-white/50 border border-white/40 shadow-sm'
-                    }`}
-                  >
-                    全部
-                  </button>
+                        }`}
+                    >
+                      全部
+                    </button>
 
-                  {tags.length > 0 && (
-                    <div ref={tagFilterPopoverRef} className="relative min-w-0">
-                      <button
-                        type="button"
-                        ref={tagFilterButtonRef}
-                        onClick={() => {
-                          const next = !tagFilterOpen;
-                          if (next) {
-                            setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
-                            setRootFilterOpen(false);
-                          }
-                          setTagFilterOpen(next);
-                        }}
-                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
-                          selectedTag && !searchQuery
+                    {tags.length > 0 && (
+                      <div ref={tagFilterPopoverRef} className="relative min-w-0">
+                        <button
+                          type="button"
+                          ref={tagFilterButtonRef}
+                          onClick={() => {
+                            const next = !tagFilterOpen;
+                            if (next) {
+                              setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
+                              setRootFilterOpen(false);
+                            }
+                            setTagFilterOpen(next);
+                          }}
+                          className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${selectedTag && !searchQuery
                             ? 'text-white shadow-sm'
                             : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                        }`}
-                        style={{
-                          backgroundColor: selectedTag && !searchQuery ? (selectedTagInfo?.color ? `color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined) : undefined,
-                          border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined
-                        }}
-                        aria-expanded={tagFilterOpen ? 'true' : 'false'}
-                        aria-label="展开标签筛选"
-                      >
-                        <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
-                        <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </button>
+                            }`}
+                          style={{
+                            backgroundColor: selectedTag && !searchQuery ? (selectedTagInfo?.color ? `color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined) : undefined,
+                            border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined
+                          }}
+                          aria-expanded={tagFilterOpen ? 'true' : 'false'}
+                          aria-label="展开标签筛选"
+                        >
+                          <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
+                          <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
 
-                      {tagFilterOpen && (
-                        <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
-                          <div className="flex items-center justify-between gap-3 mb-3">
-                            <div className="text-sm font-medium text-gray-200">标签</div>
-                            <button
-                              type="button"
-                              onClick={() => setTagFilterOpen(false)}
-                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
-                              aria-label="收起标签筛选"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-
-                          <div className="max-h-[50vh] overflow-auto pr-1">
-                            <div className="flex flex-wrap gap-2">
-                              {tags.map(tag => (
-                                <button
-                                  key={tag.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedTag(tag.name);
-                                    setSearchQuery('');
-                                    setTagFilterOpen(false);
-                                  }}
-                                  className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                                    selectedTag === tag.name && !searchQuery
-                                      ? 'text-white shadow-sm'
-                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                                  }`}
-                                  style={{
-                                    backgroundColor: selectedTag === tag.name && !searchQuery ? `color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined,
-                                    border: selectedTag === tag.name && !searchQuery ? `1px solid color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined
-                                  }}
-                                >
-                                  {tag.name}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {rootPaths.length > 0 && (
-                    <div ref={rootFilterPopoverRef} className="relative min-w-0">
-                      <button
-                        type="button"
-                        ref={rootFilterButtonRef}
-                        onClick={() => {
-                          const next = !rootFilterOpen;
-                          if (next) {
-                            setRootFilterPopoverStyle(computeFilterPopoverStyle(rootFilterButtonRef.current));
-                            setTagFilterOpen(false);
-                          }
-                          setRootFilterOpen(next);
-                        }}
-                        className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${
-                          selectedRootPathId
-                            ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
-                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                        }`}
-                        aria-expanded={rootFilterOpen ? 'true' : 'false'}
-                        aria-label="展开根目录筛选"
-                      >
-                        <span className="truncate">
-                          {selectedRootPathId === 'others'
-                            ? 'Others'
-                            : (selectedRootPathInfo?.path ? formatRootPathLabel(selectedRootPathInfo.path) : '根目录')}
-                        </span>
-                        <svg className={`w-4 h-4 transition-transform ${rootFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </button>
-
-                      {rootFilterOpen && (
-                        <div style={rootFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
-                          <div className="flex items-center justify-between gap-3 mb-3">
-                            <div className="text-sm font-medium text-gray-200">根目录</div>
-                            <button
-                              type="button"
-                              onClick={() => setRootFilterOpen(false)}
-                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
-                              aria-label="收起根目录筛选"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-
-                          <div className="max-h-[50vh] overflow-y-auto overflow-x-hidden pr-1">
-                            <div className="flex flex-wrap gap-2 min-w-0">
-                              {rootPaths.map((rp) => (
-                                <button
-                                  key={rp.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedRootPathId(rp.id);
-                                    setRootFilterOpen(false);
-                                  }}
-                                  className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
-                                    selectedRootPathId === rp.id
-                                      ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
-                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                                  }`}
-                                  title={rp.path}
-                                >
-                                  {formatRootPathLabel(rp.path)}
-                                </button>
-                              ))}
+                        {tagFilterOpen && (
+                          <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
+                            <div className="flex items-center justify-between gap-3 mb-3">
+                              <div className="text-sm font-medium text-gray-200">标签</div>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setSelectedRootPathId('others');
-                                  setRootFilterOpen(false);
-                                }}
-                                className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${
-                                  selectedRootPathId === 'others'
-                                    ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
-                                    : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                                }`}
-                                title="单独加入的游戏"
+                                onClick={() => setTagFilterOpen(false)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                                aria-label="收起标签筛选"
                               >
-                                Others
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
                               </button>
                             </div>
+
+                            <div className="max-h-[50vh] overflow-auto pr-1">
+                              <div className="flex flex-wrap gap-2">
+                                {tags.map(tag => (
+                                  <button
+                                    key={tag.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedTag(tag.name);
+                                      setSearchQuery('');
+                                      setTagFilterOpen(false);
+                                    }}
+                                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${selectedTag === tag.name && !searchQuery
+                                      ? 'text-white shadow-sm'
+                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                                      }`}
+                                    style={{
+                                      backgroundColor: selectedTag === tag.name && !searchQuery ? `color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined,
+                                      border: selectedTag === tag.name && !searchQuery ? `1px solid color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined
+                                    }}
+                                  >
+                                    {tag.name}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-              {bulkScrapeLoading && bulkScrapeProgress.total > 0 && (
-                <div className="flex items-center gap-2">
-                  <div className="text-xs text-gray-200/90 font-medium whitespace-nowrap">
-                    {bulkScrapeProgress.current}/{bulkScrapeProgress.total}
+                        )}
+                      </div>
+                    )}
+
+                    {rootPaths.length > 0 && (
+                      <div ref={rootFilterPopoverRef} className="relative min-w-0">
+                        <button
+                          type="button"
+                          ref={rootFilterButtonRef}
+                          onClick={() => {
+                            const next = !rootFilterOpen;
+                            if (next) {
+                              setRootFilterPopoverStyle(computeFilterPopoverStyle(rootFilterButtonRef.current));
+                              setTagFilterOpen(false);
+                            }
+                            setRootFilterOpen(next);
+                          }}
+                          className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${selectedRootPathId
+                            ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
+                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                            }`}
+                          aria-expanded={rootFilterOpen ? 'true' : 'false'}
+                          aria-label="展开根目录筛选"
+                        >
+                          <span className="truncate">
+                            {selectedRootPathId === 'others'
+                              ? 'Others'
+                              : (selectedRootPathInfo?.path ? formatRootPathLabel(selectedRootPathInfo.path) : '根目录')}
+                          </span>
+                          <svg className={`w-4 h-4 transition-transform ${rootFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+
+                        {rootFilterOpen && (
+                          <div style={rootFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
+                            <div className="flex items-center justify-between gap-3 mb-3">
+                              <div className="text-sm font-medium text-gray-200">根目录</div>
+                              <button
+                                type="button"
+                                onClick={() => setRootFilterOpen(false)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                                aria-label="收起根目录筛选"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+
+                            <div className="max-h-[50vh] overflow-y-auto overflow-x-hidden pr-1">
+                              <div className="flex flex-wrap gap-2 min-w-0">
+                                {rootPaths.map((rp) => (
+                                  <button
+                                    key={rp.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedRootPathId(rp.id);
+                                      setRootFilterOpen(false);
+                                    }}
+                                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${selectedRootPathId === rp.id
+                                      ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
+                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                                      }`}
+                                    title={rp.path}
+                                  >
+                                    {formatRootPathLabel(rp.path)}
+                                  </button>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedRootPathId('others');
+                                    setRootFilterOpen(false);
+                                  }}
+                                  className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-full truncate ${selectedRootPathId === 'others'
+                                    ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 border border-emerald-600/40 shadow-sm'
+                                    : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                                    }`}
+                                  title="单独加入的游戏"
+                                >
+                                  Others
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
+                )}
+              </div>
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                {bulkScrapeLoading && bulkScrapeProgress.total > 0 && (
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs text-gray-200/90 font-medium whitespace-nowrap">
+                      {bulkScrapeProgress.current}/{bulkScrapeProgress.total}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleStopBulkScrape}
+                      className="p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/30 text-red-100 transition-all"
+                      title="停止"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
                   <button
                     type="button"
-                    onClick={handleStopBulkScrape}
-                    className="p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/30 text-red-100 transition-all"
-                    title="停止"
+                    onClick={() => setAndPersistViewMode('grid')}
+                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
+                      }`}
+                    title="卡片视图"
+                    aria-label="卡片视图"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                      <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2v-3zm11-9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2v-3z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAndPersistViewMode('list')}
+                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
+                      }`}
+                    title="列表视图"
+                    aria-label="列表视图"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
                     </svg>
                   </button>
                 </div>
-              )}
-              <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
-                <button
-                  type="button"
-                  onClick={() => setAndPersistViewMode('grid')}
-                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${
-                    viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
-                  }`}
-                  title="卡片视图"
-                  aria-label="卡片视图"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2H6a2 2 0 01-2-2v-3zm11-9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2V6zm0 9a2 2 0 012-2h3a2 2 0 012 2v3a2 2 0 01-2 2h-3a2 2 0 01-2-2v-3z" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAndPersistViewMode('list')}
-                  className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${
-                    viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
-                  }`}
-                  title="列表视图"
-                  aria-label="列表视图"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
-                <button
-                  type="button"
-                  onClick={() => setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc')}
-                  className="px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 text-gray-200 hover:bg-white/10"
-                  title={importedAtSortOrder === 'desc' ? '按导入时间：倒序' : '按导入时间：正序'}
-                  aria-label={importedAtSortOrder === 'desc' ? '按导入时间倒序排序' : '按导入时间正序排序'}
-                >
-                  <svg
-                    className={`w-4 h-4 transition-transform ${importedAtSortOrder === 'desc' ? '' : 'rotate-180'}`}
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
+                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc')}
+                    className="px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 text-gray-200 hover:bg-white/10"
+                    title={importedAtSortOrder === 'desc' ? '按导入时间：倒序' : '按导入时间：正序'}
+                    aria-label={importedAtSortOrder === 'desc' ? '按导入时间倒序排序' : '按导入时间正序排序'}
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-500/30 hover:bg-indigo-500/40 border border-indigo-400/30 shadow-sm transition-colors">
-                <button
-                  onClick={handleBulkScrape}
-                  disabled={loading || bulkScrapeLoading}
-                  className="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/15"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" />
-                  </svg>
-                  {bulkScrapeLoading ? '正在刮削...' : '批量刮削封面'}
-                </button>
-                <button
-                  onClick={() => setShowBulkScrapeScope(true)}
-                  disabled={loading || bulkScrapeLoading}
-                  ref={bulkScrapeScopeButtonRef}
-                  className="flex items-center justify-center px-3 text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="刮削配置"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                    />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </button>
+                    <svg
+                      className={`w-4 h-4 transition-transform ${importedAtSortOrder === 'desc' ? '' : 'rotate-180'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-500/30 hover:bg-indigo-500/40 border border-indigo-400/30 shadow-sm transition-colors">
+                  <button
+                    onClick={handleBulkScrape}
+                    disabled={loading || bulkScrapeLoading}
+                    className="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/15"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" />
+                    </svg>
+                    {bulkScrapeLoading ? '正在刮削...' : '批量刮削封面'}
+                  </button>
+                  <button
+                    onClick={() => setShowBulkScrapeScope(true)}
+                    disabled={loading || bulkScrapeLoading}
+                    ref={bulkScrapeScopeButtonRef}
+                    className="flex items-center justify-center px-3 text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="刮削配置"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-          
-          <GameGrid
-            games={games}
-            loading={loading}
-            onGameClick={handleGameClick}
-            onGameQuickLaunch={handleGameQuickLaunch}
-            tags={tags}
-            onTogglePinned={handleTogglePinned}
-            viewMode={viewMode}
-          />
-        </>
-      </main>
+
+            <GameGrid
+              games={games}
+              loading={loading}
+              onGameClick={handleGameClick}
+              onGameQuickLaunch={handleGameQuickLaunch}
+              tags={tags}
+              onTogglePinned={handleTogglePinned}
+              viewMode={viewMode}
+            />
+          </>
+        </main>
       </div>
 
       {showFloatingPagination ? (
@@ -2060,10 +2082,53 @@ function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
+
+          {/* 自动更新确认框 */}
+          {showAutoUpdatePopup && autoUpdateInfo && (
+            <div className="fixed bottom-8 right-[72px] z-[100] w-72 bg-white/5 border border-white/10 rounded-2xl shadow-2xl backdrop-blur-2xl p-4 animate-in slide-in-from-right-10 duration-300">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-white/5 rounded-xl text-gray-300">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-white">发现新版本 !</div>
+                </div>
+              </div>
+              <div className="text-xs text-gray-100/80 mb-4 line-clamp-3 leading-relaxed">
+                {(autoUpdateInfo.body || '').replace(/^v?\d+\.\d+\.\d+\s*/i, '').trim() || '新版本已发布，点击查看详情或前往设置更新。'}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (autoUpdateInfo?.version) {
+                      localStorage.setItem('ignoredUpdateVersion', autoUpdateInfo.version);
+                    }
+                    setShowAutoUpdatePopup(false);
+                  }}
+                  className="flex-1 px-3 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-400 hover:text-white text-[10px] font-medium rounded-xl transition-all"
+                >
+                  忽略此次更新
+                </button>
+                <button
+                  onClick={() => {
+                    setShowAutoUpdatePopup(false);
+                    setShowSettings(true);
+                  }}
+                  className="flex-1 px-3 py-2.5 bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-bold rounded-xl transition-all shadow-lg"
+                >
+                  去更新
+                </button>
+              </div>
+              {/* 装饰性小角 - 透明背景配合模糊 */}
+              <div className="absolute top-1/2 -right-1.5 -translate-y-1/2 w-3 h-3 bg-white/5 border-r border-t border-white/10 rotate-45 backdrop-blur-2xl"></div>
+            </div>
+          )}
+
           <div
-            className={`fixed bottom-3 right-4 z-[40] text-xs pointer-events-none select-none ${
-              hasProjectBackground ? 'text-gray-100/70' : 'text-gray-300/70'
-            }`}
+            className={`fixed bottom-3 right-4 z-[40] text-xs pointer-events-none select-none ${hasProjectBackground ? 'text-gray-100/70' : 'text-gray-300/70'
+              }`}
           >
             v{appVersion}
           </div>

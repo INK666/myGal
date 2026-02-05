@@ -1,0 +1,7 @@
+
+  const handleIgnoreUpdate = () => {
+    if (autoUpdateInfo?.version) {
+      localStorage.setItem('ignoredUpdateVersion', autoUpdateInfo.version);
+    }
+    setShowAutoUpdatePopup(false);
+  };
