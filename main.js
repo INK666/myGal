@@ -91,7 +91,12 @@ const sanitizeFilenameComponent = (value) => {
 };
 
 const normalizeGameTitle = (rawName) => {
-  let name = String(rawName || '').trim();
+  let name = '';
+  try {
+    name = String(rawName ?? '').trim();
+  } catch {
+    name = '';
+  }
   if (!name) return '';
 
   name = name.replace(/^[._-]+/, '').trim();
@@ -136,6 +141,18 @@ const normalizeGameTitle = (rawName) => {
     .replace(/[\[\(（【［].*?[\]\)）】］]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  const hintKeywords = ['解压', '密码'];
+  let hintIndex = -1;
+  for (const k of hintKeywords) {
+    const idx = name.indexOf(k);
+    if (idx !== -1 && (hintIndex === -1 || idx < hintIndex)) {
+      hintIndex = idx;
+    }
+  }
+  if (hintIndex !== -1) {
+    name = name.slice(0, hintIndex).replace(/\s+/g, ' ').trim();
+  }
 
   name = name.replace(/[._-]+$/g, '').trim();
   name = name.replace(/(?:\s*[-_ ]*(?:ver|v)\s*[0-9])$/i, '').trim();
@@ -828,10 +845,17 @@ const tryDlsiteByWorkno = async (workno) => {
 
 // 通过名称搜索（新增功能）
 const tryDlsiteByName = async (title) => {
-  if (!title || !title.trim()) return null;
+  let rawTitle = '';
+  try {
+    rawTitle = typeof title === 'string' ? title : String(title ?? '');
+  } catch {
+    rawTitle = '';
+  }
+  const trimmedTitle = rawTitle.trim();
+  if (!trimmedTitle) return null;
   
   // 清理标题：移除常见的文件扩展名、括号内容等
-  let cleanTitle = title.trim()
+  let cleanTitle = trimmedTitle
     .replace(/\.(zip|rar|7z|exe)$/i, '')  // 移除文件扩展名
     .replace(/\[.*?\]/g, '')  // 移除方括号内容
     .replace(/\(.*?\)/g, '')  // 移除圆括号内容
@@ -851,10 +875,10 @@ const tryDlsiteByName = async (title) => {
     { section: 'maniax', keyword: cleanTitle },
     { section: 'home', keyword: cleanTitle },
     // 如果清理后的标题和原标题不同，也尝试原标题
-    ...(cleanTitle !== title.trim() ? [
-      { section: 'girls-pro', keyword: title.trim() },
-      { section: 'maniax', keyword: title.trim() },
-      { section: 'home', keyword: title.trim() }
+    ...(cleanTitle !== trimmedTitle ? [
+      { section: 'girls-pro', keyword: trimmedTitle },
+      { section: 'maniax', keyword: trimmedTitle },
+      { section: 'home', keyword: trimmedTitle }
     ] : [])
   ];
   
@@ -1272,6 +1296,14 @@ ipcMain.handle('get-app-version', async () => {
     return { success: true, version: app.getVersion() };
   } catch (error) {
     return { success: false, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('normalize-game-title', async (event, rawName) => {
+  try {
+    return { success: true, value: normalizeGameTitle(rawName) };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error), value: '' };
   }
 });
 
@@ -2109,9 +2141,26 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
     return { success: false, error: '游戏不存在' };
   }
 
-  const rawPathName = game.path ? path.basename(game.path) : '';
-  const rawName = String(game.name || '').trim();
-  const rawAlias = String(game.alias || '').trim();
+  let rawPathName = '';
+  try {
+    const rawPath = typeof game.path === 'string' ? game.path : String(game.path ?? '');
+    const trimmedPath = rawPath.trim();
+    rawPathName = trimmedPath ? path.basename(trimmedPath) : '';
+  } catch {
+    rawPathName = '';
+  }
+  let rawName = '';
+  try {
+    rawName = String(game.name ?? '').trim();
+  } catch {
+    rawName = '';
+  }
+  let rawAlias = '';
+  try {
+    rawAlias = String(game.alias ?? '').trim();
+  } catch {
+    rawAlias = '';
+  }
   const normalizedName = normalizeGameTitle(rawName);
   const normalizedAlias = normalizeGameTitle(rawAlias);
   const normalizedPathName = normalizeGameTitle(rawPathName);

@@ -117,7 +117,8 @@ if (!window.electronAPI) {
     captureScreenCover: async () => ({ success: false, error: 'browser mock' }),
     getIgnoredGamePaths: async () => ({ success: true, items: [] }),
     restoreIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
-    clearIgnoredGamePaths: async () => ({ success: true, restored: 0 })
+    clearIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
+    normalizeGameTitle: async (rawName) => ({ success: true, value: String(rawName ?? '').trim() })
   };
 }
 
@@ -987,6 +988,7 @@ function App() {
     const defaultScopeIds = [...rootPaths.map((rp) => rp.id), 'others'];
     const effectiveScopeIds = Array.isArray(bulkScrapeScopeRootPathIds) ? bulkScrapeScopeRootPathIds : defaultScopeIds;
     const [draftIds, setDraftIds] = useState(effectiveScopeIds);
+    const [scopeExpanded, setScopeExpanded] = useState(false);
     const [scrapeSourceExpanded, setScrapeSourceExpanded] = useState(false);
     const [credentialsExpanded, setCredentialsExpanded] = useState(false);
     const [scrapeEnabled, setScrapeEnabled] = useState({
@@ -1011,6 +1013,14 @@ function App() {
     const [bulkScrapeIntervalMs, setBulkScrapeIntervalMs] = useState('800');
     const [bulkScrapeMaxConcurrent, setBulkScrapeMaxConcurrent] = useState('1');
     const [saving, setSaving] = useState(false);
+    const [executionStrategyExpanded, setExecutionStrategyExpanded] = useState(false);
+    const [customRegexExpanded, setCustomRegexExpanded] = useState(false);
+    const [replaceRegex, setReplaceRegex] = useState('');
+    const [replaceTo, setReplaceTo] = useState('');
+    const [extractRegex, setExtractRegex] = useState('');
+    const [cleanNameInput, setCleanNameInput] = useState('');
+    const [cleanNameOutput, setCleanNameOutput] = useState('');
+    const [cleaningName, setCleaningName] = useState(false);
 
     useEffect(() => {
       const currentRootIds = rootPaths.map((rp) => rp.id);
@@ -1070,6 +1080,11 @@ function App() {
     const toggle = (id) => {
       setDraftIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
     };
+
+    const includeOthers = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+    const selectedRootCount = rootPaths.reduce((acc, rp) => (draftIds.includes(rp.id) ? acc + 1 : acc), 0);
+    const selectedScopeCount = selectedRootCount + (includeOthers ? 1 : 0);
+    const totalScopeCount = rootPaths.length + 1;
 
     const handleSave = async () => {
       if (saving) return;
@@ -1138,71 +1153,89 @@ function App() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-gray-200">批量刮削范围</div>
-                  <div className="text-xs text-gray-500 mt-1">选择参与批量刮削的根目录</div>
+                  <div className="text-xs text-gray-500 mt-1">已选 {selectedScopeCount}/{totalScopeCount}</div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setScopeExpanded((v) => !v)}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
+                  aria-expanded={scopeExpanded}
+                >
+                  {scopeExpanded ? '收起' : '展开'}
+                  <svg
+                    className={`w-4 h-4 transition-transform ${scopeExpanded ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
               </div>
 
-              <div className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-1">
-                {rootPaths.map((rp) => {
-                  const checked = draftIds.includes(rp.id);
-                  return (
-                    <button
-                      key={rp.id}
-                      type="button"
-                      onClick={() => toggle(rp.id)}
-                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
-                        ? 'bg-white/10 border-white/20 text-white'
-                        : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
-                        }`}
-                    >
-                      <span className="text-sm font-medium truncate">{rp.path}</span>
-                      <span
-                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+              {scopeExpanded ? (
+                <div className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {rootPaths.map((rp) => {
+                    const checked = draftIds.includes(rp.id);
+                    return (
+                      <button
+                        key={rp.id}
+                        type="button"
+                        onClick={() => toggle(rp.id)}
+                        className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
+                          ? 'bg-white/10 border-white/20 text-white'
+                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
                           }`}
                       >
-                        {checked && (
-                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span className="text-sm font-medium truncate">{rp.path}</span>
+                        <span
+                          className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+                            }`}
+                        >
+                          {checked && (
+                            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
 
-                {(() => {
-                  const checked = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
-                  return (
-                    <button
-                      key="others"
-                      type="button"
-                      onClick={() => toggle('others')}
-                      className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
-                        ? 'bg-white/10 border-white/20 text-white'
-                        : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
-                        }`}
-                    >
-                      <span className="text-sm font-medium truncate">Others（单独加入）</span>
-                      <span
-                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+                  {(() => {
+                    const checked = draftIds.some((v) => String(v ?? '').trim().toLowerCase() === 'others');
+                    return (
+                      <button
+                        key="others"
+                        type="button"
+                        onClick={() => toggle('others')}
+                        className={`w-full flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-all duration-200 cursor-pointer ${checked
+                          ? 'bg-white/10 border-white/20 text-white'
+                          : 'bg-white/5 border-white/5 text-gray-300 hover:bg-white/10 hover:border-white/10'
                           }`}
                       >
-                        {checked && (
-                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </span>
-                    </button>
-                  );
-                })()}
+                        <span className="text-sm font-medium truncate">Others（单独加入）</span>
+                        <span
+                          className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${checked ? 'bg-white/20 border-white/30' : 'bg-transparent border-white/10'
+                            }`}
+                        >
+                          {checked && (
+                            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })()}
 
-                {rootPaths.length === 0 && (
-                  <div className="text-sm text-gray-400 bg-gray-900/40 border border-gray-800/80 rounded-xl p-4">
-                    当前没有根目录
-                  </div>
-                )}
-              </div>
+                  {rootPaths.length === 0 && (
+                    <div className="text-sm text-gray-400 bg-gray-900/40 border border-gray-800/80 rounded-xl p-4">
+                      当前没有根目录
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
@@ -1474,56 +1507,205 @@ function App() {
             </div>
 
             <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
-              <div className="text-sm font-medium text-gray-200">执行策略</div>
-              <div className="text-xs text-gray-500 mt-1">影响刷新后自动刮削与批量刮削速度</div>
-
-              <div className="mt-3 space-y-3">
-                <div className="flex items-center justify-between gap-3 p-4 bg-gray-850/60 rounded-xl border border-gray-800/80">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刷新后自动刮削本次新增</div>
-                    <div className="text-xs text-gray-500 mt-1 truncate">仅对新入库且缺失封面的游戏生效</div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-200">执行策略</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {autoScrapeAfterRefresh ? '自动刮削：开' : '自动刮削：关'} · 间隔 {String(bulkScrapeIntervalMs || '800').trim() || '800'}ms · 并发 {String(bulkScrapeMaxConcurrent || '1').trim() || '1'}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
-                    className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${autoScrapeAfterRefresh
-                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-                      : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
-                      }`}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExecutionStrategyExpanded((v) => !v)}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
+                  aria-expanded={executionStrategyExpanded}
+                >
+                  {executionStrategyExpanded ? '收起' : '展开'}
+                  <svg
+                    className={`w-4 h-4 transition-transform ${executionStrategyExpanded ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <div className="text-xs text-gray-400">批量刮削间隔（毫秒）</div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={bulkScrapeIntervalMs}
-                      onChange={(e) => setBulkScrapeIntervalMs(e.target.value)}
-                      placeholder="例如 800"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
-                      style={{ WebkitAppRegion: 'no-drag' }}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-xs text-gray-400">最大并发数</div>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={bulkScrapeMaxConcurrent}
-                      onChange={(e) => setBulkScrapeMaxConcurrent(e.target.value)}
-                      placeholder="例如 2"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
-                      style={{ WebkitAppRegion: 'no-drag' }}
-                    />
-                  </div>
-                </div>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
               </div>
+
+              {executionStrategyExpanded ? (
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3 p-4 bg-gray-850/60 rounded-xl border border-gray-800/80">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-300 whitespace-nowrap">刷新后自动刮削本次新增</div>
+                      <div className="text-xs text-gray-500 mt-1 truncate">仅对新入库且缺失封面的游戏生效</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAutoScrapeAfterRefresh((v) => !v)}
+                      className={`shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${autoScrapeAfterRefresh
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                        : 'bg-gray-800 text-gray-300 border-gray-700/80 hover:bg-gray-700'
+                        }`}
+                    >
+                      {autoScrapeAfterRefresh ? '已开启' : '已关闭'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">批量刮削间隔（毫秒）</div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="100"
+                        value={bulkScrapeIntervalMs}
+                        onChange={(e) => setBulkScrapeIntervalMs(e.target.value)}
+                        placeholder="例如 800"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">最大并发数</div>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={bulkScrapeMaxConcurrent}
+                        onChange={(e) => setBulkScrapeMaxConcurrent(e.target.value)}
+                        placeholder="例如 2"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-200">自定义正则</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {String(replaceRegex || '').trim() || String(extractRegex || '').trim() ? '已设置' : '未设置'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCustomRegexExpanded((v) => !v)}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
+                  aria-expanded={customRegexExpanded}
+                >
+                  {customRegexExpanded ? '收起' : '展开'}
+                  <svg
+                    className={`w-4 h-4 transition-transform ${customRegexExpanded ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              </div>
+
+              {customRegexExpanded ? (
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">输入游戏名</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <input
+                        type="text"
+                        value={cleanNameInput}
+                        onChange={(e) => setCleanNameInput(e.target.value)}
+                        placeholder="例如：星织梦未来 星機ユメきライ解压密码：..."
+                        className="md:col-span-2 w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                      <button
+                        type="button"
+                        disabled={cleaningName}
+                        onClick={async () => {
+                          if (cleaningName) return;
+                          const api = window.electronAPI;
+                          if (!api?.normalizeGameTitle) {
+                            showStatus('error', '当前环境不支持清洗名字');
+                            return;
+                          }
+                          setCleaningName(true);
+                          try {
+                            const res = await api.normalizeGameTitle(cleanNameInput);
+                            if (typeof res === 'string') {
+                              setCleanNameOutput(res);
+                              return;
+                            }
+                            if (res?.success) {
+                              setCleanNameOutput(String(res?.value ?? ''));
+                              return;
+                            }
+                            setCleanNameOutput('');
+                            showStatus('error', '清洗失败：' + (res?.error || '未知错误'));
+                          } catch (error) {
+                            setCleanNameOutput('');
+                            showStatus('error', '清洗失败：' + (error?.message || String(error)));
+                          } finally {
+                            setCleaningName(false);
+                          }
+                        }}
+                        className="w-full px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm transition-all disabled:opacity-60 border border-gray-700/80 hover:border-gray-600/80"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      >
+                        {cleaningName ? '清洗中...' : '清洗名字'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="bg-gray-850/40 border border-gray-800/80 rounded-xl p-3 space-y-2">
+                      <div className="text-xs text-gray-400">用于替换</div>
+                      <input
+                        type="text"
+                        value={replaceRegex}
+                        onChange={(e) => setReplaceRegex(e.target.value)}
+                        placeholder="替换正则，例如：\\[.*?\\]"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                      <input
+                        type="text"
+                        value={replaceTo}
+                        onChange={(e) => setReplaceTo(e.target.value)}
+                        placeholder="替换为，例如：空字符串"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                    <div className="bg-gray-850/40 border border-gray-800/80 rounded-xl p-3 space-y-2">
+                      <div className="text-xs text-gray-400">用于提取</div>
+                      <input
+                        type="text"
+                        value={extractRegex}
+                        onChange={(e) => setExtractRegex(e.target.value)}
+                        placeholder="提取正则（取第一个捕获组）"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400">清洗结果</div>
+                    <input
+                      type="text"
+                      readOnly
+                      value={cleanNameOutput}
+                      placeholder="点击「清洗名字」生成"
+                      className="w-full bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none transition-all duration-200"
+                      style={{ WebkitAppRegion: 'no-drag' }}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
 

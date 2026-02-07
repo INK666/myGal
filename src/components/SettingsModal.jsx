@@ -49,6 +49,7 @@ function SettingsModal({
   const [showDeleteRootConfirm, setShowDeleteRootConfirm] = useState(false);
   const [rootPathToDelete, setRootPathToDelete] = useState(null);
   const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkImportSuccessCount, setBulkImportSuccessCount] = useState(0);
   const [bulkImportFailures, setBulkImportFailures] = useState([]);
   const [showBulkImportResult, setShowBulkImportResult] = useState(false);
 
@@ -317,6 +318,7 @@ function SettingsModal({
 
     if (toAdd.length === 0) {
       if (failures.length > 0) {
+        setBulkImportSuccessCount(0);
         setBulkImportFailures(failures);
         setShowBulkImportResult(true);
       }
@@ -364,6 +366,8 @@ function SettingsModal({
       if (newRootIds.length > 0) {
         onSave?.();
       }
+
+      setBulkImportSuccessCount(newRootIds.length);
     } finally {
       setBulkImportLoading(false);
     }
@@ -548,6 +552,14 @@ function SettingsModal({
   const filteredIgnoredItems = normalizedFilter
     ? ignoredItems.filter((item) => String(item?.path || '').toLowerCase().includes(normalizedFilter))
     : ignoredItems;
+
+  const bulkImportIsAllDuplicate =
+    bulkImportSuccessCount === 0 &&
+    bulkImportFailures.length > 0 &&
+    bulkImportFailures.every((item) => {
+      const reason = String(item?.reason || '');
+      return reason === '已存在' || reason === '本次选择重复';
+    });
 
   return (
     <div className="modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity duration-300">
@@ -903,14 +915,15 @@ function SettingsModal({
                   </svg>
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-white">部分根目录导入失败</h3>
-                  <div className="text-xs text-gray-400 mt-1">失败 {bulkImportFailures.length} 项（成功的不提示）</div>
+                  <h3 className="text-lg font-bold text-white">{bulkImportIsAllDuplicate ? '导入根目录全部重复' : '部分根目录导入失败'}</h3>
+                  <div className="text-xs text-gray-400 mt-1">失败 {bulkImportFailures.length} 项</div>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => {
                   setShowBulkImportResult(false);
+                  setBulkImportSuccessCount(0);
                   setBulkImportFailures([]);
                 }}
                 className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 hover:text-white transition-all"
@@ -939,6 +952,7 @@ function SettingsModal({
                 type="button"
                 onClick={() => {
                   setShowBulkImportResult(false);
+                  setBulkImportSuccessCount(0);
                   setBulkImportFailures([]);
                 }}
                 className="px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 hover:text-white transition-all text-sm font-medium"
