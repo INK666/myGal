@@ -1,6 +1,8 @@
-适用人群：管理冷备份游戏库或游戏文件、未知后缀的压缩包全扔进某一文件夹的仓鼠。
+# MyGal - 管理游戏库里压缩文件和游戏文件
 
-不同于遍历文件夹搜寻exe程序作为游戏录入，本项目会将根目录下的次级文件作为游戏项目导入，刮削文件名时会清洗掉特定字符，最后再将原名称和清洗后名称进行匹配刮削。
+## 📱 功能特性
+
+本项目会将根目录的次级文件作为游戏项目导入，刮削前会通过正则（可自定义）清洗游戏名，再以原名称和清洗后名称进行刮削封面。
 
 ## 导入以及清洗逻辑
 
@@ -11,13 +13,15 @@ A根目录/
       ├── 游戏3/              
       ├── 游戏4.zip     
       └── 游戏5.jpg  
+      └── [VJ123456]游戏5.rar 
   
-导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg  
+导入>> ［pc］游戏1、 游戏2ver1.02 、 游戏3 、游戏4.zip 、游戏5.jpg 、[VJ123456]游戏5.rar 
 
-刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5
-<img width="890" height="596" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
-
-<img width="893" height="602" alt="desk2" src="https://github.com/user-attachments/assets/f71076c6-2e0f-4126-8140-533eccb91359" />
+刮削>>  游戏1、游戏2、游戏3 、游戏4 、游戏5、VJ123456
+<div align="center">
+<img width="400" height="302" alt="desk" src="https://github.com/user-attachments/assets/8e90962f-bc6c-4e50-aa5e-97198da811b5" />
+<img width="400" height="302" alt="2" src="https://github.com/user-attachments/assets/9a2c625d-a9bf-4cc4-90ce-064d17f92c40" />
+</div>
 
 
 ## 主要功能
@@ -58,15 +62,16 @@ A根目录/
     
   - **批量刮削封面、厂商名**：对缺失封面的游戏进行自动抓取，刮削得到的厂商名作为标签添加在游戏上
   - **刮削范围配置**：可选择“根目录参与批量刮削”，新增根目录默认勾选
+  - **自定义正则**：可使用自定义正则清洗游戏文件名
+  <img width="400" height="340" alt="屏幕截图 2026-02-07 104511" src="https://github.com/user-attachments/assets/25d99b22-0860-4cd4-925d-6a1b6b1628fd" />
 
 - **背景图片**
   - 支持自定义项目背景图（jpg/png）
   - 可清除背景恢复默认
  
  **游戏卡片**
-<img width="509" height="594" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
-
-
+ 
+<img width="400" height="500" alt="card" src="https://github.com/user-attachments/assets/241471d3-feca-4194-9822-d0da0ff0a457" />
 
 - 封面截图，直接截图作为游戏封面
 - 扫描文件夹内部exe文件，左键单击直接运行，右键点击弹出右键转区菜单
@@ -74,5 +79,12 @@ A根目录/
 - 打开进入游戏所在文件夹
 - 删除游戏条目（删除后不删除本地文件，只添加进ignore名单，可在配置窗口内恢复）
  
+<div align="center">
+
+**如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！**
+
+Made with ❤️ by [INK666](https://github.com/INK666)
+
+</div>
 
 
