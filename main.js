@@ -90,6 +90,78 @@ const sanitizeFilenameComponent = (value) => {
   return cleaned || 'cover';
 };
 
+const parseRegexInput = (raw, defaultFlags = '') => {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+
+  if (text.startsWith('/') && text.length >= 2) {
+    const lastSlash = text.lastIndexOf('/');
+    if (lastSlash > 0) {
+      const pattern = text.slice(1, lastSlash);
+      const flags = text.slice(lastSlash + 1);
+      if (/^[a-z]*$/i.test(flags)) {
+        return new RegExp(pattern, flags);
+      }
+    }
+  }
+  return new RegExp(text, defaultFlags);
+};
+
+const applyCustomRegex = (rawTitle, cfg = {}, { strict = false } = {}) => {
+  let value = '';
+  try {
+    value = String(rawTitle ?? '');
+  } catch {
+    value = '';
+  }
+  if (!value) return value;
+  if (value.length > 5000) value = value.slice(0, 5000);
+
+  const replaceRegexRaw = cfg?.replaceRegex ?? cfg?.replacePattern ?? '';
+  const replaceToRaw = cfg?.replaceTo ?? '';
+  const extractRegexRaw = cfg?.extractRegex ?? cfg?.extractPattern ?? '';
+
+  const replaceRegexText = String(replaceRegexRaw ?? '').trim();
+  const extractRegexText = String(extractRegexRaw ?? '').trim();
+
+  if (replaceRegexText) {
+    if (replaceRegexText.length > 500) {
+      if (strict) throw new Error('替换正则过长');
+    } else {
+    try {
+      const re = parseRegexInput(replaceRegexRaw, 'g');
+      if (re) value = value.replace(re, String(replaceToRaw ?? ''));
+    } catch (e) {
+      if (strict) {
+        const msg = e?.message || String(e);
+        throw new Error(`替换正则无效：${msg}`);
+      }
+    }
+    }
+  }
+
+  if (extractRegexText) {
+    if (extractRegexText.length > 500) {
+      if (strict) throw new Error('提取正则过长');
+    } else {
+    try {
+      const re = parseRegexInput(extractRegexRaw, '');
+      if (re) {
+        const m = re.exec(value);
+        value = m ? String((m.length > 1 ? m[1] : m[0]) ?? '') : '';
+      }
+    } catch (e) {
+      if (strict) {
+        const msg = e?.message || String(e);
+        throw new Error(`提取正则无效：${msg}`);
+      }
+    }
+    }
+  }
+
+  return value;
+};
+
 const normalizeGameTitle = (rawName) => {
   let name = '';
   try {
@@ -1299,9 +1371,10 @@ ipcMain.handle('get-app-version', async () => {
   }
 });
 
-ipcMain.handle('normalize-game-title', async (event, rawName) => {
+ipcMain.handle('normalize-game-title', async (event, rawName, options) => {
   try {
-    return { success: true, value: normalizeGameTitle(rawName) };
+    const cleaned = applyCustomRegex(rawName, options, { strict: true });
+    return { success: true, value: normalizeGameTitle(cleaned) };
   } catch (error) {
     return { success: false, error: error?.message || String(error), value: '' };
   }
@@ -2161,15 +2234,31 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   } catch {
     rawAlias = '';
   }
-  const normalizedName = normalizeGameTitle(rawName);
-  const normalizedAlias = normalizeGameTitle(rawAlias);
-  const normalizedPathName = normalizeGameTitle(rawPathName);
+  const customRegexCfg = {
+    replaceRegex: getSettingValue('scrapeCustomReplaceRegex') ?? '',
+    replaceTo: getSettingValue('scrapeCustomReplaceTo') ?? '',
+    extractRegex: getSettingValue('scrapeCustomExtractRegex') ?? ''
+  };
+
+  const rawNameCustom = applyCustomRegex(rawName, customRegexCfg, { strict: false });
+  const rawAliasCustom = applyCustomRegex(rawAlias, customRegexCfg, { strict: false });
+  const rawPathNameCustom = applyCustomRegex(rawPathName, customRegexCfg, { strict: false });
+
+  const nameForNormalize = String(rawNameCustom ?? '').trim() ? rawNameCustom : rawName;
+  const aliasForNormalize = String(rawAliasCustom ?? '').trim() ? rawAliasCustom : rawAlias;
+  const pathNameForNormalize = String(rawPathNameCustom ?? '').trim() ? rawPathNameCustom : rawPathName;
+
+  const normalizedName = normalizeGameTitle(nameForNormalize);
+  const normalizedAlias = normalizeGameTitle(aliasForNormalize);
+  const normalizedPathName = normalizeGameTitle(pathNameForNormalize);
 
   const candidates = [
-    ...(rawAlias ? [normalizedAlias, rawAlias] : []),
+    ...(rawAlias ? [normalizedAlias, String(aliasForNormalize || '').trim(), rawAlias] : []),
     normalizedName,
+    String(nameForNormalize || '').trim(),
     rawName,
     normalizedPathName,
+    String(pathNameForNormalize || '').trim(),
     String(rawPathName || '').trim()
   ]
     .filter(Boolean)

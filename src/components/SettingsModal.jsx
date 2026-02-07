@@ -723,10 +723,10 @@ function SettingsModal({
           {/* 添加新根目录 */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              添加新根目录
+              添加根目录
             </label>
             <p className="text-xs text-gray-500 mb-3">
-              该目录下的所有子文件夹将被识别为游戏
+              该目录的次级文件将被识别为游戏文件
             </p>
 
             <div className="flex gap-3">
@@ -734,7 +734,7 @@ function SettingsModal({
                 type="text"
                 value={newPath}
                 onChange={(e) => setNewPath(e.target.value)}
-                placeholder="选择或输入目录路径"
+                placeholder="选择或输入目录路径(可多选)"
                 className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300 shadow-lg hover:shadow-xl"
               />
               <button
@@ -766,7 +766,7 @@ function SettingsModal({
               单独添加游戏
             </label>
             <p className="text-xs text-gray-500 mb-3">
-              直接将所选文件夹添加为一个游戏（不扫描子目录）
+              直接将所选文件识别为游戏
             </p>
 
             <div className="flex gap-3">
@@ -774,7 +774,7 @@ function SettingsModal({
                 type="text"
                 value={newGamePath}
                 onChange={(e) => setNewGamePath(e.target.value)}
-                placeholder="选择或输入游戏文件夹路径"
+                placeholder="选择或输入游戏文件"
                 className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/80 focus:border-transparent transition-all duration-300 shadow-lg hover:shadow-xl"
               />
               <button

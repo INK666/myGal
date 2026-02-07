@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectBackground: () => ipcRenderer.invoke('select-background'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  normalizeGameTitle: (rawName) => ipcRenderer.invoke('normalize-game-title', rawName),
+  normalizeGameTitle: (rawName, options) => ipcRenderer.invoke('normalize-game-title', rawName, options),
   saveSetting: (key, value) => ipcRenderer.invoke('save-setting', key, value),
   setProjectBackground: (sourcePath) => ipcRenderer.invoke('set-project-background', sourcePath),
   clearProjectBackground: () => ipcRenderer.invoke('clear-project-background'),

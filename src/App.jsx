@@ -118,7 +118,59 @@ if (!window.electronAPI) {
     getIgnoredGamePaths: async () => ({ success: true, items: [] }),
     restoreIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
     clearIgnoredGamePaths: async () => ({ success: true, restored: 0 }),
-    normalizeGameTitle: async (rawName) => ({ success: true, value: String(rawName ?? '').trim() })
+    normalizeGameTitle: async (rawName, options) => {
+      try {
+        const parseRegexInput = (raw, defaultFlags = '') => {
+          const text = String(raw ?? '').trim();
+          if (!text) return null;
+          if (text.startsWith('/') && text.length >= 2) {
+            const lastSlash = text.lastIndexOf('/');
+            if (lastSlash > 0) {
+              const pattern = text.slice(1, lastSlash);
+              const flags = text.slice(lastSlash + 1);
+              if (/^[a-z]*$/i.test(flags)) {
+                return new RegExp(pattern, flags);
+              }
+            }
+          }
+          return new RegExp(text, defaultFlags);
+        };
+
+        let value = '';
+        try {
+          value = String(rawName ?? '');
+        } catch {
+          value = '';
+        }
+        if (value.length > 5000) value = value.slice(0, 5000);
+
+        const cfg = options || {};
+        const replaceRegexRaw = cfg?.replaceRegex ?? cfg?.replacePattern ?? '';
+        const replaceToRaw = cfg?.replaceTo ?? '';
+        const extractRegexRaw = cfg?.extractRegex ?? cfg?.extractPattern ?? '';
+
+        const replaceRegexText = String(replaceRegexRaw ?? '').trim();
+        const extractRegexText = String(extractRegexRaw ?? '').trim();
+
+        if (replaceRegexText) {
+          if (replaceRegexText.length > 500) throw new Error('替换正则过长');
+          const re = parseRegexInput(replaceRegexRaw, 'g');
+          if (re) value = value.replace(re, String(replaceToRaw ?? ''));
+        }
+        if (extractRegexText) {
+          if (extractRegexText.length > 500) throw new Error('提取正则过长');
+          const re = parseRegexInput(extractRegexRaw, '');
+          if (re) {
+            const m = re.exec(value);
+            value = m ? String((m.length > 1 ? m[1] : m[0]) ?? '') : '';
+          }
+        }
+
+        return { success: true, value: String(value ?? '').trim() };
+      } catch (error) {
+        return { success: false, error: error?.message || String(error), value: '' };
+      }
+    }
   };
 }
 
@@ -1015,6 +1067,7 @@ function App() {
     const [saving, setSaving] = useState(false);
     const [executionStrategyExpanded, setExecutionStrategyExpanded] = useState(false);
     const [customRegexExpanded, setCustomRegexExpanded] = useState(false);
+    const [defaultCleanTipsOpen, setDefaultCleanTipsOpen] = useState(false);
     const [replaceRegex, setReplaceRegex] = useState('');
     const [replaceTo, setReplaceTo] = useState('');
     const [extractRegex, setExtractRegex] = useState('');
@@ -1072,6 +1125,9 @@ function App() {
               ? String(settings.bulkScrapeMaxConcurrent)
               : '1'
           );
+          setReplaceRegex(settings?.scrapeCustomReplaceRegex ? String(settings.scrapeCustomReplaceRegex) : '');
+          setReplaceTo(settings?.scrapeCustomReplaceTo ? String(settings.scrapeCustomReplaceTo) : '');
+          setExtractRegex(settings?.scrapeCustomExtractRegex ? String(settings.scrapeCustomExtractRegex) : '');
         } catch { }
       };
       load();
@@ -1110,6 +1166,9 @@ function App() {
         await window.electronAPI.saveSetting('vndbToken', String(vndbToken || '').trim());
         await window.electronAPI.saveSetting('bulkScrapeIntervalMs', String(normalizedIntervalMs));
         await window.electronAPI.saveSetting('bulkScrapeMaxConcurrent', String(normalizedMaxConcurrent));
+        await window.electronAPI.saveSetting('scrapeCustomReplaceRegex', String(replaceRegex ?? '').trim());
+        await window.electronAPI.saveSetting('scrapeCustomReplaceTo', String(replaceTo ?? ''));
+        await window.electronAPI.saveSetting('scrapeCustomExtractRegex', String(extractRegex ?? '').trim());
         await window.electronAPI.saveSetting('scrapeEnableSteamGridDB', scrapeEnabled.SteamGridDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableIGDB', scrapeEnabled.IGDB ? '1' : '0');
         await window.electronAPI.saveSetting('scrapeEnableVNDBv2', scrapeEnabled.VNDBv2 ? '1' : '0');
@@ -1379,7 +1438,7 @@ function App() {
                           value={igdbClientId}
                           onChange={(e) => setIgdbClientId(e.target.value)}
                           placeholder="可选：IGDB Client ID"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-white/20 focus:border-transparent transition-all duration-200"
+                          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 pr-12 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
                           style={{ WebkitAppRegion: 'no-drag' }}
                         />
                         <button
@@ -1586,39 +1645,133 @@ function App() {
             <div className="bg-gray-900/35 border border-gray-800/80 rounded-2xl p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-gray-200">自定义正则</div>
+                  <div className="text-sm font-medium text-gray-200">增加自定义正则</div>
                   <div className="text-xs text-gray-500 mt-1">
                     {String(replaceRegex || '').trim() || String(extractRegex || '').trim() ? '已设置' : '未设置'}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setCustomRegexExpanded((v) => !v)}
-                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
-                  aria-expanded={customRegexExpanded}
-                >
-                  {customRegexExpanded ? '收起' : '展开'}
-                  <svg
-                    className={`w-4 h-4 transition-transform ${customRegexExpanded ? 'rotate-180' : ''}`}
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
+                <div className="shrink-0 flex items-center gap-2">
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setDefaultCleanTipsOpen((v) => !v)}
+                      className={`inline-flex items-center justify-center w-9 h-9 rounded-xl text-xs transition-all cursor-pointer border ${
+                        defaultCleanTipsOpen
+                          ? 'text-sky-400 bg-sky-500/10 border-sky-500/30'
+                          : 'text-gray-400 hover:text-gray-200 bg-gray-850/60 hover:bg-gray-800/80 border-gray-800/80 hover:border-gray-700/80'
+                      }`}
+                      title="默认刮削前清洗逻辑"
+                      aria-label="默认刮削前清洗逻辑"
+                      aria-expanded={defaultCleanTipsOpen}
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </button>
+
+                    {defaultCleanTipsOpen && (
+                      <div className="absolute right-0 top-full mt-2 w-80 p-4 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl z-50 origin-top-right animate-in fade-in zoom-in-95 duration-200 ring-1 ring-white/5">
+                        <div className="flex items-center gap-2 mb-3 pb-2 border-b border-gray-800/50">
+                          <svg className="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          <span className="font-medium text-gray-200 text-sm">前置清洗规则</span>
+                        </div>
+                        <ul className="space-y-2.5 text-xs text-gray-400 leading-relaxed">
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>移除开头的特殊符号 <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">.</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">_</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">-</code></span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>移除括号内容 <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">[]</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">()</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">【】</code>等</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>提取 <span className="text-gray-300">DLsite</span> 编号：<code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">RJ/VJ/BJ/RE</code> + <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">6~8</code> 位数字</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>移除结尾版本号 <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">v1.0</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">ver1.0</code></span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>移除关键字 <code className="bg-gray-800/80 px-1 py-0.5 rounded text-amber-500/80 font-mono border border-gray-700/50">解压</code> <code className="bg-gray-800/80 px-1 py-0.5 rounded text-amber-500/80 font-mono border border-gray-700/50">密码</code> 及之后内容</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-sky-500/80 mt-0.5">•</span>
+                            <span>移除 <code className="bg-gray-800/80 px-1 py-0.5 rounded text-gray-300 font-mono border border-gray-700/50">.</code> 及之后内容 (去扩展名)</span>
+                          </li>
+                        </ul>
+                        <div className="absolute -top-1.5 right-3 w-3 h-3 bg-gray-900 border-t border-l border-gray-700/50 transform rotate-45 pointer-events-none"></div>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCustomRegexExpanded((v) => !v)}
+                    className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs text-gray-300 hover:text-white bg-gray-850/60 hover:bg-gray-800/80 border border-gray-800/80 hover:border-gray-700/80 transition-all cursor-pointer"
+                    aria-expanded={customRegexExpanded}
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
+                    {customRegexExpanded ? '收起' : '展开'}
+                    <svg
+                      className={`w-4 h-4 transition-transform ${customRegexExpanded ? 'rotate-180' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               {customRegexExpanded ? (
                 <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">替换正则</div>
+                      <input
+                        type="text"
+                        value={replaceRegex}
+                        onChange={(e) => setReplaceRegex(e.target.value)}
+                        placeholder="例如：\\[.*?\\]"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">替换为</div>
+                      <input
+                        type="text"
+                        value={replaceTo}
+                        onChange={(e) => setReplaceTo(e.target.value)}
+                        placeholder="例如：空字符串"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">提取正则</div>
+                      <input
+                        type="text"
+                        value={extractRegex}
+                        onChange={(e) => setExtractRegex(e.target.value)}
+                        placeholder="提取"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
+                        style={{ WebkitAppRegion: 'no-drag' }}
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
-                    <div className="text-xs text-gray-400">输入游戏名</div>
+                    <div className="text-xs text-gray-400">清洗游戏名测试</div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <input
                         type="text"
                         value={cleanNameInput}
                         onChange={(e) => setCleanNameInput(e.target.value)}
-                        placeholder="例如：星织梦未来 星機ユメきライ解压密码：..."
+                        placeholder="输入待清洗游戏名"
                         className="md:col-span-2 w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
                         style={{ WebkitAppRegion: 'no-drag' }}
                       />
@@ -1634,7 +1787,11 @@ function App() {
                           }
                           setCleaningName(true);
                           try {
-                            const res = await api.normalizeGameTitle(cleanNameInput);
+                            const res = await api.normalizeGameTitle(cleanNameInput, {
+                              replaceRegex,
+                              replaceTo,
+                              extractRegex
+                            });
                             if (typeof res === 'string') {
                               setCleanNameOutput(res);
                               return;
@@ -1652,44 +1809,11 @@ function App() {
                             setCleaningName(false);
                           }
                         }}
-                        className="w-full px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm transition-all disabled:opacity-60 border border-gray-700/80 hover:border-gray-600/80"
+                        className="w-full px-4 py-2.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/25 text-sky-100 hover:text-white text-sm transition-all disabled:opacity-60 border border-sky-500/30 hover:border-sky-400/40"
                         style={{ WebkitAppRegion: 'no-drag' }}
                       >
                         {cleaningName ? '清洗中...' : '清洗名字'}
                       </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="bg-gray-850/40 border border-gray-800/80 rounded-xl p-3 space-y-2">
-                      <div className="text-xs text-gray-400">用于替换</div>
-                      <input
-                        type="text"
-                        value={replaceRegex}
-                        onChange={(e) => setReplaceRegex(e.target.value)}
-                        placeholder="替换正则，例如：\\[.*?\\]"
-                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
-                        style={{ WebkitAppRegion: 'no-drag' }}
-                      />
-                      <input
-                        type="text"
-                        value={replaceTo}
-                        onChange={(e) => setReplaceTo(e.target.value)}
-                        placeholder="替换为，例如：空字符串"
-                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
-                        style={{ WebkitAppRegion: 'no-drag' }}
-                      />
-                    </div>
-                    <div className="bg-gray-850/40 border border-gray-800/80 rounded-xl p-3 space-y-2">
-                      <div className="text-xs text-gray-400">用于提取</div>
-                      <input
-                        type="text"
-                        value={extractRegex}
-                        onChange={(e) => setExtractRegex(e.target.value)}
-                        placeholder="提取正则（取第一个捕获组）"
-                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/80 focus:border-transparent transition-all duration-200"
-                        style={{ WebkitAppRegion: 'no-drag' }}
-                      />
                     </div>
                   </div>
 
@@ -1699,7 +1823,7 @@ function App() {
                       type="text"
                       readOnly
                       value={cleanNameOutput}
-                      placeholder="点击「清洗名字」生成"
+                      placeholder="清洗结果"
                       className="w-full bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none transition-all duration-200"
                       style={{ WebkitAppRegion: 'no-drag' }}
                     />
