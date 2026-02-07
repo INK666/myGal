@@ -63,7 +63,7 @@ A根目录/
   - **批量刮削封面、厂商名**：对缺失封面的游戏进行自动抓取，刮削得到的厂商名作为标签添加在游戏上
   - **刮削范围配置**：可选择“根目录参与批量刮削”，新增根目录默认勾选
   - **自定义正则**：可使用自定义正则清洗游戏文件名
-<img width="400" height="400" alt="屏幕截图 2026-02-07 104511" src="https://github.com/user-attachments/assets/25d99b22-0860-4cd4-925d-6a1b6b1628fd" />
+  <img width="400" height="340" alt="屏幕截图 2026-02-07 104511" src="https://github.com/user-attachments/assets/25d99b22-0860-4cd4-925d-6a1b6b1628fd" />
 
 - **背景图片**
   - 支持自定义项目背景图（jpg/png）
