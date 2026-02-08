@@ -481,7 +481,10 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
             }}
           />
         ) : null}
-        <div className="absolute inset-0 bg-gradient-to-br from-gray-950/90 via-gray-900/70 to-gray-950/95" />
+        {game.cover_path ? <div className="absolute inset-0 bg-black/15" /> : null}
+        {!game.cover_path ? (
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-950/90 via-gray-900/70 to-gray-950/95" />
+        ) : null}
 
         {!game.cover_path && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
