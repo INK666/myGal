@@ -88,19 +88,17 @@ A根目录/
 - 安装依赖（如果你环境证书正常）：
 ```
 npm install
-
-npm ci
+npm ci
 ```
 - 安装依赖（如果出现 unable to verify the first certificate ）：
 ```
-$env:NODE_TLS_REJECT_UNAUTHORIZED=0;
- npm ci --force
+set NODE_TLS_REJECT_UNAUTHORIZED=0
+npm ci --force
 ```
 - 重建 Electron 原生依赖（修复 better_sqlite3.node ... NODE_MODULE_VERSION ... 这类报错）：
 ```
-$env:NODE_TLS_REJECT_UNAUTHORIZED=0;
- npx electron-rebuild -f -v 28.3.3 
--m . -w better-sqlite3,sharp
+set NODE_TLS_REJECT_UNAUTHORIZED=0
+npx electron-rebuild -f -v 28.3.3 -m . -w better-sqlite3,sharp
 ```
 - 启动开发模式（Vite + Electron）：
 ```
