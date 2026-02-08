@@ -81,6 +81,43 @@ A根目录/
  
 <div align="center">
 
+1.下载release 安装包
+2.下载项目代码：
+运行命令汇总（按顺序）
+- 安装依赖（如果你环境证书正常）：
+```
+```
+npm install
+
+npm ci
+```
+- 安装依赖（如果出现 unable to verify the first certificate ）：
+```
+$env:NODE_TLS_REJECT_UNAUTHORIZED=0;
+ npm ci --force
+```
+- 重建 Electron 原生依赖（修复 better_sqlite3.node ... NODE_MODULE_VERSION ... 这类报错）：
+```
+$env:NODE_TLS_REJECT_UNAUTHORIZED=0;
+ npx electron-rebuild -f -v 28.3.3 
+-m . -w better-sqlite3,sharp
+```
+- 启动开发模式（Vite + Electron）：
+```
+npm run dev
+```
+- 启动生产模式（仅 Electron）：
+```
+npm run start
+```
+- 打包构建：
+```
+npm run build
+```
+
+
+
+
 **如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！**
 
 Made with ❤️ by [INK666](https://github.com/INK666)
