@@ -1,0 +1,872 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/GameDetailModal.jsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=b44c805d"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+let prevRefreshReg;
+let prevRefreshSig;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  prevRefreshReg = window.$RefreshReg$;
+  prevRefreshSig = window.$RefreshSig$;
+  window.$RefreshReg$ = RefreshRuntime.getRefreshReg("D:/GameManage/src/components/GameDetailModal.jsx");
+  window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;
+}
+var _s = $RefreshSig$();
+import __vite__cjsImport3_react from "/node_modules/.vite/deps/react.js?v=b44c805d"; const React = __vite__cjsImport3_react.__esModule ? __vite__cjsImport3_react.default : __vite__cjsImport3_react; const useState = __vite__cjsImport3_react["useState"]; const useEffect = __vite__cjsImport3_react["useEffect"]; const useRef = __vite__cjsImport3_react["useRef"];
+function GameDetailModal({ game, allTags, onClose, onUpdate }) {
+  _s();
+  const [gameTags, setGameTags] = useState([]);
+  const [showTagManager, setShowTagManager] = useState(false);
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState("#6366f1");
+  const [editingTag, setEditingTag] = useState(null);
+  const [status, setStatus] = useState({ type: "", message: "" });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [scrapeLoading, setScrapeLoading] = useState(false);
+  const editTagInputRef = useRef(null);
+  useEffect(() => {
+    if (status.message) {
+      const timer = setTimeout(() => {
+        setStatus({ type: "", message: "" });
+      }, 3e3);
+      return () => clearTimeout(timer);
+    }
+  }, [status]);
+  const showStatus = (type, message) => {
+    setStatus({ type, message });
+  };
+  useEffect(() => {
+    loadGameTags();
+  }, [game.id]);
+  const loadGameTags = async () => {
+    const tags = await window.electronAPI.getGameTags(game.id);
+    setGameTags(tags);
+  };
+  const handleOpenFolder = async () => {
+    const paths = game.paths && game.paths.length > 0 ? game.paths : game.path ? [game.path] : [];
+    for (const p of paths) {
+      await window.electronAPI.openFolder(p);
+    }
+  };
+  const handleSelectCover = async () => {
+    if (window.electronAPI && window.electronAPI.selectDirectory) {
+      const result = await window.electronAPI.selectCover();
+      if (result && !result.canceled && result.filePaths.length > 0) {
+        await window.electronAPI.updateGameCover(game.id, result.filePaths[0]);
+        showStatus("success", "封面已更新");
+        onUpdate();
+      }
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async (e) => {
+      if (e.target.files && e.target.files[0]) {
+        const filePath = URL.createObjectURL(e.target.files[0]);
+        await window.electronAPI.updateGameCover(game.id, filePath);
+        showStatus("success", "封面已更新");
+        onUpdate();
+      }
+    };
+    input.click();
+  };
+  const handleRemoveCover = async () => {
+    await window.electronAPI.updateGameCover(game.id, null);
+    showStatus("success", "封面已移除");
+    onUpdate();
+  };
+  const handleCaptureScreenCover = async () => {
+    try {
+      if (!window.electronAPI || !window.electronAPI.captureScreenCover) {
+        showStatus("error", "当前环境不支持截图功能");
+        return;
+      }
+      const result = await window.electronAPI.captureScreenCover(game.id);
+      if (!result || !result.success) {
+        if (result && result.error && result.error !== "cancelled") {
+          showStatus("error", "截图失败: " + result.error);
+        }
+        return;
+      }
+      showStatus("success", "封面截图成功");
+      onUpdate();
+    } catch (error) {
+      console.error("截图并设置封面失败:", error);
+      showStatus("error", "截图失败: " + error.message);
+    }
+  };
+  const handleScrapeCover = async () => {
+    if (scrapeLoading) return;
+    if (!window.electronAPI || !window.electronAPI.scrapeGameCover) {
+      showStatus("error", "当前环境不支持刮削功能");
+      return;
+    }
+    setScrapeLoading(true);
+    try {
+      const result = await window.electronAPI.scrapeGameCover(game.id);
+      if (result && result.success) {
+        showStatus("success", `封面已刮削（${result.provider || "未知来源"}）`);
+        onUpdate();
+      } else {
+        const query = result?.query || (Array.isArray(result?.queries) ? result.queries[0] : "");
+        const tried = Array.isArray(result?.tried) ? result.tried.join(" / ") : "";
+        const extra = [query ? `关键词：${query}` : "", tried ? `来源：${tried}` : ""].filter(Boolean).join("，");
+        showStatus("error", "刮削失败：" + (result?.error || "未知错误") + (extra ? `（${extra}）` : ""));
+      }
+    } catch (error) {
+      showStatus("error", "刮削失败：" + (error?.message || String(error)));
+    } finally {
+      setScrapeLoading(false);
+    }
+  };
+  const handleAddTag = async () => {
+    if (!newTagName.trim()) return;
+    let tag = allTags.find((t) => t.name.toLowerCase() === newTagName.toLowerCase());
+    if (!tag) {
+      const result = await window.electronAPI.createTag(newTagName, newTagColor);
+      tag = { id: result.lastInsertRowid, name: newTagName, color: newTagColor };
+    }
+    await window.electronAPI.addTagToGame(game.id, tag.id);
+    setNewTagName("");
+    showStatus("success", "标签已添加");
+    loadGameTags();
+    onUpdate();
+  };
+  const handleRemoveTag = async (tagId) => {
+    await window.electronAPI.removeTagFromGame(game.id, tagId);
+    showStatus("success", "标签已移除");
+    loadGameTags();
+    onUpdate();
+  };
+  const handleAddExistingTag = async (tag) => {
+    if (gameTags.some((gameTag) => gameTag.id === tag.id)) {
+      return;
+    }
+    await window.electronAPI.addTagToGame(game.id, tag.id);
+    loadGameTags();
+    showStatus("success", "标签已添加");
+    onUpdate();
+  };
+  const handleDeleteGame = async () => {
+    await window.electronAPI.deleteGame(game.id);
+    onClose();
+    onUpdate();
+  };
+  const handleSaveTag = async (tag) => {
+    if (editingTag) {
+      await window.electronAPI.updateTag(editingTag.id, tag.name, tag.color);
+      setEditingTag(null);
+      showStatus("success", "标签已更新");
+      loadGameTags();
+      onUpdate();
+    }
+  };
+  return /* @__PURE__ */ jsxDEV(
+    "div",
+    {
+      className: "modal-overlay fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 transition-opacity duration-300",
+      style: { "-webkit-app-region": "no-drag" },
+      children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "modal-content bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-gray-800 shadow-2xl shadow-indigo-900/20 transform transition-all duration-300 hover:shadow-3xl relative", children: [
+          status.message && /* @__PURE__ */ jsxDEV("div", { className: `fixed top-8 left-1/2 transform -translate-x-1/2 z-[60] px-6 py-3 rounded-xl text-sm font-bold shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-top-4 ${status.type === "success" ? "bg-emerald-500 text-white border border-emerald-400" : "bg-red-500 text-white border border-red-400"}`, children: /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-2", children: [
+            status.type === "success" ? /* @__PURE__ */ jsxDEV("svg", { className: "w-5 h-5", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M5 13l4 4L19 7" }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 214,
+              columnNumber: 19
+            }, this) }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 213,
+              columnNumber: 13
+            }, this) : /* @__PURE__ */ jsxDEV("svg", { className: "w-5 h-5", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 218,
+              columnNumber: 19
+            }, this) }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 217,
+              columnNumber: 13
+            }, this),
+            status.message
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 211,
+            columnNumber: 13
+          }, this) }, void 0, false, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 206,
+            columnNumber: 9
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "relative", children: [
+            /* @__PURE__ */ jsxDEV("div", { className: "h-64 md:h-72 bg-gradient-to-br from-indigo-900/90 to-purple-900/90 overflow-hidden rounded-t-2xl", children: [
+              game.cover_path ? /* @__PURE__ */ jsxDEV(
+                "img",
+                {
+                  src: game.cover_path,
+                  alt: game.name,
+                  className: "w-full h-full object-cover transition-transform duration-700 hover:scale-105",
+                  onError: (e) => {
+                    e.target.style.display = "none";
+                    e.target.nextSibling.style.display = "flex";
+                  }
+                },
+                void 0,
+                false,
+                {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 229,
+                  columnNumber: 13
+                },
+                this
+              ) : null,
+              /* @__PURE__ */ jsxDEV(
+                "div",
+                {
+                  className: `w-full h-full flex items-center justify-center bg-black/30 ${game.cover_path ? "hidden" : "flex"}`,
+                  children: /* @__PURE__ */ jsxDEV("svg", { className: "w-24 h-24 text-indigo-400 opacity-80", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 1.5, d: "M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" }, void 0, false, {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 243,
+                    columnNumber: 17
+                  }, this) }, void 0, false, {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 242,
+                    columnNumber: 15
+                  }, this)
+                },
+                void 0,
+                false,
+                {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 239,
+                  columnNumber: 13
+                },
+                this
+              )
+            ] }, void 0, true, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 227,
+              columnNumber: 11
+            }, this),
+            /* @__PURE__ */ jsxDEV(
+              "button",
+              {
+                type: "button",
+                onClick: onClose,
+                className: "absolute top-4 right-4 z-20 bg-black/60 hover:bg-black/80 text-white w-9 h-9 rounded-full flex items-center justify-center transition-all duration-300 hover:scale-110 hover:shadow-lg",
+                children: /* @__PURE__ */ jsxDEV("svg", { className: "w-5 h-5", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" }, void 0, false, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 254,
+                  columnNumber: 15
+                }, this) }, void 0, false, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 253,
+                  columnNumber: 13
+                }, this)
+              },
+              void 0,
+              false,
+              {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 248,
+                columnNumber: 11
+              },
+              this
+            ),
+            /* @__PURE__ */ jsxDEV("div", { className: "absolute -bottom-16 left-6", children: /* @__PURE__ */ jsxDEV("h2", { className: "text-2xl md:text-3xl font-bold text-white drop-shadow-2xl", children: game.name }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 259,
+              columnNumber: 13
+            }, this) }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 258,
+              columnNumber: 11
+            }, this)
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 226,
+            columnNumber: 9
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "pt-20 md:pt-24 p-6 space-y-6", children: [
+            /* @__PURE__ */ jsxDEV("div", { className: "space-y-3", children: [
+              /* @__PURE__ */ jsxDEV("h3", { className: "text-sm font-medium text-gray-400", children: "封面设置与游戏操作" }, void 0, false, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 265,
+                columnNumber: 13
+              }, this),
+              /* @__PURE__ */ jsxDEV("div", { className: "flex flex-wrap md:flex-nowrap gap-3", children: [
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: handleSelectCover,
+                    className: "flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-350 transform hover:-translate-y-0.5",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 272,
+                        columnNumber: 19
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 271,
+                        columnNumber: 17
+                      }, this),
+                      "选择封面"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 267,
+                    columnNumber: 15
+                  },
+                  this
+                ),
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: handleScrapeCover,
+                    disabled: scrapeLoading,
+                    className: "flex-1 bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-fuchsia-600/30 transition-all duration-350 transform hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed",
+                    title: "根据游戏名称自动查找封面",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 283,
+                        columnNumber: 19
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 282,
+                        columnNumber: 17
+                      }, this),
+                      scrapeLoading ? "正在刮削..." : "刮削封面"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 276,
+                    columnNumber: 15
+                  },
+                  this
+                ),
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: handleCaptureScreenCover,
+                    className: "flex-1 bg-gradient-to-r from-blue-600 to-cyan-600 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-blue-600/30 transition-all duration-350 transform hover:-translate-y-0.5",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 292,
+                        columnNumber: 19
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 291,
+                        columnNumber: 17
+                      }, this),
+                      "封面截图"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 287,
+                    columnNumber: 15
+                  },
+                  this
+                ),
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: handleOpenFolder,
+                    className: "flex-1 bg-gradient-to-r from-emerald-500 to-green-500 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 transition-all duration-350 hover:shadow-lg hover:shadow-emerald-500/30 transform hover:-translate-y-0.5",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 301,
+                        columnNumber: 19
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 300,
+                        columnNumber: 17
+                      }, this),
+                      "打开文件夹"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 296,
+                    columnNumber: 15
+                  },
+                  this
+                ),
+                game.cover_path && /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: handleRemoveCover,
+                    className: "px-4 bg-gradient-to-r from-orange-500 to-red-500 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-orange-500/30 transition-all duration-350 transform hover:-translate-y-0.5 whitespace-nowrap",
+                    title: "移除封面",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 312,
+                        columnNumber: 21
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 311,
+                        columnNumber: 19
+                      }, this),
+                      "移除封面"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 306,
+                    columnNumber: 15
+                  },
+                  this
+                ),
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: () => setShowDeleteConfirm(true),
+                    className: "px-4 bg-gradient-to-r from-red-600 to-pink-600 text-white text-sm h-14 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-red-600/30 transition-all duration-350 transform hover:-translate-y-0.5 whitespace-nowrap",
+                    title: "删除游戏",
+                    children: [
+                      /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 323,
+                        columnNumber: 19
+                      }, this) }, void 0, false, {
+                        fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                        lineNumber: 322,
+                        columnNumber: 17
+                      }, this),
+                      "删除游戏"
+                    ]
+                  },
+                  void 0,
+                  true,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 317,
+                    columnNumber: 15
+                  },
+                  this
+                )
+              ] }, void 0, true, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 266,
+                columnNumber: 13
+              }, this)
+            ] }, void 0, true, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 264,
+              columnNumber: 11
+            }, this),
+            /* @__PURE__ */ jsxDEV("div", { className: "space-y-4", children: [
+              /* @__PURE__ */ jsxDEV("div", { className: "flex items-center justify-between", children: [
+                /* @__PURE__ */ jsxDEV("h3", { className: "text-sm font-medium text-gray-400", children: "标签" }, void 0, false, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 332,
+                  columnNumber: 15
+                }, this),
+                /* @__PURE__ */ jsxDEV(
+                  "button",
+                  {
+                    onClick: () => setShowTagManager(!showTagManager),
+                    className: "text-indigo-400 hover:text-indigo-300 text-sm transition-colors duration-300",
+                    children: showTagManager ? "收起" : "管理标签"
+                  },
+                  void 0,
+                  false,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 333,
+                    columnNumber: 15
+                  },
+                  this
+                )
+              ] }, void 0, true, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 331,
+                columnNumber: 13
+              }, this),
+              showTagManager && /* @__PURE__ */ jsxDEV("div", { className: "bg-gray-850/80 backdrop-blur-sm rounded-xl p-4 border border-gray-800/80 shadow-lg", children: [
+                /* @__PURE__ */ jsxDEV("div", { className: "flex flex-wrap gap-3 mb-3", children: [
+                  /* @__PURE__ */ jsxDEV(
+                    "input",
+                    {
+                      type: "text",
+                      value: newTagName,
+                      onChange: (e) => setNewTagName(e.target.value),
+                      placeholder: "新标签名称",
+                      className: "flex-1 bg-gray-900 border border-gray-800/80 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-transparent transition-all duration-300"
+                    },
+                    void 0,
+                    false,
+                    {
+                      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                      lineNumber: 344,
+                      columnNumber: 19
+                    },
+                    this
+                  ),
+                  /* @__PURE__ */ jsxDEV(
+                    "input",
+                    {
+                      type: "color",
+                      value: newTagColor,
+                      onChange: (e) => setNewTagColor(e.target.value),
+                      className: "w-12 h-12 rounded-lg border border-gray-800/80 cursor-pointer hover:scale-110 transition-transform duration-300"
+                    },
+                    void 0,
+                    false,
+                    {
+                      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                      lineNumber: 351,
+                      columnNumber: 19
+                    },
+                    this
+                  ),
+                  /* @__PURE__ */ jsxDEV(
+                    "button",
+                    {
+                      onClick: handleAddTag,
+                      className: "bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm py-2.5 px-4 rounded-lg hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-350 transform hover:-translate-y-0.5 whitespace-nowrap",
+                      children: "添加"
+                    },
+                    void 0,
+                    false,
+                    {
+                      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                      lineNumber: 357,
+                      columnNumber: 19
+                    },
+                    this
+                  )
+                ] }, void 0, true, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 343,
+                  columnNumber: 17
+                }, this),
+                allTags.length > 0 && /* @__PURE__ */ jsxDEV("div", { className: "mt-4", children: [
+                  /* @__PURE__ */ jsxDEV("h4", { className: "text-sm font-medium text-gray-400 mb-2", children: "快捷选择现有标签" }, void 0, false, {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 368,
+                    columnNumber: 21
+                  }, this),
+                  /* @__PURE__ */ jsxDEV("div", { className: "flex flex-wrap gap-2", children: [
+                    allTags.filter((tag) => !gameTags.some((gameTag) => gameTag.id === tag.id)).map(
+                      (tag) => /* @__PURE__ */ jsxDEV(
+                        "button",
+                        {
+                          onClick: () => handleAddExistingTag(tag),
+                          className: "px-3 py-1.5 rounded-full text-xs font-medium text-white flex items-center gap-1 hover:shadow-md transition-all duration-350 transform hover:scale-105",
+                          style: { backgroundColor: tag.color },
+                          children: tag.name
+                        },
+                        tag.id,
+                        false,
+                        {
+                          fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                          lineNumber: 373,
+                          columnNumber: 19
+                        },
+                        this
+                      )
+                    ),
+                    allTags.length === gameTags.length && /* @__PURE__ */ jsxDEV("p", { className: "text-gray-500 text-xs", children: "已添加所有标签" }, void 0, false, {
+                      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                      lineNumber: 383,
+                      columnNumber: 19
+                    }, this)
+                  ] }, void 0, true, {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 369,
+                    columnNumber: 21
+                  }, this)
+                ] }, void 0, true, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 367,
+                  columnNumber: 15
+                }, this)
+              ] }, void 0, true, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 342,
+                columnNumber: 13
+              }, this),
+              /* @__PURE__ */ jsxDEV("div", { className: "flex flex-wrap gap-2.5", children: [
+                gameTags.map(
+                  (tag) => /* @__PURE__ */ jsxDEV(
+                    "span",
+                    {
+                      className: "px-3 py-1.5 rounded-full text-sm font-medium text-white flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-350 transform hover:scale-105",
+                      style: { backgroundColor: tag.color },
+                      children: [
+                        editingTag?.id === tag.id ? /* @__PURE__ */ jsxDEV(
+                          "input",
+                          {
+                            ref: editTagInputRef,
+                            type: "text",
+                            value: editingTag.name,
+                            onChange: (e) => setEditingTag({ ...editingTag, name: e.target.value }),
+                            className: "bg-white/20 rounded px-2 py-1 text-white text-sm w-28 focus:outline-none",
+                            onBlur: () => handleSaveTag(tag),
+                            onKeyPress: (e) => e.key === "Enter" && handleSaveTag(tag),
+                            autoFocus: true
+                          },
+                          void 0,
+                          false,
+                          {
+                            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                            lineNumber: 399,
+                            columnNumber: 17
+                          },
+                          this
+                        ) : /* @__PURE__ */ jsxDEV(
+                          "span",
+                          {
+                            onClick: () => setEditingTag(tag),
+                            className: "cursor-pointer",
+                            children: tag.name
+                          },
+                          void 0,
+                          false,
+                          {
+                            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                            lineNumber: 410,
+                            columnNumber: 17
+                          },
+                          this
+                        ),
+                        /* @__PURE__ */ jsxDEV(
+                          "button",
+                          {
+                            onClick: () => handleRemoveTag(tag.id),
+                            className: "hover:text-red-200 transition-colors duration-300 p-1 hover:bg-white/10 rounded-full",
+                            children: /* @__PURE__ */ jsxDEV("svg", { className: "w-4 h-4", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" }, void 0, false, {
+                              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                              lineNumber: 422,
+                              columnNumber: 23
+                            }, this) }, void 0, false, {
+                              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                              lineNumber: 421,
+                              columnNumber: 21
+                            }, this)
+                          },
+                          void 0,
+                          false,
+                          {
+                            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                            lineNumber: 417,
+                            columnNumber: 19
+                          },
+                          this
+                        )
+                      ]
+                    },
+                    tag.id,
+                    true,
+                    {
+                      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                      lineNumber: 393,
+                      columnNumber: 15
+                    },
+                    this
+                  )
+                ),
+                gameTags.length === 0 && /* @__PURE__ */ jsxDEV("p", { className: "text-gray-500 text-sm", children: "暂无标签，点击上方添加" }, void 0, false, {
+                  fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                  lineNumber: 428,
+                  columnNumber: 15
+                }, this)
+              ] }, void 0, true, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 391,
+                columnNumber: 13
+              }, this)
+            ] }, void 0, true, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 330,
+              columnNumber: 11
+            }, this),
+            /* @__PURE__ */ jsxDEV("div", { className: "bg-gray-850/80 backdrop-blur-sm rounded-xl p-3 border border-gray-800/80", children: [
+              /* @__PURE__ */ jsxDEV("h3", { className: "text-sm font-medium text-gray-400 mb-2", children: "游戏路径" }, void 0, false, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 434,
+                columnNumber: 13
+              }, this),
+              /* @__PURE__ */ jsxDEV("div", { className: "space-y-1.5", children: (game.paths && game.paths.length > 0 ? game.paths : game.path ? [game.path] : []).map(
+                (p, index) => /* @__PURE__ */ jsxDEV(
+                  "p",
+                  {
+                    className: "text-sm text-gray-300 break-all font-mono bg-gray-900/50 px-2 py-1.5 rounded-lg",
+                    children: p
+                  },
+                  `${p}-${index}`,
+                  false,
+                  {
+                    fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                    lineNumber: 440,
+                    columnNumber: 15
+                  },
+                  this
+                )
+              ) }, void 0, false, {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 435,
+                columnNumber: 13
+              }, this)
+            ] }, void 0, true, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 433,
+              columnNumber: 11
+            }, this)
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 263,
+            columnNumber: 9
+          }, this)
+        ] }, void 0, true, {
+          fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+          lineNumber: 203,
+          columnNumber: 7
+        }, this),
+        showDeleteConfirm && /* @__PURE__ */ jsxDEV("div", { className: "fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200", children: /* @__PURE__ */ jsxDEV("div", { className: "bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl transform animate-in zoom-in-95 duration-200", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-4 text-red-400 mb-4", children: [
+            /* @__PURE__ */ jsxDEV("div", { className: "p-3 bg-red-500/10 rounded-xl", children: /* @__PURE__ */ jsxDEV("svg", { className: "w-6 h-6", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", children: /* @__PURE__ */ jsxDEV("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 459,
+              columnNumber: 19
+            }, this) }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 458,
+              columnNumber: 17
+            }, this) }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 457,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { className: "text-lg font-bold text-white", children: "确认删除游戏？" }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 462,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 456,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("p", { className: "text-gray-400 text-sm mb-6 leading-relaxed", children: [
+            "您确定要删除 ",
+            /* @__PURE__ */ jsxDEV("span", { className: "text-gray-200 font-semibold", children: [
+              '"',
+              game.name,
+              '"'
+            ] }, void 0, true, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 466,
+              columnNumber: 22
+            }, this),
+            " 吗？ 此操作仅从库中移除，",
+            /* @__PURE__ */ jsxDEV("span", { className: "text-indigo-400", children: "不会删除" }, void 0, false, {
+              fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+              lineNumber: 467,
+              columnNumber: 25
+            }, this),
+            "您的原始游戏文件。"
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 465,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "flex gap-3", children: [
+            /* @__PURE__ */ jsxDEV(
+              "button",
+              {
+                onClick: () => setShowDeleteConfirm(false),
+                className: "flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-2.5 rounded-xl transition-all",
+                children: "取消"
+              },
+              void 0,
+              false,
+              {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 471,
+                columnNumber: 15
+              },
+              this
+            ),
+            /* @__PURE__ */ jsxDEV(
+              "button",
+              {
+                onClick: handleDeleteGame,
+                className: "flex-1 bg-gradient-to-r from-red-600 to-pink-600 text-white font-medium py-2.5 rounded-xl hover:shadow-lg hover:shadow-red-600/30 transition-all transform active:scale-95",
+                children: "确定删除"
+              },
+              void 0,
+              false,
+              {
+                fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+                lineNumber: 477,
+                columnNumber: 15
+              },
+              this
+            )
+          ] }, void 0, true, {
+            fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+            lineNumber: 470,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+          lineNumber: 455,
+          columnNumber: 11
+        }, this) }, void 0, false, {
+          fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+          lineNumber: 454,
+          columnNumber: 7
+        }, this)
+      ]
+    },
+    void 0,
+    true,
+    {
+      fileName: "D:/GameManage/src/components/GameDetailModal.jsx",
+      lineNumber: 199,
+      columnNumber: 5
+    },
+    this
+  );
+}
+_s(GameDetailModal, "eF4Zzo7x85du/8ZaSRPFHQK8g0g=");
+_c = GameDetailModal;
+export default GameDetailModal;
+var _c;
+$RefreshReg$(_c, "GameDetailModal");
+if (import.meta.hot && !inWebWorker) {
+  window.$RefreshReg$ = prevRefreshReg;
+  window.$RefreshSig$ = prevRefreshSig;
+}
+if (import.meta.hot && !inWebWorker) {
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("D:/GameManage/src/components/GameDetailModal.jsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("D:/GameManage/src/components/GameDetailModal.jsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+
+//# sourceMappingURL=data:application/json;base64,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QUEsWUFBTztBQUFBLFlBQy9ELHVCQUFDLFVBQUssV0FBVSxtQkFBa0Isb0JBQWxDO0FBQUE7QUFBQTtBQUFBO0FBQUEsbUJBQXNDO0FBQUEsWUFBTztBQUFBLGVBRnpEO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBR0E7QUFBQSxVQUVBLHVCQUFDLFNBQUksV0FBVSxjQUNiO0FBQUE7QUFBQSxjQUFDO0FBQUE7QUFBQSxnQkFDQyxTQUFTLE1BQU0vRCxxQkFBcUIsS0FBSztBQUFBLGdCQUN6QyxXQUFVO0FBQUEsZ0JBQWlHO0FBQUE7QUFBQSxjQUY3RztBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsWUFLQTtBQUFBLFlBQ0E7QUFBQSxjQUFDO0FBQUE7QUFBQSxnQkFDQyxTQUFTMkU7QUFBQUEsZ0JBQ1QsV0FBVTtBQUFBLGdCQUE0SztBQUFBO0FBQUEsY0FGeEw7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLFlBS0E7QUFBQSxlQVpGO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBYUE7QUFBQSxhQTVCRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBNkJBLEtBOUJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUErQkE7QUFBQTtBQUFBO0FBQUEsSUE5Uko7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBZ1NBO0FBRUo7QUFBQzNGLEdBbmRRTCxpQkFBZTtBQUFBNkcsS0FBZjdHO0FBcWRULGVBQWVBO0FBQWdCLElBQUE2RztBQUFBQyxhQUFBRCxJQUFBIiwibmFtZXMiOlsiUmVhY3QiLCJ1c2VTdGF0ZSIsInVzZUVmZmVjdCIsInVzZVJlZiIsIkdhbWVEZXRhaWxNb2RhbCIsImdhbWUiLCJhbGxUYWdzIiwib25DbG9zZSIsIm9uVXBkYXRlIiwiX3MiLCJnYW1lVGFncyIsInNldEdhbWVUYWdzIiwic2hvd1RhZ01hbmFnZXIiLCJzZXRTaG93VGFnTWFuYWdlciIsIm5ld1RhZ05hbWUiLCJzZXROZXdUYWdOYW1lIiwibmV3VGFnQ29sb3IiLCJzZXROZXdUYWdDb2xvciIsImVkaXRpbmdUYWciLCJzZXRFZGl0aW5nVGFnIiwic3RhdHVzIiwic2V0U3RhdHVzIiwidHlwZSIsIm1lc3NhZ2UiLCJzaG93RGVsZXRlQ29uZmlybSIsInNldFNob3dEZWxldGVDb25maXJtIiwic2NyYXBlTG9hZGluZyIsInNldFNjcmFwZUxvYWRpbmciLCJlZGl0VGFnSW5wdXRSZWYiLCJ0aW1lciIsInNldFRpbWVvdXQiLCJjbGVhclRpbWVvdXQiLCJzaG93U3RhdHVzIiwibG9hZEdhbWVUYWdzIiwiaWQiLCJ0YWdzIiwid2luZG93IiwiZWxlY3Ryb25BUEkiLCJnZXRHYW1lVGFncyIsImhhbmRsZU9wZW5Gb2xkZXIiLCJwYXRocyIsImxlbmd0aCIsInBhdGgiLCJwIiwib3BlbkZvbGRlciIsImhhbmRsZVNlbGVjdENvdmVyIiwic2VsZWN0RGlyZWN0b3J5IiwicmVzdWx0Iiwic2VsZWN0Q292ZXIiLCJjYW5jZWxlZCIsImZpbGVQYXRocyIsInVwZGF0ZUdhbWVDb3ZlciIsImlucHV0IiwiZG9jdW1lbnQiLCJjcmVhdGVFbGVtZW50IiwiYWNjZXB0Iiwib25jaGFuZ2UiLCJlIiwidGFyZ2V0IiwiZmlsZXMiLCJmaWxlUGF0aCIsIlVSTCIsImNyZWF0ZU9iamVjdFVSTCIsImNsaWNrIiwiaGFuZGxlUmVtb3ZlQ292ZXIiLCJoYW5kbGVDYXB0dXJlU2NyZWVuQ292ZXIiLCJjYXB0dXJlU2NyZWVuQ292ZXIiLCJzdWNjZXNzIiwiZXJyb3IiLCJjb25zb2xlIiwiaGFuZGxlU2NyYXBlQ292ZXIiLCJzY3JhcGVHYW1lQ292ZXIiLCJwcm92aWRlciIsInF1ZXJ5IiwiQXJyYXkiLCJpc0FycmF5IiwicXVlcmllcyIsInRyaWVkIiwiam9pbiIsImV4dHJhIiwiZmlsdGVyIiwiQm9vbGVhbiIsIlN0cmluZyIsImhhbmRsZUFkZFRhZyIsInRyaW0iLCJ0YWciLCJmaW5kIiwidCIsIm5hbWUiLCJ0b0xvd2VyQ2FzZSIsImNyZWF0ZVRhZyIsImxhc3RJbnNlcnRSb3dpZCIsImNvbG9yIiwiYWRkVGFnVG9HYW1lIiwiaGFuZGxlUmVtb3ZlVGFnIiwidGFnSWQiLCJyZW1vdmVUYWdGcm9tR2FtZSIsImhhbmRsZUFkZEV4aXN0aW5nVGFnIiwic29tZSIsImdhbWVUYWciLCJoYW5kbGVEZWxldGVHYW1lIiwiZGVsZXRlR2FtZSIsImhhbmRsZVNhdmVUYWciLCJ1cGRhdGVUYWciLCJjb3Zlcl9wYXRoIiwic3R5bGUiLCJkaXNwbGF5IiwibmV4dFNpYmxpbmciLCJ2YWx1ZSIsIm1hcCIsImJhY2tncm91bmRDb2xvciIsImtleSIsImluZGV4IiwiX2MiLCIkUmVmcmVzaFJlZyQiXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiR2FtZURldGFpbE1vZGFsLmpzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgUmVhY3QsIHsgdXNlU3RhdGUsIHVzZUVmZmVjdCwgdXNlUmVmIH0gZnJvbSAncmVhY3QnO1xuXG5mdW5jdGlvbiBHYW1lRGV0YWlsTW9kYWwoeyBnYW1lLCBhbGxUYWdzLCBvbkNsb3NlLCBvblVwZGF0ZSB9KSB7XG4gIGNvbnN0IFtnYW1lVGFncywgc2V0R2FtZVRhZ3NdID0gdXNlU3RhdGUoW10pO1xuICBjb25zdCBbc2hvd1RhZ01hbmFnZXIsIHNldFNob3dUYWdNYW5hZ2VyXSA9IHVzZVN0YXRlKGZhbHNlKTtcbiAgY29uc3QgW25ld1RhZ05hbWUsIHNldE5ld1RhZ05hbWVdID0gdXNlU3RhdGUoJycpO1xuICBjb25zdCBbbmV3VGFnQ29sb3IsIHNldE5ld1RhZ0NvbG9yXSA9IHVzZVN0YXRlKCcjNjM2NmYxJyk7XG4gIGNvbnN0IFtlZGl0aW5nVGFnLCBzZXRFZGl0aW5nVGFnXSA9IHVzZVN0YXRlKG51bGwpO1xuICBjb25zdCBbc3RhdHVzLCBzZXRTdGF0dXNdID0gdXNlU3RhdGUoeyB0eXBlOiAnJywgbWVzc2FnZTogJycgfSk7XG4gIGNvbnN0IFtzaG93RGVsZXRlQ29uZmlybSwgc2V0U2hvd0RlbGV0ZUNvbmZpcm1dID0gdXNlU3RhdGUoZmFsc2UpO1xuICBjb25zdCBbc2NyYXBlTG9hZGluZywgc2V0U2NyYXBlTG9hZGluZ10gPSB1c2VTdGF0ZShmYWxzZSk7XG4gIGNvbnN0IGVkaXRUYWdJbnB1dFJlZiA9IHVzZVJlZihudWxsKTtcblxuICAvLyAz56eS5ZCO6Ieq5Yqo5riF6Zmk54q25oCB5raI5oGvXG4gIHVzZUVmZmVjdCgoKSA9PiB7XG4gICAgaWYgKHN0YXR1cy5tZXNzYWdlKSB7XG4gICAgICBjb25zdCB0aW1lciA9IHNldFRpbWVvdXQoKCkgPT4ge1xuICAgICAgICBzZXRTdGF0dXMoeyB0eXBlOiAnJywgbWVzc2FnZTogJycgfSk7XG4gICAgICB9LCAzMDAwKTtcbiAgICAgIHJldHVybiAoKSA9PiBjbGVhclRpbWVvdXQodGltZXIpO1xuICAgIH1cbiAgfSwgW3N0YXR1c10pO1xuXG4gIGNvbnN0IHNob3dTdGF0dXMgPSAodHlwZSwgbWVzc2FnZSkgPT4ge1xuICAgIHNldFN0YXR1cyh7IHR5cGUsIG1lc3NhZ2UgfSk7XG4gIH07XG5cbiAgdXNlRWZmZWN0KCgpID0+IHtcbiAgICBsb2FkR2FtZVRhZ3MoKTtcbiAgfSwgW2dhbWUuaWRdKTtcblxuICBjb25zdCBsb2FkR2FtZVRhZ3MgPSBhc3luYyAoKSA9PiB7XG4gICAgY29uc3QgdGFncyA9IGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5nZXRHYW1lVGFncyhnYW1lLmlkKTtcbiAgICBzZXRHYW1lVGFncyh0YWdzKTtcbiAgfTtcblxuICBjb25zdCBoYW5kbGVPcGVuRm9sZGVyID0gYXN5bmMgKCkgPT4ge1xuICAgIGNvbnN0IHBhdGhzID0gKGdhbWUucGF0aHMgJiYgZ2FtZS5wYXRocy5sZW5ndGggPiAwKVxuICAgICAgPyBnYW1lLnBhdGhzXG4gICAgICA6IChnYW1lLnBhdGggPyBbZ2FtZS5wYXRoXSA6IFtdKTtcbiAgICBcbiAgICBmb3IgKGNvbnN0IHAgb2YgcGF0aHMpIHtcbiAgICAgIGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5vcGVuRm9sZGVyKHApO1xuICAgIH1cbiAgfTtcblxuICBjb25zdCBoYW5kbGVTZWxlY3RDb3ZlciA9IGFzeW5jICgpID0+IHtcbiAgICBpZiAod2luZG93LmVsZWN0cm9uQVBJICYmIHdpbmRvdy5lbGVjdHJvbkFQSS5zZWxlY3REaXJlY3RvcnkpIHtcbiAgICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5zZWxlY3RDb3ZlcigpO1xuICAgICAgaWYgKHJlc3VsdCAmJiAhcmVzdWx0LmNhbmNlbGVkICYmIHJlc3VsdC5maWxlUGF0aHMubGVuZ3RoID4gMCkge1xuICAgICAgICBhd2FpdCB3aW5kb3cuZWxlY3Ryb25BUEkudXBkYXRlR2FtZUNvdmVyKGdhbWUuaWQsIHJlc3VsdC5maWxlUGF0aHNbMF0pO1xuICAgICAgICBzaG93U3RhdHVzKCdzdWNjZXNzJywgJ+WwgemdouW3suabtOaWsCcpO1xuICAgICAgICBvblVwZGF0ZSgpO1xuICAgICAgfVxuICAgICAgcmV0dXJuO1xuICAgIH1cblxuICAgIGNvbnN0IGlucHV0ID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnaW5wdXQnKTtcbiAgICBpbnB1dC50eXBlID0gJ2ZpbGUnO1xuICAgIGlucHV0LmFjY2VwdCA9ICdpbWFnZS8qJztcbiAgICBpbnB1dC5vbmNoYW5nZSA9IGFzeW5jIChlKSA9PiB7XG4gICAgICBpZiAoZS50YXJnZXQuZmlsZXMgJiYgZS50YXJnZXQuZmlsZXNbMF0pIHtcbiAgICAgICAgY29uc3QgZmlsZVBhdGggPSBVUkwuY3JlYXRlT2JqZWN0VVJMKGUudGFyZ2V0LmZpbGVzWzBdKTtcbiAgICAgICAgYXdhaXQgd2luZG93LmVsZWN0cm9uQVBJLnVwZGF0ZUdhbWVDb3ZlcihnYW1lLmlkLCBmaWxlUGF0aCk7XG4gICAgICAgIHNob3dTdGF0dXMoJ3N1Y2Nlc3MnLCAn5bCB6Z2i5bey5pu05pawJyk7XG4gICAgICAgIG9uVXBkYXRlKCk7XG4gICAgICB9XG4gICAgfTtcbiAgICBpbnB1dC5jbGljaygpO1xuICB9O1xuXG4gIGNvbnN0IGhhbmRsZVJlbW92ZUNvdmVyID0gYXN5bmMgKCkgPT4ge1xuICAgIGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS51cGRhdGVHYW1lQ292ZXIoZ2FtZS5pZCwgbnVsbCk7XG4gICAgc2hvd1N0YXR1cygnc3VjY2VzcycsICflsIHpnaLlt7Lnp7vpmaQnKTtcbiAgICBvblVwZGF0ZSgpO1xuICB9O1xuXG4gIGNvbnN0IGhhbmRsZUNhcHR1cmVTY3JlZW5Db3ZlciA9IGFzeW5jICgpID0+IHtcbiAgICB0cnkge1xuICAgICAgaWYgKCF3aW5kb3cuZWxlY3Ryb25BUEkgfHwgIXdpbmRvdy5lbGVjdHJvbkFQSS5jYXB0dXJlU2NyZWVuQ292ZXIpIHtcbiAgICAgICAgc2hvd1N0YXR1cygnZXJyb3InLCAn5b2T5YmN546v5aKD5LiN5pSv5oyB5oiq5Zu+5Yqf6IO9Jyk7XG4gICAgICAgIHJldHVybjtcbiAgICAgIH1cbiAgICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5jYXB0dXJlU2NyZWVuQ292ZXIoZ2FtZS5pZCk7XG4gICAgICBpZiAoIXJlc3VsdCB8fCAhcmVzdWx0LnN1Y2Nlc3MpIHtcbiAgICAgICAgaWYgKHJlc3VsdCAmJiByZXN1bHQuZXJyb3IgJiYgcmVzdWx0LmVycm9yICE9PSAnY2FuY2VsbGVkJykge1xuICAgICAgICAgIHNob3dTdGF0dXMoJ2Vycm9yJywgJ+aIquWbvuWksei0pTogJyArIHJlc3VsdC5lcnJvcik7XG4gICAgICAgIH1cbiAgICAgICAgcmV0dXJuO1xuICAgICAgfVxuICAgICAgc2hvd1N0YXR1cygnc3VjY2VzcycsICflsIHpnaLmiKrlm77miJDlip8nKTtcbiAgICAgIG9uVXBkYXRlKCk7XG4gICAgfSBjYXRjaCAoZXJyb3IpIHtcbiAgICAgIGNvbnNvbGUuZXJyb3IoJ+aIquWbvuW5tuiuvue9ruWwgemdouWksei0pTonLCBlcnJvcik7XG4gICAgICBzaG93U3RhdHVzKCdlcnJvcicsICfmiKrlm77lpLHotKU6ICcgKyBlcnJvci5tZXNzYWdlKTtcbiAgICB9XG4gIH07XG5cbiAgY29uc3QgaGFuZGxlU2NyYXBlQ292ZXIgPSBhc3luYyAoKSA9PiB7XG4gICAgaWYgKHNjcmFwZUxvYWRpbmcpIHJldHVybjtcbiAgICBpZiAoIXdpbmRvdy5lbGVjdHJvbkFQSSB8fCAhd2luZG93LmVsZWN0cm9uQVBJLnNjcmFwZUdhbWVDb3Zlcikge1xuICAgICAgc2hvd1N0YXR1cygnZXJyb3InLCAn5b2T5YmN546v5aKD5LiN5pSv5oyB5Yiu5YmK5Yqf6IO9Jyk7XG4gICAgICByZXR1cm47XG4gICAgfVxuICAgIHNldFNjcmFwZUxvYWRpbmcodHJ1ZSk7XG4gICAgdHJ5IHtcbiAgICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5zY3JhcGVHYW1lQ292ZXIoZ2FtZS5pZCk7XG4gICAgICBpZiAocmVzdWx0ICYmIHJlc3VsdC5zdWNjZXNzKSB7XG4gICAgICAgIHNob3dTdGF0dXMoJ3N1Y2Nlc3MnLCBg5bCB6Z2i5bey5Yiu5YmK77yIJHtyZXN1bHQucHJvdmlkZXIgfHwgJ+acquefpeadpea6kCd977yJYCk7XG4gICAgICAgIG9uVXBkYXRlKCk7XG4gICAgICB9IGVsc2Uge1xuICAgICAgICBjb25zdCBxdWVyeSA9IHJlc3VsdD8ucXVlcnkgfHwgKEFycmF5LmlzQXJyYXkocmVzdWx0Py5xdWVyaWVzKSA/IHJlc3VsdC5xdWVyaWVzWzBdIDogJycpO1xuICAgICAgICBjb25zdCB0cmllZCA9IEFycmF5LmlzQXJyYXkocmVzdWx0Py50cmllZCkgPyByZXN1bHQudHJpZWQuam9pbignIC8gJykgOiAnJztcbiAgICAgICAgY29uc3QgZXh0cmEgPSBbcXVlcnkgPyBg5YWz6ZSu6K+N77yaJHtxdWVyeX1gIDogJycsIHRyaWVkID8gYOadpea6kO+8miR7dHJpZWR9YCA6ICcnXS5maWx0ZXIoQm9vbGVhbikuam9pbign77yMJyk7XG4gICAgICAgIHNob3dTdGF0dXMoJ2Vycm9yJywgJ+WIruWJiuWksei0pe+8micgKyAocmVzdWx0Py5lcnJvciB8fCAn5pyq55+l6ZSZ6K+vJykgKyAoZXh0cmEgPyBg77yIJHtleHRyYX3vvIlgIDogJycpKTtcbiAgICAgIH1cbiAgICB9IGNhdGNoIChlcnJvcikge1xuICAgICAgc2hvd1N0YXR1cygnZXJyb3InLCAn5Yiu5YmK5aSx6LSl77yaJyArIChlcnJvcj8ubWVzc2FnZSB8fCBTdHJpbmcoZXJyb3IpKSk7XG4gICAgfSBmaW5hbGx5IHtcbiAgICAgIHNldFNjcmFwZUxvYWRpbmcoZmFsc2UpO1xuICAgIH1cbiAgfTtcblxuICBjb25zdCBoYW5kbGVBZGRUYWcgPSBhc3luYyAoKSA9PiB7XG4gICAgaWYgKCFuZXdUYWdOYW1lLnRyaW0oKSkgcmV0dXJuO1xuXG4gICAgbGV0IHRhZyA9IGFsbFRhZ3MuZmluZCh0ID0+IHQubmFtZS50b0xvd2VyQ2FzZSgpID09PSBuZXdUYWdOYW1lLnRvTG93ZXJDYXNlKCkpO1xuICAgIFxuICAgIGlmICghdGFnKSB7XG4gICAgICBjb25zdCByZXN1bHQgPSBhd2FpdCB3aW5kb3cuZWxlY3Ryb25BUEkuY3JlYXRlVGFnKG5ld1RhZ05hbWUsIG5ld1RhZ0NvbG9yKTtcbiAgICAgIHRhZyA9IHsgaWQ6IHJlc3VsdC5sYXN0SW5zZXJ0Um93aWQsIG5hbWU6IG5ld1RhZ05hbWUsIGNvbG9yOiBuZXdUYWdDb2xvciB9O1xuICAgIH1cblxuICAgIGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5hZGRUYWdUb0dhbWUoZ2FtZS5pZCwgdGFnLmlkKTtcbiAgICBzZXROZXdUYWdOYW1lKCcnKTtcbiAgICBzaG93U3RhdHVzKCdzdWNjZXNzJywgJ+agh+etvuW3sua3u+WKoCcpO1xuICAgIGxvYWRHYW1lVGFncygpO1xuICAgIG9uVXBkYXRlKCk7XG4gIH07XG5cbiAgY29uc3QgaGFuZGxlUmVtb3ZlVGFnID0gYXN5bmMgKHRhZ0lkKSA9PiB7XG4gICAgYXdhaXQgd2luZG93LmVsZWN0cm9uQVBJLnJlbW92ZVRhZ0Zyb21HYW1lKGdhbWUuaWQsIHRhZ0lkKTtcbiAgICBzaG93U3RhdHVzKCdzdWNjZXNzJywgJ+agh+etvuW3suenu+mZpCcpO1xuICAgIGxvYWRHYW1lVGFncygpO1xuICAgIG9uVXBkYXRlKCk7XG4gIH07XG5cbiAgY29uc3QgaGFuZGxlQWRkRXhpc3RpbmdUYWcgPSBhc3luYyAodGFnKSA9PiB7XG4gICAgLy8g5qOA5p+l5qCH562+5piv5ZCm5bey57uP5re75YqgXG4gICAgaWYgKGdhbWVUYWdzLnNvbWUoZ2FtZVRhZyA9PiBnYW1lVGFnLmlkID09PSB0YWcuaWQpKSB7XG4gICAgICByZXR1cm47XG4gICAgfVxuXG4gICAgLy8g6LCD55SoSVBD5o6l5Y+j5re75Yqg5qCH562+5Yiw5ri45oiPXG4gICAgYXdhaXQgd2luZG93LmVsZWN0cm9uQVBJLmFkZFRhZ1RvR2FtZShnYW1lLmlkLCB0YWcuaWQpO1xuICAgIC8vIOabtOaWsOagh+etvuWIl+ihqFxuICAgIGxvYWRHYW1lVGFncygpO1xuICAgIC8vIOmAmuefpeeItue7hOS7tuabtOaWsFxuICAgIHNob3dTdGF0dXMoJ3N1Y2Nlc3MnLCAn5qCH562+5bey5re75YqgJyk7XG4gICAgb25VcGRhdGUoKTtcbiAgfTtcblxuICBjb25zdCBoYW5kbGVEZWxldGVHYW1lID0gYXN5bmMgKCkgPT4ge1xuICAgIGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS5kZWxldGVHYW1lKGdhbWUuaWQpO1xuICAgIG9uQ2xvc2UoKTtcbiAgICBvblVwZGF0ZSgpO1xuICB9O1xuXG4gIGNvbnN0IGhhbmRsZVNhdmVUYWcgPSBhc3luYyAodGFnKSA9PiB7XG4gICAgaWYgKGVkaXRpbmdUYWcpIHtcbiAgICAgIGF3YWl0IHdpbmRvdy5lbGVjdHJvbkFQSS51cGRhdGVUYWcoZWRpdGluZ1RhZy5pZCwgdGFnLm5hbWUsIHRhZy5jb2xvcik7XG4gICAgICBzZXRFZGl0aW5nVGFnKG51bGwpO1xuICAgICAgc2hvd1N0YXR1cygnc3VjY2VzcycsICfmoIfnrb7lt7Lmm7TmlrAnKTtcbiAgICAgIGxvYWRHYW1lVGFncygpO1xuICAgICAgb25VcGRhdGUoKTtcbiAgICB9XG4gIH07XG5cbiAgcmV0dXJuIChcbiAgICA8ZGl2XG4gICAgICBjbGFzc05hbWU9XCJtb2RhbC1vdmVybGF5IGZpeGVkIGluc2V0LTAgYmctYmxhY2svNzAgYmFja2Ryb3AtYmx1ci1zbSBmbGV4IGl0ZW1zLWNlbnRlciBqdXN0aWZ5LWNlbnRlciB6LTUwIHAtNCB0cmFuc2l0aW9uLW9wYWNpdHkgZHVyYXRpb24tMzAwXCJcbiAgICAgIHN0eWxlPXt7ICctd2Via2l0LWFwcC1yZWdpb24nOiAnbm8tZHJhZycgfX1cbiAgICA+XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1vZGFsLWNvbnRlbnQgYmctZ3JhZGllbnQtdG8tYnIgZnJvbS1ncmF5LTkwMCB0by1ncmF5LTgwMCByb3VuZGVkLTJ4bCB3LWZ1bGwgbWF4LXctMnhsIG1heC1oLVs5MHZoXSBvdmVyZmxvdy15LWF1dG8gYm9yZGVyIGJvcmRlci1ncmF5LTgwMCBzaGFkb3ctMnhsIHNoYWRvdy1pbmRpZ28tOTAwLzIwIHRyYW5zZm9ybSB0cmFuc2l0aW9uLWFsbCBkdXJhdGlvbi0zMDAgaG92ZXI6c2hhZG93LTN4bCByZWxhdGl2ZVwiPlxuICAgICAgICB7Lyog54q25oCB5raI5oGv5o+Q56S6ICovfVxuICAgICAgICB7c3RhdHVzLm1lc3NhZ2UgJiYgKFxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPXtgZml4ZWQgdG9wLTggbGVmdC0xLzIgdHJhbnNmb3JtIC10cmFuc2xhdGUteC0xLzIgei1bNjBdIHB4LTYgcHktMyByb3VuZGVkLXhsIHRleHQtc20gZm9udC1ib2xkIHNoYWRvdy0yeGwgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzAwIGFuaW1hdGUtaW4gZmFkZS1pbiBzbGlkZS1pbi1mcm9tLXRvcC00ICR7XG4gICAgICAgICAgICBzdGF0dXMudHlwZSA9PT0gJ3N1Y2Nlc3MnIFxuICAgICAgICAgICAgICA/ICdiZy1lbWVyYWxkLTUwMCB0ZXh0LXdoaXRlIGJvcmRlciBib3JkZXItZW1lcmFsZC00MDAnIFxuICAgICAgICAgICAgICA6ICdiZy1yZWQtNTAwIHRleHQtd2hpdGUgYm9yZGVyIGJvcmRlci1yZWQtNDAwJ1xuICAgICAgICAgIH1gfT5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTJcIj5cbiAgICAgICAgICAgICAge3N0YXR1cy50eXBlID09PSAnc3VjY2VzcycgPyAoXG4gICAgICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTUgaC01XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgICA8cGF0aCBzdHJva2VMaW5lY2FwPVwicm91bmRcIiBzdHJva2VMaW5lam9pbj1cInJvdW5kXCIgc3Ryb2tlV2lkdGg9ezJ9IGQ9XCJNNSAxM2w0IDRMMTkgN1wiIC8+XG4gICAgICAgICAgICAgICAgPC9zdmc+XG4gICAgICAgICAgICAgICkgOiAoXG4gICAgICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTUgaC01XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgICA8cGF0aCBzdHJva2VMaW5lY2FwPVwicm91bmRcIiBzdHJva2VMaW5lam9pbj1cInJvdW5kXCIgc3Ryb2tlV2lkdGg9ezJ9IGQ9XCJNMTIgOHY0bTAgNGguMDFNMjEgMTJhOSA5IDAgMTEtMTggMCA5IDkgMCAwMTE4IDB6XCIgLz5cbiAgICAgICAgICAgICAgICA8L3N2Zz5cbiAgICAgICAgICAgICAgKX1cbiAgICAgICAgICAgICAge3N0YXR1cy5tZXNzYWdlfVxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPC9kaXY+XG4gICAgICAgICl9XG5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJyZWxhdGl2ZVwiPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiaC02NCBtZDpoLTcyIGJnLWdyYWRpZW50LXRvLWJyIGZyb20taW5kaWdvLTkwMC85MCB0by1wdXJwbGUtOTAwLzkwIG92ZXJmbG93LWhpZGRlbiByb3VuZGVkLXQtMnhsXCI+XG4gICAgICAgICAgICB7Z2FtZS5jb3Zlcl9wYXRoID8gKFxuICAgICAgICAgICAgICA8aW1nXG4gICAgICAgICAgICAgICAgc3JjPXtnYW1lLmNvdmVyX3BhdGh9XG4gICAgICAgICAgICAgICAgYWx0PXtnYW1lLm5hbWV9XG4gICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwidy1mdWxsIGgtZnVsbCBvYmplY3QtY292ZXIgdHJhbnNpdGlvbi10cmFuc2Zvcm0gZHVyYXRpb24tNzAwIGhvdmVyOnNjYWxlLTEwNVwiXG4gICAgICAgICAgICAgICAgb25FcnJvcj17KGUpID0+IHtcbiAgICAgICAgICAgICAgICAgIGUudGFyZ2V0LnN0eWxlLmRpc3BsYXkgPSAnbm9uZSc7XG4gICAgICAgICAgICAgICAgICBlLnRhcmdldC5uZXh0U2libGluZy5zdHlsZS5kaXNwbGF5ID0gJ2ZsZXgnO1xuICAgICAgICAgICAgICAgIH19XG4gICAgICAgICAgICAgIC8+XG4gICAgICAgICAgICApIDogbnVsbH1cbiAgICAgICAgICAgIDxkaXZcbiAgICAgICAgICAgICAgY2xhc3NOYW1lPXtgdy1mdWxsIGgtZnVsbCBmbGV4IGl0ZW1zLWNlbnRlciBqdXN0aWZ5LWNlbnRlciBiZy1ibGFjay8zMCAke2dhbWUuY292ZXJfcGF0aCA/ICdoaWRkZW4nIDogJ2ZsZXgnfWB9XG4gICAgICAgICAgICA+XG4gICAgICAgICAgICAgIDxzdmcgY2xhc3NOYW1lPVwidy0yNCBoLTI0IHRleHQtaW5kaWdvLTQwMCBvcGFjaXR5LTgwXCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgPHBhdGggc3Ryb2tlTGluZWNhcD1cInJvdW5kXCIgc3Ryb2tlTGluZWpvaW49XCJyb3VuZFwiIHN0cm9rZVdpZHRoPXsxLjV9IGQ9XCJNMTUgNXYybTAgNHYybTAgNHYyTTUgNWEyIDIgMCAwMC0yIDJ2M2EyIDIgMCAxMTAgNHYzYTIgMiAwIDAwMiAyaDE0YTIgMiAwIDAwMi0ydi0zYTIgMiAwIDExMC00VjdhMiAyIDAgMDAtMi0ySDV6XCIgLz5cbiAgICAgICAgICAgICAgPC9zdmc+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICBcbiAgICAgICAgICA8YnV0dG9uXG4gICAgICAgICAgICB0eXBlPVwiYnV0dG9uXCJcbiAgICAgICAgICAgIG9uQ2xpY2s9e29uQ2xvc2V9XG4gICAgICAgICAgICBjbGFzc05hbWU9XCJhYnNvbHV0ZSB0b3AtNCByaWdodC00IHotMjAgYmctYmxhY2svNjAgaG92ZXI6YmctYmxhY2svODAgdGV4dC13aGl0ZSB3LTkgaC05IHJvdW5kZWQtZnVsbCBmbGV4IGl0ZW1zLWNlbnRlciBqdXN0aWZ5LWNlbnRlciB0cmFuc2l0aW9uLWFsbCBkdXJhdGlvbi0zMDAgaG92ZXI6c2NhbGUtMTEwIGhvdmVyOnNoYWRvdy1sZ1wiXG4gICAgICAgICAgPlxuICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTUgaC01XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgIDxwYXRoIHN0cm9rZUxpbmVjYXA9XCJyb3VuZFwiIHN0cm9rZUxpbmVqb2luPVwicm91bmRcIiBzdHJva2VXaWR0aD17Mn0gZD1cIk02IDE4TDE4IDZNNiA2bDEyIDEyXCIgLz5cbiAgICAgICAgICAgIDwvc3ZnPlxuICAgICAgICAgIDwvYnV0dG9uPlxuXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJhYnNvbHV0ZSAtYm90dG9tLTE2IGxlZnQtNlwiPlxuICAgICAgICAgICAgPGgyIGNsYXNzTmFtZT1cInRleHQtMnhsIG1kOnRleHQtM3hsIGZvbnQtYm9sZCB0ZXh0LXdoaXRlIGRyb3Atc2hhZG93LTJ4bFwiPntnYW1lLm5hbWV9PC9oMj5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwdC0yMCBtZDpwdC0yNCBwLTYgc3BhY2UteS02XCI+XG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzcGFjZS15LTNcIj5cbiAgICAgICAgICAgIDxoMyBjbGFzc05hbWU9XCJ0ZXh0LXNtIGZvbnQtbWVkaXVtIHRleHQtZ3JheS00MDBcIj7lsIHpnaLorr7nva7kuI7muLjmiI/mk43kvZw8L2gzPlxuICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4IGZsZXgtd3JhcCBtZDpmbGV4LW5vd3JhcCBnYXAtM1wiPlxuICAgICAgICAgICAgICA8YnV0dG9uXG4gICAgICAgICAgICAgICAgb25DbGljaz17aGFuZGxlU2VsZWN0Q292ZXJ9XG4gICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwiZmxleC0xIGJnLWdyYWRpZW50LXRvLXIgZnJvbS1pbmRpZ28tNjAwIHRvLXB1cnBsZS02MDAgdGV4dC13aGl0ZSB0ZXh0LXNtIGgtMTQgcm91bmRlZC14bCBmbGV4IGl0ZW1zLWNlbnRlciBqdXN0aWZ5LWNlbnRlciBnYXAtMiBob3ZlcjpzaGFkb3ctbGcgaG92ZXI6c2hhZG93LWluZGlnby02MDAvMzAgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzUwIHRyYW5zZm9ybSBob3ZlcjotdHJhbnNsYXRlLXktMC41XCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIDxzdmcgY2xhc3NOYW1lPVwidy00IGgtNFwiIGZpbGw9XCJub25lXCIgc3Ryb2tlPVwiY3VycmVudENvbG9yXCIgdmlld0JveD1cIjAgMCAyNCAyNFwiPlxuICAgICAgICAgICAgICAgICAgPHBhdGggc3Ryb2tlTGluZWNhcD1cInJvdW5kXCIgc3Ryb2tlTGluZWpvaW49XCJyb3VuZFwiIHN0cm9rZVdpZHRoPXsyfSBkPVwiTTQgMTZsNC41ODYtNC41ODZhMiAyIDAgMDEyLjgyOCAwTDE2IDE2bS0yLTJsMS41ODYtMS41ODZhMiAyIDAgMDEyLjgyOCAwTDIwIDE0bS02LTZoLjAxTTYgMjBoMTJhMiAyIDAgMDAyLTJWNmEyIDIgMCAwMC0yLTJINmEyIDIgMCAwMC0yIDJ2MTJhMiAyIDAgMDAyIDJ6XCIgLz5cbiAgICAgICAgICAgICAgICA8L3N2Zz5cbiAgICAgICAgICAgICAgICDpgInmi6nlsIHpnaJcbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXtoYW5kbGVTY3JhcGVDb3Zlcn1cbiAgICAgICAgICAgICAgICBkaXNhYmxlZD17c2NyYXBlTG9hZGluZ31cbiAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJmbGV4LTEgYmctZ3JhZGllbnQtdG8tciBmcm9tLWZ1Y2hzaWEtNjAwIHRvLXBpbmstNjAwIHRleHQtd2hpdGUgdGV4dC1zbSBoLTE0IHJvdW5kZWQteGwgZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgZ2FwLTIgaG92ZXI6c2hhZG93LWxnIGhvdmVyOnNoYWRvdy1mdWNoc2lhLTYwMC8zMCB0cmFuc2l0aW9uLWFsbCBkdXJhdGlvbi0zNTAgdHJhbnNmb3JtIGhvdmVyOi10cmFuc2xhdGUteS0wLjUgZGlzYWJsZWQ6b3BhY2l0eS02MCBkaXNhYmxlZDpjdXJzb3Itbm90LWFsbG93ZWRcIlxuICAgICAgICAgICAgICAgIHRpdGxlPVwi5qC55o2u5ri45oiP5ZCN56ew6Ieq5Yqo5p+l5om+5bCB6Z2iXCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIDxzdmcgY2xhc3NOYW1lPVwidy00IGgtNFwiIGZpbGw9XCJub25lXCIgc3Ryb2tlPVwiY3VycmVudENvbG9yXCIgdmlld0JveD1cIjAgMCAyNCAyNFwiPlxuICAgICAgICAgICAgICAgICAgPHBhdGggc3Ryb2tlTGluZWNhcD1cInJvdW5kXCIgc3Ryb2tlTGluZWpvaW49XCJyb3VuZFwiIHN0cm9rZVdpZHRoPXsyfSBkPVwiTTQgNHYxNmgxNlY0SDR6bTQgNGg4TTggMTJoOE04IDE2aDZcIiAvPlxuICAgICAgICAgICAgICAgIDwvc3ZnPlxuICAgICAgICAgICAgICAgIHtzY3JhcGVMb2FkaW5nID8gJ+ato+WcqOWIruWJii4uLicgOiAn5Yiu5YmK5bCB6Z2iJ31cbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXtoYW5kbGVDYXB0dXJlU2NyZWVuQ292ZXJ9XG4gICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwiZmxleC0xIGJnLWdyYWRpZW50LXRvLXIgZnJvbS1ibHVlLTYwMCB0by1jeWFuLTYwMCB0ZXh0LXdoaXRlIHRleHQtc20gaC0xNCByb3VuZGVkLXhsIGZsZXggaXRlbXMtY2VudGVyIGp1c3RpZnktY2VudGVyIGdhcC0yIGhvdmVyOnNoYWRvdy1sZyBob3ZlcjpzaGFkb3ctYmx1ZS02MDAvMzAgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzUwIHRyYW5zZm9ybSBob3ZlcjotdHJhbnNsYXRlLXktMC41XCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIDxzdmcgY2xhc3NOYW1lPVwidy00IGgtNFwiIGZpbGw9XCJub25lXCIgc3Ryb2tlPVwiY3VycmVudENvbG9yXCIgdmlld0JveD1cIjAgMCAyNCAyNFwiPlxuICAgICAgICAgICAgICAgICAgPHBhdGggc3Ryb2tlTGluZWNhcD1cInJvdW5kXCIgc3Ryb2tlTGluZWpvaW49XCJyb3VuZFwiIHN0cm9rZVdpZHRoPXsyfSBkPVwiTTQgMTZsNC41ODYtNC41ODZhMiAyIDAgMDEyLjgyOCAwTDE2IDE2bS0yLTJsMS41ODYtMS41ODZhMiAyIDAgMDEyLjgyOCAwTDIwIDE0bS02LTZoLjAxTTYgMjBoMTJhMiAyIDAgMDAyLTJWNmEyIDIgMCAwMC0yLTJINmEyIDIgMCAwMC0yIDJ2MTJhMiAyIDAgMDAyIDJ6XCIgLz5cbiAgICAgICAgICAgICAgICA8L3N2Zz5cbiAgICAgICAgICAgICAgICDlsIHpnaLmiKrlm75cbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXtoYW5kbGVPcGVuRm9sZGVyfVxuICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cImZsZXgtMSBiZy1ncmFkaWVudC10by1yIGZyb20tZW1lcmFsZC01MDAgdG8tZ3JlZW4tNTAwIHRleHQtd2hpdGUgdGV4dC1zbSBoLTE0IHJvdW5kZWQteGwgZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgZ2FwLTIgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzUwIGhvdmVyOnNoYWRvdy1sZyBob3ZlcjpzaGFkb3ctZW1lcmFsZC01MDAvMzAgdHJhbnNmb3JtIGhvdmVyOi10cmFuc2xhdGUteS0wLjVcIlxuICAgICAgICAgICAgICA+XG4gICAgICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTQgaC00XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgICA8cGF0aCBzdHJva2VMaW5lY2FwPVwicm91bmRcIiBzdHJva2VMaW5lam9pbj1cInJvdW5kXCIgc3Ryb2tlV2lkdGg9ezJ9IGQ9XCJNMyA3djEwYTIgMiAwIDAwMiAyaDE0YTIgMiAwIDAwMi0yVjlhMiAyIDAgMDAtMi0yaC02bC0yLTJINWEyIDIgMCAwMC0yIDJ6XCIgLz5cbiAgICAgICAgICAgICAgICA8L3N2Zz5cbiAgICAgICAgICAgICAgICDmiZPlvIDmlofku7blpLlcbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIHtnYW1lLmNvdmVyX3BhdGggJiYgKFxuICAgICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICAgIG9uQ2xpY2s9e2hhbmRsZVJlbW92ZUNvdmVyfVxuICAgICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwicHgtNCBiZy1ncmFkaWVudC10by1yIGZyb20tb3JhbmdlLTUwMCB0by1yZWQtNTAwIHRleHQtd2hpdGUgdGV4dC1zbSBoLTE0IHJvdW5kZWQteGwgZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgZ2FwLTIgaG92ZXI6c2hhZG93LWxnIGhvdmVyOnNoYWRvdy1vcmFuZ2UtNTAwLzMwIHRyYW5zaXRpb24tYWxsIGR1cmF0aW9uLTM1MCB0cmFuc2Zvcm0gaG92ZXI6LXRyYW5zbGF0ZS15LTAuNSB3aGl0ZXNwYWNlLW5vd3JhcFwiXG4gICAgICAgICAgICAgICAgICB0aXRsZT1cIuenu+mZpOWwgemdolwiXG4gICAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTQgaC00XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgICAgIDxwYXRoIHN0cm9rZUxpbmVjYXA9XCJyb3VuZFwiIHN0cm9rZUxpbmVqb2luPVwicm91bmRcIiBzdHJva2VXaWR0aD17Mn0gZD1cIk0xOSA3bC0uODY3IDEyLjE0MkEyIDIgMCAwMTE2LjEzOCAyMUg3Ljg2MmEyIDIgMCAwMS0xLjk5NS0xLjg1OEw1IDdtNSA0djZtNC02djZtMS0xMFY0YTEgMSAwIDAwLTEtMWgtNGExIDEgMCAwMC0xIDF2M000IDdoMTZcIiAvPlxuICAgICAgICAgICAgICAgICAgPC9zdmc+XG4gICAgICAgICAgICAgICAgICDnp7vpmaTlsIHpnaJcbiAgICAgICAgICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgICAgICAgKX1cbiAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHNldFNob3dEZWxldGVDb25maXJtKHRydWUpfVxuICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cInB4LTQgYmctZ3JhZGllbnQtdG8tciBmcm9tLXJlZC02MDAgdG8tcGluay02MDAgdGV4dC13aGl0ZSB0ZXh0LXNtIGgtMTQgcm91bmRlZC14bCBmbGV4IGl0ZW1zLWNlbnRlciBqdXN0aWZ5LWNlbnRlciBnYXAtMiBob3ZlcjpzaGFkb3ctbGcgaG92ZXI6c2hhZG93LXJlZC02MDAvMzAgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzUwIHRyYW5zZm9ybSBob3ZlcjotdHJhbnNsYXRlLXktMC41IHdoaXRlc3BhY2Utbm93cmFwXCJcbiAgICAgICAgICAgICAgICB0aXRsZT1cIuWIoOmZpOa4uOaIj1wiXG4gICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICA8c3ZnIGNsYXNzTmFtZT1cInctNCBoLTRcIiBmaWxsPVwibm9uZVwiIHN0cm9rZT1cImN1cnJlbnRDb2xvclwiIHZpZXdCb3g9XCIwIDAgMjQgMjRcIj5cbiAgICAgICAgICAgICAgICAgIDxwYXRoIHN0cm9rZUxpbmVjYXA9XCJyb3VuZFwiIHN0cm9rZUxpbmVqb2luPVwicm91bmRcIiBzdHJva2VXaWR0aD17Mn0gZD1cIk0xOSA3bC0uODY3IDEyLjE0MkEyIDIgMCAwMTE2LjEzOCAyMUg3Ljg2MmEyIDIgMCAwMS0xLjk5NS0xLjg1OEw1IDdtNSA0djZtNC02djZtMS0xMFY0YTEgMSAwIDAwLTEtMWgtNGExIDEgMCAwMC0xIDF2M000IDdoMTZcIiAvPlxuICAgICAgICAgICAgICAgIDwvc3ZnPlxuICAgICAgICAgICAgICAgIOWIoOmZpOa4uOaIj1xuICAgICAgICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDwvZGl2PlxuXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzcGFjZS15LTRcIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1iZXR3ZWVuXCI+XG4gICAgICAgICAgICAgIDxoMyBjbGFzc05hbWU9XCJ0ZXh0LXNtIGZvbnQtbWVkaXVtIHRleHQtZ3JheS00MDBcIj7moIfnrb48L2gzPlxuICAgICAgICAgICAgICA8YnV0dG9uXG4gICAgICAgICAgICAgICAgb25DbGljaz17KCkgPT4gc2V0U2hvd1RhZ01hbmFnZXIoIXNob3dUYWdNYW5hZ2VyKX1cbiAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJ0ZXh0LWluZGlnby00MDAgaG92ZXI6dGV4dC1pbmRpZ28tMzAwIHRleHQtc20gdHJhbnNpdGlvbi1jb2xvcnMgZHVyYXRpb24tMzAwXCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIHtzaG93VGFnTWFuYWdlciA/ICfmlLbotbcnIDogJ+euoeeQhuagh+etvid9XG4gICAgICAgICAgICAgIDwvYnV0dG9uPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICBcbiAgICAgICAgICAgIHtzaG93VGFnTWFuYWdlciAmJiAoXG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiYmctZ3JheS04NTAvODAgYmFja2Ryb3AtYmx1ci1zbSByb3VuZGVkLXhsIHAtNCBib3JkZXIgYm9yZGVyLWdyYXktODAwLzgwIHNoYWRvdy1sZ1wiPlxuICAgICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBmbGV4LXdyYXAgZ2FwLTMgbWItM1wiPlxuICAgICAgICAgICAgICAgICAgPGlucHV0XG4gICAgICAgICAgICAgICAgICAgIHR5cGU9XCJ0ZXh0XCJcbiAgICAgICAgICAgICAgICAgICAgdmFsdWU9e25ld1RhZ05hbWV9XG4gICAgICAgICAgICAgICAgICAgIG9uQ2hhbmdlPXsoZSkgPT4gc2V0TmV3VGFnTmFtZShlLnRhcmdldC52YWx1ZSl9XG4gICAgICAgICAgICAgICAgICAgIHBsYWNlaG9sZGVyPVwi5paw5qCH562+5ZCN56ewXCJcbiAgICAgICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwiZmxleC0xIGJnLWdyYXktOTAwIGJvcmRlciBib3JkZXItZ3JheS04MDAvODAgcm91bmRlZC1sZyBweC0zIHB5LTIuNSB0ZXh0LXdoaXRlIHRleHQtc20gZm9jdXM6b3V0bGluZS1ub25lIGZvY3VzOnJpbmctMiBmb2N1czpyaW5nLWluZGlnby01MDAvODAgZm9jdXM6Ym9yZGVyLXRyYW5zcGFyZW50IHRyYW5zaXRpb24tYWxsIGR1cmF0aW9uLTMwMFwiXG4gICAgICAgICAgICAgICAgICAvPlxuICAgICAgICAgICAgICAgICAgPGlucHV0XG4gICAgICAgICAgICAgICAgICAgIHR5cGU9XCJjb2xvclwiXG4gICAgICAgICAgICAgICAgICAgIHZhbHVlPXtuZXdUYWdDb2xvcn1cbiAgICAgICAgICAgICAgICAgICAgb25DaGFuZ2U9eyhlKSA9PiBzZXROZXdUYWdDb2xvcihlLnRhcmdldC52YWx1ZSl9XG4gICAgICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cInctMTIgaC0xMiByb3VuZGVkLWxnIGJvcmRlciBib3JkZXItZ3JheS04MDAvODAgY3Vyc29yLXBvaW50ZXIgaG92ZXI6c2NhbGUtMTEwIHRyYW5zaXRpb24tdHJhbnNmb3JtIGR1cmF0aW9uLTMwMFwiXG4gICAgICAgICAgICAgICAgICAvPlxuICAgICAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgICAgICBvbkNsaWNrPXtoYW5kbGVBZGRUYWd9XG4gICAgICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cImJnLWdyYWRpZW50LXRvLXIgZnJvbS1pbmRpZ28tNjAwIHRvLXB1cnBsZS02MDAgdGV4dC13aGl0ZSB0ZXh0LXNtIHB5LTIuNSBweC00IHJvdW5kZWQtbGcgaG92ZXI6c2hhZG93LWxnIGhvdmVyOnNoYWRvdy1pbmRpZ28tNjAwLzMwIHRyYW5zaXRpb24tYWxsIGR1cmF0aW9uLTM1MCB0cmFuc2Zvcm0gaG92ZXI6LXRyYW5zbGF0ZS15LTAuNSB3aGl0ZXNwYWNlLW5vd3JhcFwiXG4gICAgICAgICAgICAgICAgICA+XG4gICAgICAgICAgICAgICAgICAgIOa3u+WKoFxuICAgICAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgXG4gICAgICAgICAgICAgICAgey8qIOeOsOacieagh+etvuW/q+aNt+mAieaLqSAqL31cbiAgICAgICAgICAgICAgICB7YWxsVGFncy5sZW5ndGggPiAwICYmIChcbiAgICAgICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibXQtNFwiPlxuICAgICAgICAgICAgICAgICAgICA8aDQgY2xhc3NOYW1lPVwidGV4dC1zbSBmb250LW1lZGl1bSB0ZXh0LWdyYXktNDAwIG1iLTJcIj7lv6vmjbfpgInmi6nnjrDmnInmoIfnrb48L2g0PlxuICAgICAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImZsZXggZmxleC13cmFwIGdhcC0yXCI+XG4gICAgICAgICAgICAgICAgICAgICAge2FsbFRhZ3NcbiAgICAgICAgICAgICAgICAgICAgICAgIC5maWx0ZXIodGFnID0+ICFnYW1lVGFncy5zb21lKGdhbWVUYWcgPT4gZ2FtZVRhZy5pZCA9PT0gdGFnLmlkKSlcbiAgICAgICAgICAgICAgICAgICAgICAgIC5tYXAodGFnID0+IChcbiAgICAgICAgICAgICAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgICAgICAgICAgICAgIGtleT17dGFnLmlkfVxuICAgICAgICAgICAgICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IGhhbmRsZUFkZEV4aXN0aW5nVGFnKHRhZyl9XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwicHgtMyBweS0xLjUgcm91bmRlZC1mdWxsIHRleHQteHMgZm9udC1tZWRpdW0gdGV4dC13aGl0ZSBmbGV4IGl0ZW1zLWNlbnRlciBnYXAtMSBob3ZlcjpzaGFkb3ctbWQgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMzUwIHRyYW5zZm9ybSBob3ZlcjpzY2FsZS0xMDVcIlxuICAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0eWxlPXt7IGJhY2tncm91bmRDb2xvcjogdGFnLmNvbG9yIH19XG4gICAgICAgICAgICAgICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICAgICAgICAgICAgICB7dGFnLm5hbWV9XG4gICAgICAgICAgICAgICAgICAgICAgICAgIDwvYnV0dG9uPlxuICAgICAgICAgICAgICAgICAgICAgICAgKSl9XG4gICAgICAgICAgICAgICAgICAgICAge2FsbFRhZ3MubGVuZ3RoID09PSBnYW1lVGFncy5sZW5ndGggJiYgKFxuICAgICAgICAgICAgICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwidGV4dC1ncmF5LTUwMCB0ZXh0LXhzXCI+5bey5re75Yqg5omA5pyJ5qCH562+PC9wPlxuICAgICAgICAgICAgICAgICAgICAgICl9XG4gICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgKX1cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICApfVxuXG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImZsZXggZmxleC13cmFwIGdhcC0yLjVcIj5cbiAgICAgICAgICAgICAge2dhbWVUYWdzLm1hcCh0YWcgPT4gKFxuICAgICAgICAgICAgICAgIDxzcGFuXG4gICAgICAgICAgICAgICAgICBrZXk9e3RhZy5pZH1cbiAgICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cInB4LTMgcHktMS41IHJvdW5kZWQtZnVsbCB0ZXh0LXNtIGZvbnQtbWVkaXVtIHRleHQtd2hpdGUgZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTIgc2hhZG93LW1kIGhvdmVyOnNoYWRvdy1sZyB0cmFuc2l0aW9uLWFsbCBkdXJhdGlvbi0zNTAgdHJhbnNmb3JtIGhvdmVyOnNjYWxlLTEwNVwiXG4gICAgICAgICAgICAgICAgICBzdHlsZT17eyBiYWNrZ3JvdW5kQ29sb3I6IHRhZy5jb2xvciB9fVxuICAgICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICAgIHtlZGl0aW5nVGFnPy5pZCA9PT0gdGFnLmlkID8gKFxuICAgICAgICAgICAgICAgICAgICA8aW5wdXRcbiAgICAgICAgICAgICAgICAgICAgICByZWY9e2VkaXRUYWdJbnB1dFJlZn1cbiAgICAgICAgICAgICAgICAgICAgICB0eXBlPVwidGV4dFwiXG4gICAgICAgICAgICAgICAgICAgICAgdmFsdWU9e2VkaXRpbmdUYWcubmFtZX1cbiAgICAgICAgICAgICAgICAgICAgICBvbkNoYW5nZT17KGUpID0+IHNldEVkaXRpbmdUYWcoeyAuLi5lZGl0aW5nVGFnLCBuYW1lOiBlLnRhcmdldC52YWx1ZSB9KX1cbiAgICAgICAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJiZy13aGl0ZS8yMCByb3VuZGVkIHB4LTIgcHktMSB0ZXh0LXdoaXRlIHRleHQtc20gdy0yOCBmb2N1czpvdXRsaW5lLW5vbmVcIlxuICAgICAgICAgICAgICAgICAgICAgIG9uQmx1cj17KCkgPT4gaGFuZGxlU2F2ZVRhZyh0YWcpfVxuICAgICAgICAgICAgICAgICAgICAgIG9uS2V5UHJlc3M9eyhlKSA9PiBlLmtleSA9PT0gJ0VudGVyJyAmJiBoYW5kbGVTYXZlVGFnKHRhZyl9XG4gICAgICAgICAgICAgICAgICAgICAgYXV0b0ZvY3VzXG4gICAgICAgICAgICAgICAgICAgIC8+XG4gICAgICAgICAgICAgICAgICApIDogKFxuICAgICAgICAgICAgICAgICAgICA8c3BhblxuICAgICAgICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHNldEVkaXRpbmdUYWcodGFnKX1cbiAgICAgICAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJjdXJzb3ItcG9pbnRlclwiXG4gICAgICAgICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICAgICAgICB7dGFnLm5hbWV9XG4gICAgICAgICAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICl9XG4gICAgICAgICAgICAgICAgICA8YnV0dG9uXG4gICAgICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IGhhbmRsZVJlbW92ZVRhZyh0YWcuaWQpfVxuICAgICAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJob3Zlcjp0ZXh0LXJlZC0yMDAgdHJhbnNpdGlvbi1jb2xvcnMgZHVyYXRpb24tMzAwIHAtMSBob3ZlcjpiZy13aGl0ZS8xMCByb3VuZGVkLWZ1bGxcIlxuICAgICAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgICAgICA8c3ZnIGNsYXNzTmFtZT1cInctNCBoLTRcIiBmaWxsPVwibm9uZVwiIHN0cm9rZT1cImN1cnJlbnRDb2xvclwiIHZpZXdCb3g9XCIwIDAgMjQgMjRcIj5cbiAgICAgICAgICAgICAgICAgICAgICA8cGF0aCBzdHJva2VMaW5lY2FwPVwicm91bmRcIiBzdHJva2VMaW5lam9pbj1cInJvdW5kXCIgc3Ryb2tlV2lkdGg9ezJ9IGQ9XCJNNiAxOEwxOCA2TTYgNmwxMiAxMlwiIC8+XG4gICAgICAgICAgICAgICAgICAgIDwvc3ZnPlxuICAgICAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgICAgPC9zcGFuPlxuICAgICAgICAgICAgICApKX1cbiAgICAgICAgICAgICAge2dhbWVUYWdzLmxlbmd0aCA9PT0gMCAmJiAoXG4gICAgICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwidGV4dC1ncmF5LTUwMCB0ZXh0LXNtXCI+5pqC5peg5qCH562+77yM54K55Ye75LiK5pa55re75YqgPC9wPlxuICAgICAgICAgICAgICApfVxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImJnLWdyYXktODUwLzgwIGJhY2tkcm9wLWJsdXItc20gcm91bmRlZC14bCBwLTMgYm9yZGVyIGJvcmRlci1ncmF5LTgwMC84MFwiPlxuICAgICAgICAgICAgPGgzIGNsYXNzTmFtZT1cInRleHQtc20gZm9udC1tZWRpdW0gdGV4dC1ncmF5LTQwMCBtYi0yXCI+5ri45oiP6Lev5b6EPC9oMz5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic3BhY2UteS0xLjVcIj5cbiAgICAgICAgICAgICAgeygoZ2FtZS5wYXRocyAmJiBnYW1lLnBhdGhzLmxlbmd0aCA+IDApXG4gICAgICAgICAgICAgICAgPyBnYW1lLnBhdGhzXG4gICAgICAgICAgICAgICAgOiAoZ2FtZS5wYXRoID8gW2dhbWUucGF0aF0gOiBbXSlcbiAgICAgICAgICAgICAgKS5tYXAoKHAsIGluZGV4KSA9PiAoXG4gICAgICAgICAgICAgICAgPHBcbiAgICAgICAgICAgICAgICAgIGtleT17YCR7cH0tJHtpbmRleH1gfVxuICAgICAgICAgICAgICAgICAgY2xhc3NOYW1lPVwidGV4dC1zbSB0ZXh0LWdyYXktMzAwIGJyZWFrLWFsbCBmb250LW1vbm8gYmctZ3JheS05MDAvNTAgcHgtMiBweS0xLjUgcm91bmRlZC1sZ1wiXG4gICAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgICAge3B9XG4gICAgICAgICAgICAgICAgPC9wPlxuICAgICAgICAgICAgICApKX1cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICA8L2Rpdj5cbiAgICAgIDwvZGl2PlxuXG4gICAgICB7Lyog5Yig6Zmk56Gu6K6k5by556qXICovfVxuICAgICAge3Nob3dEZWxldGVDb25maXJtICYmIChcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJmaXhlZCBpbnNldC0wIHotWzEwMF0gZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgcC00IGJnLWJsYWNrLzYwIGJhY2tkcm9wLWJsdXItc20gYW5pbWF0ZS1pbiBmYWRlLWluIGR1cmF0aW9uLTIwMFwiPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiYmctZ3JheS05MDAgYm9yZGVyIGJvcmRlci1ncmF5LTgwMCByb3VuZGVkLTJ4bCB3LWZ1bGwgbWF4LXctc20gcC02IHNoYWRvdy0yeGwgdHJhbnNmb3JtIGFuaW1hdGUtaW4gem9vbS1pbi05NSBkdXJhdGlvbi0yMDBcIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTQgdGV4dC1yZWQtNDAwIG1iLTRcIj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJwLTMgYmctcmVkLTUwMC8xMCByb3VuZGVkLXhsXCI+XG4gICAgICAgICAgICAgICAgPHN2ZyBjbGFzc05hbWU9XCJ3LTYgaC02XCIgZmlsbD1cIm5vbmVcIiBzdHJva2U9XCJjdXJyZW50Q29sb3JcIiB2aWV3Qm94PVwiMCAwIDI0IDI0XCI+XG4gICAgICAgICAgICAgICAgICA8cGF0aCBzdHJva2VMaW5lY2FwPVwicm91bmRcIiBzdHJva2VMaW5lam9pbj1cInJvdW5kXCIgc3Ryb2tlV2lkdGg9ezJ9IGQ9XCJNMTIgOXYybTAgNGguMDFtLTYuOTM4IDRoMTMuODU2YzEuNTQgMCAyLjUwMi0xLjY2NyAxLjczMi0zTDEzLjczMiA0Yy0uNzctMS4zMzMtMi42OTQtMS4zMzMtMy40NjQgMEwzLjM0IDE2Yy0uNzcgMS4zMzMuMTkyIDMgMS43MzIgM3pcIiAvPlxuICAgICAgICAgICAgICAgIDwvc3ZnPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPGgzIGNsYXNzTmFtZT1cInRleHQtbGcgZm9udC1ib2xkIHRleHQtd2hpdGVcIj7noa7orqTliKDpmaTmuLjmiI/vvJ88L2gzPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICBcbiAgICAgICAgICAgIDxwIGNsYXNzTmFtZT1cInRleHQtZ3JheS00MDAgdGV4dC1zbSBtYi02IGxlYWRpbmctcmVsYXhlZFwiPlxuICAgICAgICAgICAgICDmgqjnoa7lrpropoHliKDpmaQgPHNwYW4gY2xhc3NOYW1lPVwidGV4dC1ncmF5LTIwMCBmb250LXNlbWlib2xkXCI+XCJ7Z2FtZS5uYW1lfVwiPC9zcGFuPiDlkJfvvJ9cbiAgICAgICAgICAgICAg5q2k5pON5L2c5LuF5LuO5bqT5Lit56e76Zmk77yMPHNwYW4gY2xhc3NOYW1lPVwidGV4dC1pbmRpZ28tNDAwXCI+5LiN5Lya5Yig6ZmkPC9zcGFuPuaCqOeahOWOn+Wni+a4uOaIj+aWh+S7tuOAglxuICAgICAgICAgICAgPC9wPlxuXG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImZsZXggZ2FwLTNcIj5cbiAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHNldFNob3dEZWxldGVDb25maXJtKGZhbHNlKX1cbiAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJmbGV4LTEgYmctZ3JheS04MDAgaG92ZXI6YmctZ3JheS03MDAgdGV4dC1ncmF5LTMwMCBmb250LW1lZGl1bSBweS0yLjUgcm91bmRlZC14bCB0cmFuc2l0aW9uLWFsbFwiXG4gICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICDlj5bmtohcbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXtoYW5kbGVEZWxldGVHYW1lfVxuICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cImZsZXgtMSBiZy1ncmFkaWVudC10by1yIGZyb20tcmVkLTYwMCB0by1waW5rLTYwMCB0ZXh0LXdoaXRlIGZvbnQtbWVkaXVtIHB5LTIuNSByb3VuZGVkLXhsIGhvdmVyOnNoYWRvdy1sZyBob3ZlcjpzaGFkb3ctcmVkLTYwMC8zMCB0cmFuc2l0aW9uLWFsbCB0cmFuc2Zvcm0gYWN0aXZlOnNjYWxlLTk1XCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIOehruWumuWIoOmZpFxuICAgICAgICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICA8L2Rpdj5cbiAgICAgICl9XG4gICAgPC9kaXY+XG4gICk7XG59XG5cbmV4cG9ydCBkZWZhdWx0IEdhbWVEZXRhaWxNb2RhbDtcbiJdLCJmaWxlIjoiRDovR2FtZU1hbmFnZS9zcmMvY29tcG9uZW50cy9HYW1lRGV0YWlsTW9kYWwuanN4In0=
