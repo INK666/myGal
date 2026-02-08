@@ -89,7 +89,6 @@ A根目录/
 运行命令汇总（按顺序）
 - 安装依赖（如果你环境证书正常）：
 ```
-```
 npm install
 
 npm ci
@@ -107,11 +106,9 @@ $env:NODE_TLS_REJECT_UNAUTHORIZED=0;
 ```
 - 启动开发模式（Vite + Electron）：
 ```
-npm run dev
-```
-- 启动生产模式（仅 Electron）：
-```
-npm run start
+运行 gameManage.bat
+输入 1
+
 ```
 - 打包构建：
 ```
