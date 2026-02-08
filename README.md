@@ -79,8 +79,6 @@ A根目录/
 - 打开进入游戏所在文件夹
 - 删除游戏条目（删除后不删除本地文件，只添加进ignore名单，可在配置窗口内恢复）
  
-<div align="center">
-
 
 使用方法
 1.下载release 安装包
@@ -115,7 +113,7 @@ $env:NODE_TLS_REJECT_UNAUTHORIZED=0;
 npm run build
 ```
 
-
+<div align="center">
 
 
 **如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！**
