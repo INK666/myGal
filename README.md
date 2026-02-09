@@ -52,7 +52,7 @@ A根目录/
     
     Steam
     
-    DLsite
+    DLsite (最好有日本地区代理，dddd)
     
     SteamGridDB（需要 Key）
     
