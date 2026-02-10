@@ -52,7 +52,7 @@ A根目录/
     
     Steam
     
-    DLsite
+    DLsite (最好有日本地区代理，dddd)
     
     SteamGridDB（需要 Key）
     
@@ -82,12 +82,15 @@ A根目录/
 
 ## 使用方法
 
-1.下载release 安装包
+方法1：下载release 安装包
 
 
-2.下载项目代码：
+方法2：下载项目代码：
 
-运行命令汇总（按顺序）
+运行命令汇总（按顺序）：
+
+cmd进入myGal路径：
+
 - 安装依赖（如果你环境证书正常）：
 ```
 npm install
