@@ -1954,16 +1954,26 @@ const processGames = (games) => {
   });
 };
 
-ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
+const buildGameOrderByClause = (sortFieldRaw = 'imported_at', sortOrderRaw = 'desc') => {
+  const sortField = typeof sortFieldRaw === 'string' ? sortFieldRaw.trim().toLowerCase() : '';
+  const sortOrder = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
+  const orderSql = sortOrder === 'asc' ? 'ASC' : 'DESC';
+
+  if (sortField === 'name') {
+    return `ORDER BY g.pinned DESC, LOWER(TRIM(COALESCE(g.name, ''))) ${orderSql}, COALESCE(g.imported_at, 0) ASC, g.id ASC`;
+  }
+
+  return `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
+};
+
+ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortField: sortFieldRaw = 'imported_at', sortOrder: sortOrderRaw = 'desc' } = {}) => {
   const offset = (page - 1) * pageSize;
   const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
 
-  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
-  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
-  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
+  const orderByClause = buildGameOrderByClause(sortFieldRaw, sortOrderRaw);
   
   const total = isOthers
     ? db.prepare(`
@@ -2025,7 +2035,7 @@ ipcMain.handle('get-games', async (event, { page = 1, pageSize = 20, rootPathId:
   };
 });
 
-ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
+ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortField: sortFieldRaw = 'imported_at', sortOrder: sortOrderRaw = 'desc' } = {}) => {
   if (!query || !query.trim()) {
     return { games: [], total: 0 };
   }
@@ -2037,9 +2047,7 @@ ipcMain.handle('search-games', async (event, query, { page = 1, pageSize = 20, r
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
 
-  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
-  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
-  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
+  const orderByClause = buildGameOrderByClause(sortFieldRaw, sortOrderRaw);
   
   const total = isOthers
     ? db.prepare(`
@@ -2583,16 +2591,14 @@ ipcMain.handle('get-all-tags', async () => {
   return db.prepare('SELECT * FROM tags ORDER BY name').all();
 });
 
-ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortOrder: sortOrderRaw = 'desc' } = {}) => {
+ipcMain.handle('get-games-by-tag', async (event, tagName, { page = 1, pageSize = 20, rootPathId: rootPathIdRaw = null, sortField: sortFieldRaw = 'imported_at', sortOrder: sortOrderRaw = 'desc' } = {}) => {
   const offset = (page - 1) * pageSize;
   const rootPathKey = typeof rootPathIdRaw === 'string' ? rootPathIdRaw.trim().toLowerCase() : '';
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathIdRaw ?? ''), 10);
   const rootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
 
-  const orderKey = typeof sortOrderRaw === 'string' ? sortOrderRaw.trim().toLowerCase() : '';
-  const orderSql = orderKey === 'asc' ? 'ASC' : 'DESC';
-  const orderByClause = `ORDER BY g.pinned DESC, COALESCE(g.imported_at, 0) ${orderSql}, g.id DESC`;
+  const orderByClause = buildGameOrderByClause(sortFieldRaw, sortOrderRaw);
   
   const total = isOthers
     ? db.prepare(`

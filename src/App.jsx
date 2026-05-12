@@ -223,6 +223,9 @@ function App() {
     }
   });
   const [importedAtSortOrder, setImportedAtSortOrder] = useState('desc');
+  const [gameSortField, setGameSortField] = useState('imported_at');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const sortMenuRef = useRef(null);
   const bulkScrapeRunIdRef = useRef(0);
   const bulkScrapeCancelRef = useRef(false);
   const tagFilterPopoverRef = useRef(null);
@@ -289,6 +292,14 @@ function App() {
     setCurrentPage(1);
     try {
       window.electronAPI.saveSetting(importedAtSortOrderSettingKey, normalized);
+    } catch { }
+  };
+
+  const setAndPersistGameSortField = (field) => {
+    setGameSortField(field);
+    setCurrentPage(1);
+    try {
+      window.electronAPI.saveSetting('gameSortField', field);
     } catch { }
   };
   const loadRunHistory = async ({ offset = 0, append = false } = {}) => {
@@ -415,7 +426,7 @@ function App() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedTag, selectedRootPathId, importedAtSortOrder, viewMode]);
+  }, [searchQuery, selectedTag, selectedRootPathId, importedAtSortOrder, gameSortField, viewMode]);
 
   useEffect(() => {
     if (searchQuery.trim()) {
@@ -425,7 +436,7 @@ function App() {
     } else {
       loadGames();
     }
-  }, [searchQuery, selectedTag, selectedRootPathId, currentPage, importedAtSortOrder, viewMode, pageSize]);
+  }, [searchQuery, selectedTag, selectedRootPathId, currentPage, importedAtSortOrder, gameSortField, viewMode, pageSize]);
 
   useLayoutEffect(() => {
     if (!rootFilterOpen) return;
@@ -457,6 +468,28 @@ function App() {
     };
   }, [rootFilterOpen]);
 
+  useLayoutEffect(() => {
+    if (!sortMenuOpen) return;
+
+    const handleMouseDown = (event) => {
+      const el = sortMenuRef.current;
+      if (!el) return;
+      if (el.contains(event.target)) return;
+      setSortMenuOpen(false);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setSortMenuOpen(false);
+    };
+
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [sortMenuOpen]);
+
   const loadRootPaths = async () => {
     const paths = await window.electronAPI.getRootPaths();
     setRootPaths(paths);
@@ -470,6 +503,8 @@ function App() {
       setProjectBackgroundNonce(bgPath ? Date.now() : 0);
       const importedSortKey = String(settings?.[importedAtSortOrderSettingKey] ?? '').trim().toLowerCase();
       setImportedAtSortOrder(importedSortKey === 'asc' ? 'asc' : 'desc');
+      const sortFieldKey = String(settings?.['gameSortField'] ?? 'imported_at').trim().toLowerCase();
+      setGameSortField(sortFieldKey === 'name' ? 'name' : 'imported_at');
       const raw = settings?.[bulkScrapeScopeSettingKey];
       if (raw === null || raw === undefined || String(raw).trim() === '') {
         setBulkScrapeScopeRootPathIds(null);
@@ -497,6 +532,7 @@ function App() {
       setProjectBackgroundPath('');
       setProjectBackgroundNonce(0);
       setImportedAtSortOrder('desc');
+      setGameSortField('imported_at');
     }
     return paths;
   };
@@ -538,7 +574,7 @@ function App() {
 
   const loadGames = async () => {
     setLoading(true);
-    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: allGames, total } = await window.electronAPI.getGames({ page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder, sortField: gameSortField });
     setGames(allGames);
     setTotalGames(total);
     setLoading(false);
@@ -546,7 +582,7 @@ function App() {
 
   const searchGames = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: results, total } = await window.electronAPI.searchGames(searchQuery, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder, sortField: gameSortField });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -554,7 +590,7 @@ function App() {
 
   const loadGamesByTag = async () => {
     setLoading(true);
-    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder });
+    const { games: results, total } = await window.electronAPI.getGamesByTag(selectedTag, { page: currentPage, pageSize: effectivePageSize, rootPathId: selectedRootPathId, sortOrder: importedAtSortOrder, sortField: gameSortField });
     setGames(results);
     setTotalGames(total);
     setLoading(false);
@@ -2247,11 +2283,40 @@ function App() {
                     </button>
                   </div>
                 )}
-                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm shadow-sm transition-colors">
+                  <button
+                    onClick={handleBulkScrape}
+                    disabled={loading || bulkScrapeLoading}
+                    className="flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-gray-200 font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/10"
+                  >
+                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" />
+                    </svg>
+                    {bulkScrapeLoading ? '正在刮削...' : '批量刮削'}
+                  </button>
+                  <button
+                    onClick={() => setShowBulkScrapeScope(true)}
+                    disabled={loading || bulkScrapeLoading}
+                    ref={bulkScrapeScopeButtonRef}
+                    className="flex items-center justify-center px-2.5 text-gray-400 hover:text-gray-200 hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="刮削配置"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm shadow-sm">
                   <button
                     type="button"
                     onClick={() => setAndPersistViewMode('grid')}
-                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
+                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-white/10'
                       }`}
                     title="卡片视图"
                     aria-label="卡片视图"
@@ -2263,7 +2328,7 @@ function App() {
                   <button
                     type="button"
                     onClick={() => setAndPersistViewMode('list')}
-                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-300 hover:bg-white/10'
+                    className={`px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20 ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-white/10'
                       }`}
                     title="列表视图"
                     aria-label="列表视图"
@@ -2273,53 +2338,66 @@ function App() {
                     </svg>
                   </button>
                 </div>
-                <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="relative" ref={sortMenuRef}>
                   <button
                     type="button"
-                    onClick={() => setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc')}
-                    className="px-3 py-2 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 text-gray-200 hover:bg-white/10"
-                    title={importedAtSortOrder === 'desc' ? '按导入时间：倒序' : '按导入时间：正序'}
-                    aria-label={importedAtSortOrder === 'desc' ? '按导入时间倒序排序' : '按导入时间正序排序'}
+                    onClick={() => setSortMenuOpen(!sortMenuOpen)}
+                    className="px-3.5 py-2 flex items-center justify-center gap-1.5 text-gray-200 bg-white/5 hover:bg-white/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/70 border border-white/10 rounded-lg shadow-sm backdrop-blur-sm"
+                    title="选择排序方式"
                   >
-                    <svg
-                      className={`w-4 h-4 transition-transform ${importedAtSortOrder === 'desc' ? '' : 'rotate-180'}`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                    >
+                    <span className="text-[11px] uppercase tracking-[0.16em] text-gray-400 font-semibold">Sort</span>
+                    <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform ${sortMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
-                </div>
-                <div className="flex items-stretch rounded-lg overflow-hidden bg-indigo-500/30 hover:bg-indigo-500/40 border border-indigo-400/30 shadow-sm transition-colors">
-                  <button
-                    onClick={handleBulkScrape}
-                    disabled={loading || bulkScrapeLoading}
-                    className="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-white/15"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v16h16V4H4zm4 4h8M8 12h8M8 16h6" />
-                    </svg>
-                    {bulkScrapeLoading ? '正在刮削...' : '批量刮削封面'}
-                  </button>
-                  <button
-                    onClick={() => setShowBulkScrapeScope(true)}
-                    disabled={loading || bulkScrapeLoading}
-                    ref={bulkScrapeScopeButtonRef}
-                    className="flex items-center justify-center px-3 text-white hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="刮削配置"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                      />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                  </button>
+                  {sortMenuOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-36 z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-1.5">
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (gameSortField === 'imported_at') {
+                              setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc');
+                            } else {
+                              setAndPersistGameSortField('imported_at');
+                            }
+                          }}
+                          className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-colors w-full ${gameSortField === 'imported_at'
+                            ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 shadow-sm'
+                            : 'bg-transparent text-gray-200 hover:bg-white/10'
+                            }`}
+                        >
+                          按导入时间
+                          {gameSortField === 'imported_at' && (
+                            <svg className={`w-3.5 h-3.5 transition-transform ${importedAtSortOrder === 'asc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (gameSortField === 'name') {
+                              setAndPersistImportedAtSortOrder(importedAtSortOrder === 'desc' ? 'asc' : 'desc');
+                            } else {
+                              setAndPersistGameSortField('name');
+                            }
+                          }}
+                          className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-colors w-full ${gameSortField === 'name'
+                            ? 'bg-emerald-600/40 text-white hover:bg-emerald-600/50 shadow-sm'
+                            : 'bg-transparent text-gray-200 hover:bg-white/10'
+                            }`}
+                        >
+                          按名称排序
+                          {gameSortField === 'name' && (
+                            <svg className={`w-3.5 h-3.5 transition-transform ${importedAtSortOrder === 'asc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
