@@ -706,6 +706,22 @@ function App() {
     if (!exePath) return { ok: false, error: '启动失败：无效路径' };
 
     const method = String(it?.method || '').trim();
+    if (method === 'show-item-in-folder') {
+      if (typeof api?.showItemInFolder !== 'function') {
+        return { ok: false, error: '当前环境不支持在资源管理器定位' };
+      }
+
+      const ok = await api.showItemInFolder(exePath, {
+        gameId: it?.game_id ?? null,
+        gameName: String(it?.game_name || ''),
+        logRunHistory: true
+      });
+
+      return ok
+        ? { ok: true, status: { type: 'success', message: '已在资源管理器中定位' } }
+        : { ok: false, error: '定位失败：路径不存在或无效' };
+    }
+
     const launcher = resolveLauncherByHistoryMethod(api, method);
     if (typeof launcher !== 'function') return { ok: false, error: '当前环境不支持运行' };
 
@@ -746,6 +762,7 @@ function App() {
 
     for (const it of result.items) {
       const itId = it?.game_id === null || it?.game_id === undefined ? '' : String(it.game_id);
+      if (String(it?.method || '').trim() === 'show-item-in-folder') continue;
       if (itId && itId === targetId) return it;
     }
     return null;
@@ -1900,6 +1917,7 @@ function App() {
       if (v === 'powershell-runas') return '管理员启动';
       if (v === 'leproc') return 'Locale Emulator';
       if (v === 'lrproc') return 'Locale Remulator';
+      if (v === 'show-item-in-folder') return '定位路径';
       return v;
     };
 

@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAllTags: () => ipcRenderer.invoke('get-all-tags'),
   getGamesByTag: (tagName, params) => ipcRenderer.invoke('get-games-by-tag', tagName, params),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
-  showItemInFolder: (filePath) => ipcRenderer.invoke('show-item-in-folder', filePath),
+  showItemInFolder: (filePath, gameMeta) => ipcRenderer.invoke('show-item-in-folder', filePath, gameMeta),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   scanExecutables: (rootPaths) => ipcRenderer.invoke('scan-executables', rootPaths),
   launchExecutable: (exePath, rootPaths, gameMeta) => ipcRenderer.invoke('launch-executable', exePath, rootPaths, gameMeta),

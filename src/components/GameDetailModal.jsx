@@ -237,7 +237,11 @@ function GameDetailModal({ game, allTags, onClose, onUpdate }) {
     const target = typeof gamePath === 'string' ? gamePath.trim() : '';
     if (!target) return;
     if (window.electronAPI?.showItemInFolder) {
-      const ok = await window.electronAPI.showItemInFolder(target);
+      const ok = await window.electronAPI.showItemInFolder(target, {
+        gameId: game.id,
+        gameName: String((game.alias ?? '').trim() || game.name || ''),
+        logRunHistory: true
+      });
       if (ok) {
         showStatus('success', '已在资源管理器中定位该游戏');
         return;

@@ -2687,12 +2687,20 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
   return false;
 });
 
-ipcMain.handle('show-item-in-folder', async (event, filePath) => {
+ipcMain.handle('show-item-in-folder', async (event, filePath, gameMeta) => {
   const raw = typeof filePath === 'string' ? filePath.trim() : '';
   if (!raw) return false;
   const resolved = path.resolve(raw);
   if (!fs.existsSync(resolved)) return false;
   shell.showItemInFolder(resolved);
+  if (gameMeta?.logRunHistory) {
+    tryLogRunHistory({
+      ...gameMeta,
+      exePath: resolved,
+      method: 'show-item-in-folder',
+      needsUserConfirm: false
+    });
+  }
   return true;
 });
 
@@ -3120,7 +3128,15 @@ const tryLogRunHistory = (meta) => {
     const now = Date.now();
     db.transaction(() => {
       if (gameId !== null) {
-        runHistoryDeleteByGameIdStmt.run(gameId);
+        if (method === 'show-item-in-folder') {
+          db.prepare('DELETE FROM run_history WHERE game_id = ? AND method = ?').run(gameId, 'show-item-in-folder');
+        } else {
+          db.prepare(`
+            DELETE FROM run_history
+            WHERE game_id = ?
+              AND (method IS NULL OR method <> ?)
+          `).run(gameId, 'show-item-in-folder');
+        }
       }
 
       runHistoryInsertStmt.run(
