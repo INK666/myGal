@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'qrcode';
 
 function SettingsModal({
   currentPaths,
@@ -58,6 +59,90 @@ function SettingsModal({
   const [latestVersion, setLatestVersion] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  // API 与移动端连接状态
+  const [apiSettings, setApiSettings] = useState(null);
+  const [apiStatus, setApiStatus] = useState(null);
+  const [apiSaving, setApiSaving] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
+  const copyText = (text, label) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      showStatus('success', `${label || '内容'} 已复制到剪贴板`);
+    }).catch(() => {
+      showStatus('error', '复制失败');
+    });
+  };
+
+  const loadApiSettings = async () => {
+    try {
+      if (!window.electronAPI?.getApiSettings) return;
+      const result = await window.electronAPI.getApiSettings();
+      if (result?.success) {
+        setApiSettings(result.settings || null);
+        setApiStatus(result.status || null);
+      }
+    } catch {}
+  };
+
+  const handleSaveApiSettings = async (next = apiSettings) => {
+    if (!window.electronAPI?.saveApiSettings || !next) return;
+    setApiSaving(true);
+    try {
+      const result = await window.electronAPI.saveApiSettings(next);
+      if (result?.success) {
+        setApiSettings(result.settings || next);
+        setApiStatus(result.status || null);
+        showStatus('success', '数据 API 设置已保存并重启');
+      } else {
+        setApiStatus(result?.status || null);
+        showStatus('error', '数据 API 启动失败：' + (result?.error || '未知错误'));
+      }
+    } catch (error) {
+      showStatus('error', '数据 API 设置失败：' + (error?.message || String(error)));
+    } finally {
+      setApiSaving(false);
+    }
+  };
+
+  const handleRegenerateApiToken = async () => {
+    try {
+      if (!window.electronAPI?.regenerateApiToken) return;
+      const result = await window.electronAPI.regenerateApiToken();
+      if (result?.success) {
+        setApiSettings(result.settings || { ...apiSettings, token: result.token });
+        setApiStatus(result.status || apiStatus);
+        showStatus('success', '已生成并应用新 Token');
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadApiSettings();
+  }, []);
+
+  useEffect(() => {
+    if (!apiSettings?.token) {
+      setQrDataUrl('');
+      return;
+    }
+    const primaryUrl = (apiStatus?.lanUrls && apiStatus.lanUrls.length > 0)
+      ? apiStatus.lanUrls[0]
+      : (apiStatus?.localUrl || apiSettings.localUrl || `http://127.0.0.1:${apiSettings.port || 37689}`);
+
+    const payload = JSON.stringify({
+      app: 'myGal',
+      serverUrl: primaryUrl,
+      token: apiSettings.token,
+      host: apiSettings.host,
+      port: apiSettings.port
+    });
+
+    QRCode.toDataURL(payload, { width: 160, margin: 1, color: { dark: '#000000', light: '#ffffff' } })
+      .then(setQrDataUrl)
+      .catch(() => setQrDataUrl(''));
+  }, [apiSettings, apiStatus]);
 
   // 3秒后自动清除状态消息
   useEffect(() => {
@@ -833,7 +918,162 @@ function SettingsModal({
             </div>
           </div>
 
-          {/* 更新检测 */}
+          {/* 移动端与数据 API 设置 */}
+          {apiSettings && (
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <label className="block text-sm font-medium text-gray-300">
+                  移动端连接与数据 API
+                </label>
+                <span className={`text-xs px-2.5 py-1 rounded-lg border font-medium ${
+                  apiStatus?.running
+                    ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                    : 'text-red-300 bg-red-500/10 border-red-500/30'
+                }`}>
+                  {apiStatus?.running ? '● API 运行中' : '○ 未运行'}
+                </span>
+              </div>
+              <div className="p-4 bg-gray-850/80 backdrop-blur-sm rounded-xl border border-gray-800/80 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-gray-900/40 border border-gray-800/80 cursor-pointer hover:border-gray-700 transition-colors">
+                    <span className="text-sm text-gray-300">启用 API 服务</span>
+                    <input
+                      type="checkbox"
+                      checked={!!apiSettings.enabled}
+                      onChange={(e) => setApiSettings({ ...apiSettings, enabled: e.target.checked })}
+                      className="h-4 w-4 accent-indigo-500 rounded"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-gray-900/40 border border-gray-800/80 cursor-pointer hover:border-gray-700 transition-colors">
+                    <span className="text-sm text-gray-300">手机端远程启动</span>
+                    <input
+                      type="checkbox"
+                      checked={apiSettings.allowRemoteLaunch !== false}
+                      onChange={(e) => setApiSettings({ ...apiSettings, allowRemoteLaunch: e.target.checked })}
+                      className="h-4 w-4 accent-indigo-500 rounded"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-gray-900/40 border border-gray-800/80 cursor-pointer hover:border-gray-700 transition-colors">
+                    <span className="text-sm text-gray-300">暴露完整路径</span>
+                    <input
+                      type="checkbox"
+                      checked={!!apiSettings.exposeFullPath}
+                      onChange={(e) => setApiSettings({ ...apiSettings, exposeFullPath: e.target.checked })}
+                      className="h-4 w-4 accent-indigo-500 rounded"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_120px] gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">监听地址</label>
+                    <select
+                      value={apiSettings.host || '127.0.0.1'}
+                      onChange={(e) => setApiSettings({ ...apiSettings, host: e.target.value })}
+                      className="w-full bg-gray-900/70 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/80"
+                    >
+                      <option value="127.0.0.1">127.0.0.1 (仅本机访问)</option>
+                      <option value="0.0.0.0">0.0.0.0 (允许局域网/手机连接)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">服务端口</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={apiSettings.port || 37689}
+                      onChange={(e) => setApiSettings({ ...apiSettings, port: e.target.value })}
+                      className="w-full bg-gray-900/70 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/80"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-gray-400">API 访问 Token (鉴权凭证)</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => copyText(apiSettings.token, 'Token')}
+                        className="px-2.5 py-1 rounded-lg text-xs text-gray-200 bg-gray-800 hover:bg-gray-700 border border-gray-700/80 transition-all"
+                      >
+                        复制 Token
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRegenerateApiToken}
+                        className="px-2.5 py-1 rounded-lg text-xs text-gray-200 bg-gray-800 hover:bg-gray-700 border border-gray-700/80 transition-all"
+                      >
+                        重新生成
+                      </button>
+                    </div>
+                  </div>
+                  <div className="font-mono text-xs text-indigo-300 break-all bg-gray-950/70 border border-gray-800/80 rounded-xl px-3 py-2 select-all">
+                    {apiSettings.token}
+                  </div>
+                </div>
+
+                {qrDataUrl && (
+                  <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 bg-gray-900/70 rounded-xl border border-gray-800/90">
+                    <div className="bg-white p-2 rounded-xl shrink-0 shadow-lg">
+                      <img src={qrDataUrl} alt="手机配对二维码" className="w-28 h-28" />
+                    </div>
+                    <div className="text-xs text-gray-300 space-y-1.5 text-center sm:text-left">
+                      <div className="font-semibold text-indigo-400 flex items-center justify-center sm:justify-start gap-1.5 text-sm">
+                        <span>📱 myGal 手机端扫码一键连接</span>
+                      </div>
+                      <p className="text-gray-400 leading-relaxed">
+                        在同一 WiFi / 局域网下，打开手机 App 扫描左侧二维码，即可瞬间完成配对绑定与鉴权，免手动输入 IP 和 Token。
+                      </p>
+                      <div className="text-[11px] text-gray-500 pt-1">
+                        默认连接地址：<span className="text-gray-300 font-mono">{(apiStatus?.lanUrls && apiStatus.lanUrls[0]) || apiStatus?.localUrl || 'http://127.0.0.1:37689'}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1.5 text-xs text-gray-400">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="break-all font-mono">本机地址：{apiStatus?.localUrl || apiSettings.localUrl}</span>
+                    <button
+                      type="button"
+                      onClick={() => copyText(apiStatus?.localUrl || apiSettings.localUrl, '本机地址')}
+                      className="shrink-0 px-2 py-1 rounded-lg text-xs text-gray-300 bg-gray-850 hover:bg-gray-700 border border-gray-700/80"
+                    >
+                      复制
+                    </button>
+                  </div>
+                  {(apiStatus?.lanUrls || []).map((url) => (
+                    <div key={url} className="flex items-center justify-between gap-2">
+                      <span className="break-all font-mono">局域网地址：{url}</span>
+                      <button
+                        type="button"
+                        onClick={() => copyText(url, '局域网地址')}
+                        className="shrink-0 px-2 py-1 rounded-lg text-xs text-gray-300 bg-gray-850 hover:bg-gray-700 border border-gray-700/80"
+                      >
+                        复制
+                      </button>
+                    </div>
+                  ))}
+                  {apiStatus?.error && (
+                    <div className="text-red-400 font-mono break-all pt-1">错误：{apiStatus.error}</div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleSaveApiSettings()}
+                  disabled={apiSaving}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium py-2.5 px-4 rounded-xl hover:shadow-lg hover:shadow-indigo-600/30 transition-all duration-300 disabled:opacity-50"
+                >
+                  {apiSaving ? '保存并重启中...' : '保存并重启 API 服务'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 版本信息 */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-3">
               <label className="block text-sm font-medium text-gray-300">

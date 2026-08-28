@@ -1,6 +1,9 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, protocol, screen, desktopCapturer, net, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { Worker } = require('worker_threads');
 const Database = require('better-sqlite3');
@@ -2216,7 +2219,7 @@ const addTagsToGameByNames = (gameId, names) => {
   return added;
 };
 
-ipcMain.handle('scrape-game-cover', async (event, gameId) => {
+const scrapeGameCoverCore = async (gameId) => {
   const game = db.prepare('SELECT id, name, alias, path, cover_path FROM games WHERE id = ?').get(gameId);
   if (!game) {
     return { success: false, error: '游戏不存在' };
@@ -2446,6 +2449,10 @@ ipcMain.handle('scrape-game-cover', async (event, gameId) => {
   } catch (error) {
     return { success: false, error: error?.message || String(error), tried, queries: candidates, attempts };
   }
+};
+
+ipcMain.handle('scrape-game-cover', async (event, gameId) => {
+  return scrapeGameCoverCore(gameId);
 });
 
 ipcMain.handle('delete-game', async (event, gameId, deleteFiles = false) => {
@@ -3579,8 +3586,837 @@ ipcMain.handle('capture-screen-cover', async (event, gameId) => {
   });
 });
 
+// ==========================================
+// 移动端/局域网 HTTP API 服务与配套支持
+// ==========================================
+let apiServer = null;
+let apiServerState = { running: false, error: '', host: '', port: 0, startedAt: 0 };
+
+const apiSettingKeys = {
+  enabled: 'apiEnabled',
+  host: 'apiHost',
+  port: 'apiPort',
+  token: 'apiToken',
+  exposeFullPath: 'apiExposeFullPath',
+  allowRemoteLaunch: 'apiAllowRemoteLaunch'
+};
+
+const readApiSetting = (key, defaultValue = '') => {
+  try {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    if (row?.value === null || row?.value === undefined) return defaultValue;
+    return String(row.value);
+  } catch {
+    return defaultValue;
+  }
+};
+
+const writeApiSetting = (key, value) => {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = ?
+  `).run(key, String(value ?? ''), String(value ?? ''));
+};
+
+const toBoolSetting = (value, defaultValue = false) => {
+  if (value === null || value === undefined || value === '') return defaultValue;
+  const v = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+  if (['0', 'false', 'no', 'off'].includes(v)) return false;
+  return defaultValue;
+};
+
+const createApiToken = () => crypto.randomBytes(32).toString('hex');
+
+const ensureApiSettings = () => {
+  if (!readApiSetting(apiSettingKeys.enabled, '')) writeApiSetting(apiSettingKeys.enabled, 'true');
+  if (!readApiSetting(apiSettingKeys.host, '')) writeApiSetting(apiSettingKeys.host, '127.0.0.1');
+  if (!readApiSetting(apiSettingKeys.port, '')) writeApiSetting(apiSettingKeys.port, '37689');
+  if (!readApiSetting(apiSettingKeys.exposeFullPath, '')) writeApiSetting(apiSettingKeys.exposeFullPath, 'false');
+  if (!readApiSetting(apiSettingKeys.allowRemoteLaunch, '')) writeApiSetting(apiSettingKeys.allowRemoteLaunch, 'true');
+  if (!readApiSetting(apiSettingKeys.token, '')) writeApiSetting(apiSettingKeys.token, createApiToken());
+};
+
+const getApiSettingsFromDb = () => {
+  ensureApiSettings();
+  const port = Number.parseInt(readApiSetting(apiSettingKeys.port, '37689'), 10);
+  const host = readApiSetting(apiSettingKeys.host, '127.0.0.1') === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+  return {
+    enabled: toBoolSetting(readApiSetting(apiSettingKeys.enabled, 'true'), true),
+    host,
+    port: Number.isFinite(port) && port > 0 && port <= 65535 ? port : 37689,
+    token: readApiSetting(apiSettingKeys.token, ''),
+    exposeFullPath: toBoolSetting(readApiSetting(apiSettingKeys.exposeFullPath, 'false'), false),
+    allowRemoteLaunch: toBoolSetting(readApiSetting(apiSettingKeys.allowRemoteLaunch, 'true'), true)
+  };
+};
+
+const getLanAddresses = () => {
+  try {
+    return Object.values(os.networkInterfaces())
+      .flat()
+      .filter((item) => item && item.family === 'IPv4' && !item.internal)
+      .map((item) => item.address);
+  } catch {
+    return [];
+  }
+};
+
+const sendApiJson = (res, statusCode, payload) => {
+  const body = JSON.stringify(payload);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.end(body);
+};
+
+const sendApiError = (res, statusCode, message) => {
+  sendApiJson(res, statusCode, { success: false, data: null, error: message });
+};
+
+const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) => {
+  const tags = Array.isArray(game.tags) ? game.tags : [];
+  const hasCover = !!game.cover_path;
+  const result = {
+    id: game.id,
+    name: game.name,
+    alias: game.alias || '',
+    pinned: !!game.pinned,
+    importedAt: game.imported_at || null,
+    createdAt: game.created_at || null,
+    updatedAt: game.updated_at || null,
+    isManual: !!game.is_manual,
+    tags,
+    rootPathIds: Array.isArray(game.root_path_ids) ? game.root_path_ids : [],
+    hasCover,
+    coverUrl: hasCover ? `${baseUrl}/api/covers/${game.id}` : null
+  };
+  if (exposeFullPath) {
+    result.path = game.path || '';
+    result.paths = Array.isArray(game.paths) ? game.paths : [];
+  }
+  return result;
+};
+
+const getApiBaseUrl = (req, settings) => {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() || 'http';
+  const host = String(req.headers.host || `127.0.0.1:${settings.port}`);
+  return `${proto}://${host}`;
+};
+
+const requireApiAuth = (req, settings) => {
+  const token = String(settings.token || '');
+  if (!token) return false;
+  const auth = String(req.headers.authorization || '');
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim() === token;
+  }
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    return url.searchParams.get('token') === token;
+  } catch {
+    return false;
+  }
+};
+
+const queryApiGames = ({ page = 1, pageSize = 60, query = '', tag = '', rootPathId = null, sort = 'imported_at', order = 'desc' } = {}) => {
+  const safePage = Math.max(1, Number.parseInt(String(page), 10) || 1);
+  const safePageSize = Math.max(1, Math.min(200, Number.parseInt(String(pageSize), 10) || 60));
+  const offset = (safePage - 1) * safePageSize;
+  const rootPathKey = typeof rootPathId === 'string' ? rootPathId.trim().toLowerCase() : '';
+  const isOthers = rootPathKey === 'others';
+  const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathId ?? ''), 10);
+  const normalizedRootPathId = Number.isFinite(parsedRootPathId) ? parsedRootPathId : null;
+  const orderByClause = buildGameOrderByClause(sort, order);
+
+  let whereClauses = [];
+  let params = [];
+
+  if (String(query || '').trim()) {
+    const searchPattern = `%${String(query).trim()}%`;
+    whereClauses.push(`(g.name LIKE ? OR g.path LIKE ? OR g.alias LIKE ? OR EXISTS (SELECT 1 FROM game_tags gt2 JOIN tags t2 ON gt2.tag_id = t2.id WHERE gt2.game_id = g.id AND t2.name LIKE ?))`);
+    params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+  }
+
+  if (String(tag || '').trim()) {
+    whereClauses.push(`EXISTS (SELECT 1 FROM game_tags gt3 JOIN tags t3 ON gt3.tag_id = t3.id WHERE gt3.game_id = g.id AND t3.name = ?)`);
+    params.push(String(tag).trim());
+  }
+
+  if (isOthers) {
+    whereClauses.push(`g.is_manual = 1`);
+  } else if (normalizedRootPathId) {
+    whereClauses.push(`(g.root_path_id = ? OR EXISTS (SELECT 1 FROM game_paths gp WHERE gp.game_id = g.id AND gp.root_path_id = ?))`);
+    params.push(normalizedRootPathId, normalizedRootPathId);
+  }
+
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+  const total = db.prepare(`SELECT COUNT(DISTINCT g.id) as count FROM games g ${whereSql}`).get(...params).count;
+
+  const rows = db.prepare(`
+    SELECT g.*, GROUP_CONCAT(t.name) as tags
+    FROM games g
+    LEFT JOIN game_tags gt ON g.id = gt.game_id
+    LEFT JOIN tags t ON gt.tag_id = t.id
+    ${whereSql}
+    GROUP BY g.id
+    ${orderByClause}
+    LIMIT ? OFFSET ?
+  `).all(...params, safePageSize, offset);
+
+  return { games: processGames(rows), total, page: safePage, pageSize: safePageSize };
+};
+
+const getApiStats = () => {
+  const gameCount = db.prepare('SELECT COUNT(1) AS c FROM games').get()?.c || 0;
+  const rootPathCount = db.prepare('SELECT COUNT(1) AS c FROM root_paths').get()?.c || 0;
+  const tagCount = db.prepare('SELECT COUNT(1) AS c FROM tags').get()?.c || 0;
+  const missingCoverCount = db.prepare(`
+    SELECT COUNT(1) AS c FROM games
+    WHERE cover_path IS NULL OR TRIM(cover_path) = ''
+  `).get()?.c || 0;
+  const untaggedCount = db.prepare(`
+    SELECT COUNT(1) AS c
+    FROM games g
+    WHERE NOT EXISTS (SELECT 1 FROM game_tags gt WHERE gt.game_id = g.id)
+  `).get()?.c || 0;
+  const pinnedCount = db.prepare('SELECT COUNT(1) AS c FROM games WHERE pinned = 1').get()?.c || 0;
+  const runHistoryCount = db.prepare('SELECT COUNT(1) AS c FROM run_history').get()?.c || 0;
+  const tagDistribution = db.prepare(`
+    SELECT t.id, t.name, t.color, COUNT(gt.game_id) AS count
+    FROM tags t
+    LEFT JOIN game_tags gt ON t.id = gt.tag_id
+    GROUP BY t.id
+    ORDER BY count DESC, t.name ASC
+  `).all();
+  const rootDistribution = db.prepare(`
+    SELECT rp.id, rp.path, COUNT(DISTINCT g.id) AS count
+    FROM root_paths rp
+    LEFT JOIN games g ON g.root_path_id = rp.id
+    GROUP BY rp.id
+    ORDER BY count DESC, rp.created_at DESC
+  `).all();
+
+  return {
+    gameCount,
+    rootPathCount,
+    tagCount,
+    missingCoverCount,
+    coveredCount: Math.max(0, gameCount - missingCoverCount),
+    untaggedCount,
+    pinnedCount,
+    runHistoryCount,
+    tagDistribution,
+    rootDistribution
+  };
+};
+
+const getGameFilesInternal = async (gameId, maxDepth = 3, maxResults = 300) => {
+  const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
+  if (!game || !game.path || !fs.existsSync(game.path)) {
+    return { success: false, error: '游戏文件夹不存在或未设置', files: [] };
+  }
+  const root = path.resolve(game.path);
+  const results = [];
+
+  const scanDir = async (dir, currentDepth) => {
+    if (currentDepth > maxDepth || results.length >= maxResults) return;
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (results.length >= maxResults) break;
+      if (['.git', 'node_modules', '$RECYCLE.BIN'].includes(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      const relPath = path.relative(root, fullPath).replace(/\\/g, '/');
+      const isDir = entry.isDirectory();
+      let size = 0;
+      let mtime = null;
+      try {
+        const st = await fs.promises.stat(fullPath);
+        size = st.size || 0;
+        mtime = st.mtimeMs || null;
+      } catch {}
+      results.push({
+        name: entry.name,
+        path: relPath,
+        isDir,
+        size,
+        mtime
+      });
+      if (isDir) {
+        await scanDir(fullPath, currentDepth + 1);
+      }
+    }
+  };
+
+  await scanDir(root, 1);
+  return { success: true, gameName: game.name, rootPath: root, files: results };
+};
+
+const launchGameInternal = async (gameId, requestedExe = null) => {
+  const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
+  if (!game) {
+    return { success: false, error: '游戏不存在' };
+  }
+  if (!game.path || !fs.existsSync(game.path)) {
+    return { success: false, error: '游戏路径不存在' };
+  }
+
+  let targetExe = null;
+  if (requestedExe) {
+    const fullExe = path.isAbsolute(requestedExe) ? requestedExe : path.join(game.path, requestedExe);
+    if (fs.existsSync(fullExe)) {
+      targetExe = fullExe;
+    }
+  }
+
+  if (!targetExe) {
+    const history = db.prepare('SELECT exe_path FROM run_history WHERE game_id = ? ORDER BY launched_at DESC LIMIT 1').get(gameId);
+    if (history?.exe_path && fs.existsSync(history.exe_path)) {
+      targetExe = history.exe_path;
+    }
+  }
+
+  if (!targetExe) {
+    try {
+      const entries = await fs.promises.readdir(game.path, { withFileTypes: true });
+      const exeEntries = entries.filter((e) => !e.isDirectory() && e.name.toLowerCase().endsWith('.exe'));
+      if (exeEntries.length > 0) {
+        const matchName = exeEntries.find((e) => e.name.toLowerCase().includes(game.name.toLowerCase()));
+        targetExe = path.join(game.path, matchName ? matchName.name : exeEntries[0].name);
+      }
+    } catch {}
+  }
+
+  if (!targetExe) {
+    shell.openPath(game.path);
+    return { success: true, method: 'openFolder', message: '未找到可执行文件，已打开游戏所在文件夹' };
+  }
+
+  const err = await shell.openPath(targetExe);
+  if (typeof err === 'string' && err.trim()) {
+    return { success: false, error: '启动失败: ' + err.trim() };
+  }
+
+  tryLogRunHistory({
+    gameId: game.id,
+    gameName: game.name,
+    exePath: targetExe,
+    method: 'shell.openPath',
+    needsUserConfirm: false
+  });
+
+  return { success: true, launchedExe: path.basename(targetExe), gameName: game.name };
+};
+
+const readRequestBody = (req) => new Promise((resolve, reject) => {
+  let body = '';
+  req.on('data', (chunk) => {
+    body += chunk;
+    if (body.length > 10 * 1024 * 1024) {
+      req.destroy();
+      reject(new Error('Payload too large'));
+    }
+  });
+  req.on('end', () => {
+    if (!body || !body.trim()) return resolve({});
+    try {
+      resolve(JSON.parse(body));
+    } catch {
+      resolve({});
+    }
+  });
+  req.on('error', reject);
+});
+
+const handleApiRequest = async (req, res) => {
+  const settings = getApiSettingsFromDb();
+  const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  try {
+    if (url.pathname === '/' || url.pathname === '/api/health') {
+      sendApiJson(res, 200, {
+        success: true,
+        data: {
+          app: 'myGal',
+          version: app.getVersion(),
+          apiVersion: 2,
+          authenticated: requireApiAuth(req, settings),
+          allowRemoteLaunch: !!settings.allowRemoteLaunch,
+          exposeFullPath: !!settings.exposeFullPath
+        },
+        error: null
+      });
+      return;
+    }
+
+    if (!url.pathname.startsWith('/api/')) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
+    if (!requireApiAuth(req, settings)) {
+      sendApiError(res, 401, 'Unauthorized');
+      return;
+    }
+
+    const exposeFullPath = !!settings.exposeFullPath;
+    const baseUrl = getApiBaseUrl(req, settings);
+
+    // --- GET /api/stats ---
+    if (url.pathname === '/api/stats' && req.method === 'GET') {
+      sendApiJson(res, 200, { success: true, data: getApiStats(), error: null });
+      return;
+    }
+
+    // --- /api/tags ---
+    if (url.pathname === '/api/tags') {
+      if (req.method === 'GET') {
+        const tags = db.prepare('SELECT * FROM tags ORDER BY name').all();
+        sendApiJson(res, 200, { success: true, data: tags, error: null });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await readRequestBody(req);
+        const name = String(body.name || '').trim();
+        const color = String(body.color || '#6366f1').trim();
+        if (!name) {
+          sendApiError(res, 400, 'Tag name is required');
+          return;
+        }
+        const stmt = db.prepare('INSERT INTO tags (name, color) VALUES (?, ?)');
+        const result = stmt.run(name, color);
+        sendApiJson(res, 201, { success: true, data: { id: result.lastInsertRowid, name, color }, error: null });
+        return;
+      }
+    }
+
+    const tagIdMatch = url.pathname.match(/^\/api\/tags\/(\d+)$/);
+    if (tagIdMatch) {
+      const tagId = Number.parseInt(tagIdMatch[1], 10);
+      if (req.method === 'PUT') {
+        const body = await readRequestBody(req);
+        const name = String(body.name || '').trim();
+        const color = String(body.color || '#6366f1').trim();
+        if (!name) {
+          sendApiError(res, 400, 'Tag name is required');
+          return;
+        }
+        const stmt = db.prepare('UPDATE tags SET name = ?, color = ? WHERE id = ?');
+        stmt.run(name, color, tagId);
+        sendApiJson(res, 200, { success: true, data: { id: tagId, name, color }, error: null });
+        return;
+      }
+      if (req.method === 'DELETE') {
+        db.prepare('DELETE FROM tags WHERE id = ?').run(tagId);
+        db.prepare('DELETE FROM game_tags WHERE tag_id = ?').run(tagId);
+        sendApiJson(res, 200, { success: true, error: null });
+        return;
+      }
+    }
+
+    // --- GET /api/root-paths ---
+    if (url.pathname === '/api/root-paths' && req.method === 'GET') {
+      const rootPaths = db.prepare('SELECT * FROM root_paths ORDER BY created_at DESC').all();
+      const data = exposeFullPath
+        ? rootPaths
+        : rootPaths.map((item) => ({ ...item, path: path.basename(String(item.path || '')) || item.path }));
+      sendApiJson(res, 200, { success: true, data, error: null });
+      return;
+    }
+
+    // --- GET /api/history ---
+    if (url.pathname === '/api/history' && req.method === 'GET') {
+      const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+      const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+      const total = db.prepare('SELECT COUNT(1) AS c FROM run_history').get()?.c || 0;
+      const items = db.prepare(`
+        SELECT id, game_id, game_name, exe_path, method, needs_user_confirm, launched_at
+        FROM run_history
+        ORDER BY launched_at DESC, id DESC
+        LIMIT ? OFFSET ?
+      `).all(limit, offset).map((item) => ({
+        id: item.id,
+        gameId: item.game_id,
+        gameName: item.game_name,
+        exePath: exposeFullPath ? item.exe_path : path.basename(String(item.exe_path || '')),
+        method: item.method,
+        needsUserConfirm: !!item.needs_user_confirm,
+        launchedAt: item.launched_at
+      }));
+      sendApiJson(res, 200, { success: true, data: { items, total, limit, offset }, error: null });
+      return;
+    }
+
+    // --- GET /api/games ---
+    if (url.pathname === '/api/games' && req.method === 'GET') {
+      const result = queryApiGames({
+        page: url.searchParams.get('page') || '1',
+        pageSize: url.searchParams.get('pageSize') || '60',
+        query: url.searchParams.get('query') || '',
+        tag: url.searchParams.get('tag') || '',
+        rootPathId: url.searchParams.get('rootPathId') || null,
+        sort: url.searchParams.get('sort') || 'imported_at',
+        order: url.searchParams.get('order') || 'desc'
+      });
+      sendApiJson(res, 200, {
+        success: true,
+        data: {
+          items: result.games.map((game) => sanitizeApiGame(game, { exposeFullPath, baseUrl })),
+          total: result.total,
+          page: result.page,
+          pageSize: result.pageSize
+        },
+        error: null
+      });
+      return;
+    }
+
+    // --- /api/games/:id/alias ---
+    const aliasMatch = url.pathname.match(/^\/api\/games\/(\d+)\/alias$/);
+    if (aliasMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(aliasMatch[1], 10);
+      const body = await readRequestBody(req);
+      const normalized = String(body.alias ?? '').trim();
+      const value = normalized ? normalized : null;
+      db.prepare('UPDATE games SET alias = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(value, gameId);
+      sendApiJson(res, 200, { success: true, data: { id: gameId, alias: value }, error: null });
+      return;
+    }
+
+    // --- /api/games/:id/pinned ---
+    const pinnedMatch = url.pathname.match(/^\/api\/games\/(\d+)\/pinned$/);
+    if (pinnedMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(pinnedMatch[1], 10);
+      const body = await readRequestBody(req);
+      const value = body.pinned ? 1 : 0;
+      db.prepare('UPDATE games SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(value, gameId);
+      sendApiJson(res, 200, { success: true, data: { id: gameId, pinned: !!value }, error: null });
+      return;
+    }
+
+    // --- /api/games/:id/tags (POST to add tag) ---
+    const gameTagsMatch = url.pathname.match(/^\/api\/games\/(\d+)\/tags$/);
+    if (gameTagsMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(gameTagsMatch[1], 10);
+      const body = await readRequestBody(req);
+      let tagId = Number.parseInt(String(body.tagId ?? ''), 10);
+      if (!Number.isFinite(tagId) && body.name) {
+        tagId = ensureTagIdByName(String(body.name).trim());
+      }
+      if (Number.isFinite(tagId) && tagId > 0) {
+        db.prepare('INSERT OR IGNORE INTO game_tags (game_id, tag_id) VALUES (?, ?)').run(gameId, tagId);
+        const tags = db.prepare(`
+          SELECT t.* FROM tags t
+          JOIN game_tags gt ON t.id = gt.tag_id
+          WHERE gt.game_id = ?
+        `).all(gameId);
+        sendApiJson(res, 200, { success: true, data: { id: gameId, tags }, error: null });
+        return;
+      }
+      sendApiError(res, 400, 'Invalid tagId or name');
+      return;
+    }
+
+    // --- /api/games/:id/tags/:tagId (DELETE to remove tag) ---
+    const removeGameTagMatch = url.pathname.match(/^\/api\/games\/(\d+)\/tags\/(\d+)$/);
+    if (removeGameTagMatch && req.method === 'DELETE') {
+      const gameId = Number.parseInt(removeGameTagMatch[1], 10);
+      const tagId = Number.parseInt(removeGameTagMatch[2], 10);
+      db.prepare('DELETE FROM game_tags WHERE game_id = ? AND tag_id = ?').run(gameId, tagId);
+      const tags = db.prepare(`
+        SELECT t.* FROM tags t
+        JOIN game_tags gt ON t.id = gt.tag_id
+        WHERE gt.game_id = ?
+      `).all(gameId);
+      sendApiJson(res, 200, { success: true, data: { id: gameId, tags }, error: null });
+      return;
+    }
+
+    // --- /api/games/:id/scrape-cover ---
+    const scrapeMatch = url.pathname.match(/^\/api\/games\/(\d+)\/scrape-cover$/);
+    if (scrapeMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(scrapeMatch[1], 10);
+      const scrapeResult = await scrapeGameCoverCore(gameId);
+      if (scrapeResult.success) {
+        sendApiJson(res, 200, { success: true, data: scrapeResult, error: null });
+      } else {
+        sendApiJson(res, 200, { success: false, data: scrapeResult, error: scrapeResult.error || '刮削封面失败' });
+      }
+      return;
+    }
+
+    // --- /api/games/:id/launch ---
+    const launchMatch = url.pathname.match(/^\/api\/games\/(\d+)\/launch$/);
+    if (launchMatch && req.method === 'POST') {
+      if (!settings.allowRemoteLaunch) {
+        sendApiError(res, 403, '远程启动功能已在 PC 端设置中禁用');
+        return;
+      }
+      const gameId = Number.parseInt(launchMatch[1], 10);
+      const body = await readRequestBody(req);
+      const launchResult = await launchGameInternal(gameId, body.exePath);
+      if (launchResult.success) {
+        sendApiJson(res, 200, { success: true, data: launchResult, error: null });
+      } else {
+        sendApiError(res, 500, launchResult.error || '启动游戏失败');
+      }
+      return;
+    }
+
+    // --- /api/games/:id/files ---
+    const filesMatch = url.pathname.match(/^\/api\/games\/(\d+)\/files$/);
+    if (filesMatch && req.method === 'GET') {
+      const gameId = Number.parseInt(filesMatch[1], 10);
+      const filesResult = await getGameFilesInternal(gameId);
+      if (filesResult.success) {
+        sendApiJson(res, 200, { success: true, data: filesResult, error: null });
+      } else {
+        sendApiError(res, 404, filesResult.error || '获取游戏文件列表失败');
+      }
+      return;
+    }
+
+    // --- /api/games/:id/download ---
+    const downloadMatch = url.pathname.match(/^\/api\/games\/(\d+)\/download$/);
+    if (downloadMatch && req.method === 'GET') {
+      const gameId = Number.parseInt(downloadMatch[1], 10);
+      const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
+      if (!game || !game.path || !fs.existsSync(game.path)) {
+        sendApiError(res, 404, '游戏不存在或未找到文件路径');
+        return;
+      }
+      const requestedFile = String(url.searchParams.get('file') || '').trim();
+      if (!requestedFile) {
+        sendApiError(res, 400, 'Parameter "file" is required');
+        return;
+      }
+      const rootDir = path.resolve(game.path);
+      const targetFilePath = path.resolve(rootDir, requestedFile);
+      if (!targetFilePath.startsWith(rootDir) || !fs.existsSync(targetFilePath)) {
+        sendApiError(res, 403, '文件不存在或超出安全访问范围');
+        return;
+      }
+      const st = fs.statSync(targetFilePath);
+      if (st.isDirectory()) {
+        sendApiError(res, 400, 'Cannot download directory directly');
+        return;
+      }
+      const filename = path.basename(targetFilePath);
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': st.size,
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`
+      });
+      fs.createReadStream(targetFilePath).pipe(res);
+      return;
+    }
+
+    // --- /api/games/:id (GET) ---
+    const gameMatch = url.pathname.match(/^\/api\/games\/(\d+)$/);
+    if (gameMatch && req.method === 'GET') {
+      const gameId = Number.parseInt(gameMatch[1], 10);
+      const row = db.prepare(`
+        SELECT g.*, GROUP_CONCAT(t.name) as tags
+        FROM games g
+        LEFT JOIN game_tags gt ON g.id = gt.game_id
+        LEFT JOIN tags t ON gt.tag_id = t.id
+        WHERE g.id = ?
+        GROUP BY g.id
+      `).get(gameId);
+      if (!row) {
+        sendApiError(res, 404, 'Game not found');
+        return;
+      }
+      const game = processGames([row])[0];
+      const tagsList = db.prepare(`
+        SELECT t.* FROM tags t
+        JOIN game_tags gt ON t.id = gt.tag_id
+        WHERE gt.game_id = ?
+      `).all(gameId);
+      const sanitized = sanitizeApiGame(game, { exposeFullPath, baseUrl });
+      sanitized.detailedTags = tagsList;
+      sendApiJson(res, 200, { success: true, data: sanitized, error: null });
+      return;
+    }
+
+    // --- /api/covers/:gameId ---
+    const coverMatch = url.pathname.match(/^\/api\/covers\/(\d+)$/);
+    if (coverMatch && req.method === 'GET') {
+      const gameId = Number.parseInt(coverMatch[1], 10);
+      const game = db.prepare('SELECT cover_path FROM games WHERE id = ?').get(gameId);
+      const coverPath = game?.cover_path ? String(game.cover_path) : '';
+      if (!coverPath || !path.isAbsolute(coverPath) || !fs.existsSync(coverPath)) {
+        sendApiError(res, 404, 'Cover not found');
+        return;
+      }
+      const ext = path.extname(coverPath).toLowerCase();
+      const contentType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'private, max-age=3600',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      fs.createReadStream(coverPath).on('error', () => {
+        if (!res.headersSent) sendApiError(res, 500, 'Failed to read cover');
+        else res.end();
+      }).pipe(res);
+      return;
+    }
+
+    sendApiError(res, 404, 'Not found');
+  } catch (error) {
+    sendApiError(res, 500, error?.message || String(error));
+  }
+};
+
+const stopApiServer = () => new Promise((resolve) => {
+  if (!apiServer) {
+    apiServerState = { running: false, error: '', host: '', port: 0, startedAt: 0 };
+    resolve();
+    return;
+  }
+  const server = apiServer;
+  apiServer = null;
+  server.close(() => {
+    apiServerState = { running: false, error: '', host: '', port: 0, startedAt: 0 };
+    resolve();
+  });
+});
+
+const startApiServer = async () => {
+  const settings = getApiSettingsFromDb();
+  if (!settings.enabled) {
+    await stopApiServer();
+    return { success: true, status: getApiServerStatus() };
+  }
+
+  await stopApiServer();
+  return new Promise((resolve) => {
+    const server = http.createServer(handleApiRequest);
+    server.on('error', (error) => {
+      apiServer = null;
+      apiServerState = {
+        running: false,
+        error: error?.message || String(error),
+        host: settings.host,
+        port: settings.port,
+        startedAt: 0
+      };
+      resolve({ success: false, error: apiServerState.error, status: getApiServerStatus() });
+    });
+    server.listen(settings.port, settings.host, () => {
+      apiServer = server;
+      apiServerState = {
+        running: true,
+        error: '',
+        host: settings.host,
+        port: settings.port,
+        startedAt: Date.now()
+      };
+      resolve({ success: true, status: getApiServerStatus() });
+    });
+  });
+};
+
+const getApiServerStatus = () => {
+  const settings = getApiSettingsFromDb();
+  const localUrl = `http://127.0.0.1:${settings.port}`;
+  const lanUrls = settings.host === '0.0.0.0'
+    ? getLanAddresses().map((address) => `http://${address}:${settings.port}`)
+    : [];
+  return {
+    ...apiServerState,
+    enabled: settings.enabled,
+    configuredHost: settings.host,
+    configuredPort: settings.port,
+    localUrl,
+    lanUrls
+  };
+};
+
+ipcMain.handle('get-api-settings', async () => {
+  const settings = getApiSettingsFromDb();
+  return {
+    success: true,
+    settings: {
+      ...settings,
+      lanUrls: getApiServerStatus().lanUrls,
+      localUrl: `http://127.0.0.1:${settings.port}`
+    },
+    status: getApiServerStatus()
+  };
+});
+
+ipcMain.handle('save-api-settings', async (event, nextSettings = {}) => {
+  const current = getApiSettingsFromDb();
+  const enabled = typeof nextSettings.enabled === 'boolean' ? nextSettings.enabled : current.enabled;
+  const host = nextSettings.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+  const parsedPort = Number.parseInt(String(nextSettings.port ?? current.port), 10);
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : current.port;
+  const exposeFullPath = typeof nextSettings.exposeFullPath === 'boolean' ? nextSettings.exposeFullPath : current.exposeFullPath;
+  const allowRemoteLaunch = typeof nextSettings.allowRemoteLaunch === 'boolean' ? nextSettings.allowRemoteLaunch : current.allowRemoteLaunch;
+
+  writeApiSetting(apiSettingKeys.enabled, enabled ? 'true' : 'false');
+  writeApiSetting(apiSettingKeys.host, host);
+  writeApiSetting(apiSettingKeys.port, String(port));
+  writeApiSetting(apiSettingKeys.exposeFullPath, exposeFullPath ? 'true' : 'false');
+  writeApiSetting(apiSettingKeys.allowRemoteLaunch, allowRemoteLaunch ? 'true' : 'false');
+  if (!current.token) writeApiSetting(apiSettingKeys.token, createApiToken());
+
+  const result = await startApiServer();
+  return {
+    success: result.success,
+    error: result.error || '',
+    settings: getApiSettingsFromDb(),
+    status: getApiServerStatus()
+  };
+});
+
+ipcMain.handle('restart-api-server', async () => {
+  const result = await startApiServer();
+  return {
+    success: result.success,
+    error: result.error || '',
+    settings: getApiSettingsFromDb(),
+    status: getApiServerStatus()
+  };
+});
+
+ipcMain.handle('get-api-server-status', async () => {
+  return getApiServerStatus();
+});
+
+ipcMain.handle('regenerate-api-token', async () => {
+  const newToken = createApiToken();
+  writeApiSetting(apiSettingKeys.token, newToken);
+  return {
+    success: true,
+    token: newToken,
+    settings: getApiSettingsFromDb(),
+    status: getApiServerStatus()
+  };
+});
+
 app.whenReady().then(() => {
   initDatabase();
+  startApiServer();
   createWindow();
   createTray();
   
@@ -3591,6 +4427,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  stopApiServer();
 });
 
 app.on('window-all-closed', () => {
@@ -3599,3 +4436,4 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+

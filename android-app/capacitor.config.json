@@ -1,0 +1,13 @@
+{
+  "appId": "com.gamemanage.mobile",
+  "appName": "myGal Mobile",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

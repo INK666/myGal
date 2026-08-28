@@ -1,0 +1,302 @@
+原 App 暴露本地 API吧，未来我可能会通过内网穿透 在外面网络连接进来查找游戏数据，仔细思考还有其他问题吗 技术上有什么问题吗 写一份需求规划书
+
+
+
+
+
+
+
+7月30日 20:20
+
+
+
+
+
+
+下面是一份偏技术落地的《需求规划书》。核心结论先说：原 App 暴露本地 API 是可行的，但一旦考虑“内网穿透后外网访问”，最大问题不再是 API 怎么写，而是安全、权限、数据库并发、封面/文件资源暴露、服务生命周期。
+《myGal 数据访问 API 需求规划书》
+一、项目背景
+当前 myGal 是一个 Windows 本地 Electron 游戏库管理应用，游戏数据存储在本地 SQLite 数据库：
+D:\myGal\electron-data\gamemanage.db
+已有数据包括游戏、根目录、标签、封面、运行历史、忽略路径等。现在希望在原 App 中增加一个本地 API 服务，使其他客户端可以读取游戏数据。未来可能通过内网穿透从外网访问这些数据。
+二、目标
+第一阶段目标：
+在原 myGal 应用内启动一个本地 HTTP API 服务，用于只读访问游戏库数据。
+支持查询：
+游戏列表
+游戏详情
+标签列表
+根目录列表
+统计数据
+运行历史
+封面图片访问
+未来目标：
+允许局域网或内网穿透访问。
+支持独立数据查看 App、网页端、手机端访问。
+在安全可控的前提下扩展部分写操作，例如编辑标签、修改别名、更新封面。
+三、推荐技术方案
+在原 Electron 主进程中内置一个 HTTP 服务。
+建议使用：
+Node.js http / Express / Fastify
+当前项目依赖较少，推荐第一版用 express，开发效率最高。
+架构：
+myGal Electron 主进程
+  ├─ SQLite 数据库
+  ├─ 原 IPC 能力
+  └─ Local API Server
+        ├─ /api/health
+        ├─ /api/games
+        ├─ /api/games/:id
+        ├─ /api/stats
+        ├─ /api/tags
+        ├─ /api/root-paths
+        ├─ /api/history
+        └─ /api/covers/:gameId
+外部客户端：
+独立 App / 浏览器 / 手机端
+        ↓
+HTTP API
+        ↓
+myGal 原 App
+        ↓
+gamemanage.db
+四、API 访问模式
+第一版建议默认只监听本机：
+127.0.0.1:37689
+如果用户开启“允许局域网访问”，再监听：
+0.0.0.0:37689
+配置项建议：
+apiEnabled: true/false
+apiHost: 127.0.0.1 或 0.0.0.0
+apiPort: 37689
+apiToken: 随机生成
+apiAllowLan: true/false
+五、接口规划
+健康检查：
+GET /api/health
+返回：
+{
+  "success": true,
+  "app": "myGal",
+  "version": "1.1.9"
+}
+游戏列表：
+GET /api/games?page=1&pageSize=60&query=&tag=&rootPathId=&sort=imported_at&order=desc
+游戏详情：
+GET /api/games/:id
+统计数据：
+GET /api/stats
+返回游戏总数、标签数、根目录数、缺失封面数、未分类数、最近运行数等。
+标签：
+GET /api/tags
+根目录：
+GET /api/root-paths
+运行历史：
+GET /api/history?limit=50&offset=0
+封面图片：
+GET /api/covers/:gameId
+不要直接暴露本地完整路径文件，例如：
+D:\myGal\electron-data\covers\xxx.jpg
+应该由 API 根据 gameId 查询数据库后再返回图片流。
+六、安全问题，这是重点
+如果只是本机访问，风险较低。
+如果未来通过内网穿透外网访问，必须认真处理以下问题。
+1. 不能裸奔暴露 API
+所有 /api/* 接口都必须鉴权。
+推荐第一版使用 Bearer Token：
+Authorization: Bearer xxxxxxxx
+token 由原 App 生成，存入 settings 表或本地配置。
+2. 不要暴露任意本地文件
+封面接口只能返回数据库里登记的封面文件。
+不要做这种接口：
+GET /file?path=D:\xxx
+这会变成本地文件读取漏洞。
+3. 不要开放启动游戏接口
+外网访问场景下，第一阶段绝对不要开放：
+启动 exe
+打开文件夹
+删除游戏
+执行命令
+这些接口如果暴露到外网，风险非常高。
+4. 内网穿透需要 HTTPS
+如果用 frp、ngrok、Cloudflare Tunnel 之类工具，外部访问最好走 HTTPS。
+否则 token 可能被中间人截获。
+5. 需要限流
+至少对 API 加简单限流，防止公网扫接口：
+每个 IP 每分钟最多 60-120 次请求
+6. CORS 要收紧
+不要默认：
+Access-Control-Allow-Origin: *
+建议配置允许来源，或者第一版只允许非浏览器客户端；如果要网页访问，再允许指定域名。
+7. 日志不能泄露敏感路径
+日志里不要完整打印所有游戏路径、token、请求参数里的敏感信息。
+七、数据库与并发问题
+当前原 App 已经直接使用 better-sqlite3 操作 SQLite。
+本地 API 建议复用同一个 db 实例，不要在另一个进程里单独打开数据库写入。
+第一版 API 只读，风险较低。
+需要注意：
+读查询不要一次返回全部大数据。
+游戏列表必须分页。
+统计查询要控制复杂度。
+封面图片不要一次性读超大文件。
+未来写操作必须统一放在原 App 主进程里做，避免多个客户端直接写 SQLite。
+建议为常用查询增加索引：
+CREATE INDEX IF NOT EXISTS idx_games_imported_at ON games(imported_at);
+CREATE INDEX IF NOT EXISTS idx_games_root_path_id ON games(root_path_id);
+CREATE INDEX IF NOT EXISTS idx_games_pinned ON games(pinned);
+CREATE INDEX IF NOT EXISTS idx_run_history_game_id ON run_history(game_id);
+八、网络与部署问题
+需要考虑 4 种访问范围：
+本机访问：
+127.0.0.1:37689
+局域网访问：
+192.168.x.x:37689
+内网穿透访问：
+https://your-domain.example.com
+未来云端中转：
+客户端 -> 云服务 -> 家中 myGal API
+第一版只做本机和局域网即可，内网穿透只保证技术上兼容。
+Windows 防火墙可能拦截局域网访问。
+如果监听 0.0.0.0，需要提醒用户允许防火墙访问。
+九、设置界面需求
+原 App 设置页新增“数据 API”区域：
+开关：启用 API 服务
+端口输入：默认 37689
+访问范围：仅本机 / 允许局域网
+访问 Token：显示、复制、重新生成
+服务状态：运行中 / 未启动 / 启动失败
+当前访问地址：
+http://127.0.0.1:37689
+http://局域网IP:37689
+安全提示：
+允许局域网或内网穿透访问时，请妥善保管 Token。
+十、MVP 范围
+第一版只做只读 API。
+包含：
+GET /api/health
+GET /api/stats
+GET /api/games
+GET /api/games/:id
+GET /api/tags
+GET /api/root-paths
+GET /api/history
+GET /api/covers/:gameId
+不包含：
+启动游戏
+删除游戏
+编辑标签
+修改封面
+扫描目录
+重置数据库
+任意文件读取
+十一、后续阶段
+第二阶段：
+独立数据查看 App 接入 API。
+增加游戏详情页、统计图、移动端适配。
+增加路径健康检查，但只返回状态，不暴露危险操作。
+第三阶段：
+增加可选写接口，例如修改别名、编辑标签。
+写接口单独加权限，例如 read / write token。
+重要操作需要二次确认或只允许局域网。
+第四阶段：
+公网访问强化。
+支持 HTTPS 反代说明。
+支持 API key 管理。
+支持访问日志。
+支持只读访客模式。
+十二、主要技术风险
+最大风险是安全边界。
+一旦内网穿透，原本“只在电脑里跑”的游戏管理器就变成了公网可访问服务。必须默认只读、默认本机、默认鉴权。
+第二个风险是本地文件暴露。
+封面、路径、exe 都是本机资源，API 必须只返回必要数据。
+第三个风险是服务生命周期。
+API 服务要跟随 Electron app 启动/关闭，端口占用时要给出明确提示。
+第四个风险是数据隐私。
+游戏名、路径、运行历史都可能包含个人信息。外网访问时要允许用户关闭路径展示，或返回脱敏路径。
+最终建议
+技术路线采用：
+原 myGal App 内置 Express API 服务
+第一版只读
+默认监听 127.0.0.1
+Bearer Token 鉴权
+封面通过受控接口返回
+外网访问交给内网穿透工具
+这条路线最稳：既能让新 app、网页端、手机端连进来，又不会一开始把数据库写入、文件系统和远程执行这些高风险能力暴露出去。
+
+网页预览网站在默认浏览器中打开打开方式
+
+
+
+
+
+
+7月30日 20:21
+
+
+
+
+
+
+
+
+这样数据真的能访问吗，不需要电脑的账号密码吗
+
+
+
+
+
+
+
+7月30日 20:23
+
+
+
+
+
+
+能访问，但不应该靠 Windows 电脑账号密码来访问。
+如果我们做的是 myGal 原 App 暴露本地 API，比如：
+http://127.0.0.1:37689/api/games
+技术上访问的是 myGal 自己开的 HTTP 服务，不是 Windows 文件共享、远程桌面、SMB，也不是直接登录电脑。所以：
+不需要 Windows 账号密码
+需要 API 自己的访问凭证
+也就是我们要给这个 API 配一个 Token / API Key。
+请求时类似这样：
+GET /api/games
+Authorization: Bearer xxxxxxxx
+或者浏览器访问时带：
+http://127.0.0.1:37689/api/games?token=xxxx
+不过更推荐 Authorization 请求头，不推荐长期把 token 放 URL 里。
+几种访问场景
+本机访问：
+127.0.0.1:37689
+只要 myGal 正在运行，并且 API 服务开启，本机其他 app 就能访问。
+不需要电脑账号密码，但需要 API token。
+局域网访问：
+http://你的电脑局域网IP:37689/api/games
+需要满足：
+myGal 正在运行
+API 监听 0.0.0.0 或局域网 IP
+Windows 防火墙允许这个端口
+请求带正确 token
+外网通过内网穿透访问：
+https://你的穿透域名/api/games
+需要满足：
+myGal 正在运行
+内网穿透服务在线
+穿透到 127.0.0.1:37689 或局域网端口
+请求带正确 token
+最好使用 HTTPS
+重点
+Windows 账号密码保护的是“登录电脑”或“访问系统级共享资源”。
+我们这个方案是应用层 API，所以认证应该由 myGal 自己做。
+最安全的第一版应该是：
+默认只允许本机访问
+默认必须带 token
+不开放启动 exe、删除文件、打开文件夹
+封面图片只能按游戏 ID 读取
+外网访问必须使用 HTTPS 的内网穿透地址
+所以答案是：可以访问，不需要电脑账号密码，但必须设计 API Token，否则外网穿透后就是裸露的游戏库接口。
+
+
+7月30日 20:23
