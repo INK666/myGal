@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
+import CoverImage from './CoverImage';
 
 export default function GameDetailModal({
   game,
@@ -27,7 +28,7 @@ export default function GameDetailModal({
   onUpdateGame,
   onOpenFileTransfer
 }) {
-  const { showToast, serverInfo, serverUrl, token } = useServer();
+  const { serverUrl, token, connected, showToast } = useServer();
   const [detail, setDetail] = useState(game);
   const [aliasEditing, setAliasEditing] = useState(false);
   const [aliasValue, setAliasValue] = useState(game.alias || '');
@@ -49,16 +50,22 @@ export default function GameDetailModal({
     setImageError(false);
     setDetail(game);
     setAliasValue(game.alias || '');
-    // Fetch latest fresh detail from server
-    api.getGameDetail(game.id)
-      .then((res) => {
-        if (res) setDetail(res);
-      })
-      .catch(() => {});
-  }, [game.id, coverUrl]);
+    // 联网时拉取最新详情
+    if (connected) {
+      api.getGameDetail(game.id)
+        .then((res) => {
+          if (res) setDetail(res);
+        })
+        .catch(() => {});
+    }
+  }, [game.id, coverUrl, connected]);
 
   // 保存别名
   const handleSaveAlias = async () => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，修改别名需先连接 PC 端', 'warning');
+      return;
+    }
     try {
       await api.updateGameAlias(detail.id, aliasValue.trim());
       const updated = { ...detail, alias: aliasValue.trim() };
@@ -73,6 +80,10 @@ export default function GameDetailModal({
 
   // 切换置顶
   const handleTogglePinned = async () => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，置顶操作需先连接 PC 端', 'warning');
+      return;
+    }
     try {
       const nextPinned = !detail.pinned;
       await api.updateGamePinned(detail.id, nextPinned);
@@ -87,6 +98,10 @@ export default function GameDetailModal({
 
   // 添加标签
   const handleAddTag = async (tagIdOrName) => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，添加标签需先连接 PC 端', 'warning');
+      return;
+    }
     try {
       const res = await api.addTagToGame(detail.id, tagIdOrName);
       const newTagNames = res.tags.map((t) => t.name);
@@ -101,6 +116,10 @@ export default function GameDetailModal({
 
   // 移除标签
   const handleRemoveTag = async (tag) => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，移除标签需先连接 PC 端', 'warning');
+      return;
+    }
     try {
       // Find tagId from allTags or tag object
       const matched = allTags.find((t) => t.name === tag || t.id === tag.id) || tag;
@@ -121,6 +140,10 @@ export default function GameDetailModal({
 
   // 刮削封面
   const handleScrapeCover = async () => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，刮削封面需先连接 PC 端', 'warning');
+      return;
+    }
     if (scraping) return;
     setScraping(true);
     try {
@@ -147,6 +170,10 @@ export default function GameDetailModal({
 
   // 远程启动游戏
   const handleRemoteLaunch = async () => {
+    if (!connected) {
+      showToast('当前处于离线缓存模式，启动游戏需先连接 PC 端', 'warning');
+      return;
+    }
     if (launching) return;
     setLaunching(true);
     try {
@@ -198,20 +225,14 @@ export default function GameDetailModal({
           <div className="flex gap-4 items-start">
             {/* Cover 2:3 */}
             <div className="w-28 h-42 rounded-2xl bg-gray-900 overflow-hidden shrink-0 border border-white/10 shadow-xl relative flex items-center justify-center">
-              {coverUrl && !imageError ? (
-                <img
-                  key={coverUrl}
-                  src={coverUrl}
-                  alt={detail.name}
-                  onError={() => setImageError(true)}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="p-2 text-center text-gray-600">
-                  <ImageOff className="w-8 h-8 mx-auto mb-1" />
-                  <span className="text-[10px]">无封面</span>
-                </div>
-              )}
+              <CoverImage
+                src={coverUrl}
+                serverUrl={serverUrl}
+                gameId={detail.id}
+                alt={detail.name}
+                fallbackIconSize="w-8 h-8"
+                fallbackTitle={detail.alias || detail.name}
+              />
             </div>
 
             {/* Title & Alias Area */}
@@ -324,7 +345,13 @@ export default function GameDetailModal({
 
             {/* Data & Saves Transfer */}
             <button
-              onClick={() => onOpenFileTransfer(detail)}
+              onClick={() => {
+                if (!connected) {
+                  showToast('当前处于离线缓存模式，下载游戏文件需先连接 PC 端', 'warning');
+                  return;
+                }
+                onOpenFileTransfer(detail);
+              }}
               className="glass-panel p-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 text-center active-press hover:bg-emerald-950/40 hover:border-emerald-500/40 transition-all"
             >
               <div className="w-9 h-9 rounded-xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center shadow-inner">

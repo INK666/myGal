@@ -13,7 +13,8 @@ import {
   Search,
   X,
   SlidersHorizontal,
-  ChevronRight
+  ChevronRight,
+  Palette
 } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 
@@ -21,6 +22,7 @@ export default function Navbar({
   onOpenConnect,
   onOpenStats,
   onOpenTags,
+  onOpenWallpaper,
   searchQuery,
   onSearchChange,
   viewMode,
@@ -47,8 +49,8 @@ export default function Navbar({
       <div className="px-4 py-3 flex items-center justify-between gap-3">
         {/* Brand & Connection Badge */}
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-600/30 text-white font-bold text-sm tracking-tight">
-            G
+          <div className="w-8 h-8 rounded-xl bg-gray-900 overflow-hidden shrink-0 shadow-lg shadow-indigo-600/20 border border-white/10 flex items-center justify-center">
+            <img src="/icon.png" alt="myGal" className="w-full h-full object-cover" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
@@ -71,6 +73,13 @@ export default function Navbar({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={onOpenWallpaper}
+            className="p-2 rounded-xl text-gray-400 hover:text-white bg-gray-900/60 hover:bg-gray-800 border border-white/5 active-press transition-all"
+            title="个性化壁纸"
+          >
+            <Palette className="w-4 h-4 text-pink-400" />
+          </button>
           <button
             onClick={onRefreshList}
             disabled={loading}

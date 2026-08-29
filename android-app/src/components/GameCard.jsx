@@ -1,19 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { Pin, ImageOff, Folder, Tag, Play, MoreVertical } from 'lucide-react';
+import React from 'react';
+import { Pin } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
+import CoverImage from './CoverImage';
 
 export default function GameCard({ game, viewMode = 'grid2', onClick }) {
   const { serverUrl, token } = useServer();
-  const [imageError, setImageError] = useState(false);
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
   const coverUrl = cleanServerUrl
     ? `${cleanServerUrl}/api/covers/${game.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
     : null;
-
-  useEffect(() => {
-    setImageError(false);
-  }, [game.id, coverUrl, game.updatedAt]);
 
   // --- 列表视图 (List Mode) ---
   if (viewMode === 'list') {
@@ -24,20 +20,16 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
       >
         {/* Cover Thumbnail */}
         <div className="w-16 h-22 rounded-xl bg-gray-900 overflow-hidden shrink-0 relative border border-white/10 flex items-center justify-center">
-          {coverUrl && !imageError ? (
-            <img
-              key={coverUrl}
-              src={coverUrl}
-              alt={game.name}
-              onError={() => setImageError(true)}
-              className="w-full h-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <ImageOff className="w-6 h-6 text-gray-600" />
-          )}
+          <CoverImage
+            src={coverUrl}
+            serverUrl={serverUrl}
+            gameId={game.id}
+            alt={game.name}
+            fallbackIconSize="w-5 h-5"
+            fallbackTitle=""
+          />
           {game.pinned && (
-            <div className="absolute top-1 left-1 bg-amber-500/90 text-black p-1 rounded-md shadow-md">
+            <div className="absolute top-1 left-1 bg-amber-500/90 text-black p-1 rounded-md shadow-md z-10">
               <Pin className="w-2.5 h-2.5 fill-black" />
             </div>
           )}
@@ -93,21 +85,15 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
       >
         {/* Cover 2:3 */}
         <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
-          {coverUrl && !imageError ? (
-            <img
-              key={coverUrl}
-              src={coverUrl}
-              alt={game.name}
-              onError={() => setImageError(true)}
-              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-              loading="lazy"
-            />
-          ) : (
-            <div className="p-2 text-center">
-              <ImageOff className="w-6 h-6 text-gray-600 mx-auto mb-1" />
-              <span className="text-[10px] text-gray-500 line-clamp-2">{game.alias || game.name}</span>
-            </div>
-          )}
+          <CoverImage
+            src={coverUrl}
+            serverUrl={serverUrl}
+            gameId={game.id}
+            alt={game.name}
+            fallbackIconSize="w-6 h-6"
+            fallbackTitle={game.alias || game.name}
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          />
 
           {game.pinned && (
             <div className="absolute top-1.5 left-1.5 bg-amber-500 text-black p-1 rounded-md shadow-md z-10">
@@ -134,23 +120,15 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
     >
       {/* Cover 2:3 Aspect */}
       <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
-        {coverUrl && !imageError ? (
-          <img
-            key={coverUrl}
-            src={coverUrl}
-            alt={game.name}
-            onError={() => setImageError(true)}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-            loading="lazy"
-          />
-        ) : (
-          <div className="p-4 text-center">
-            <ImageOff className="w-8 h-8 text-gray-600 mx-auto mb-2" />
-            <span className="text-xs text-gray-500 font-medium line-clamp-3">
-              {game.alias || game.name}
-            </span>
-          </div>
-        )}
+        <CoverImage
+          src={coverUrl}
+          serverUrl={serverUrl}
+          gameId={game.id}
+          alt={game.name}
+          fallbackIconSize="w-8 h-8"
+          fallbackTitle={game.alias || game.name}
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+        />
 
         {/* Overlay gradient for bottom legibility */}
         <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-transparent to-black/30 pointer-events-none" />

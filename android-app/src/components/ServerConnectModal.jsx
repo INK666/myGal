@@ -343,12 +343,11 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                     type="button"
                     onClick={() => {
                       clearProfiles();
-                      showToast('已清空所有历史连接记录', 'info');
                     }}
                     className="text-[11px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
                   >
                     <Trash2 className="w-3 h-3" />
-                    <span>清空历史</span>
+                    <span>清空历史与缓存</span>
                   </button>
                 </div>
               )}
@@ -376,10 +375,9 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                         onClick={(e) => {
                           e.stopPropagation();
                           removeProfile(p.url);
-                          showToast('已删除历史连接记录', 'info');
                         }}
                         className="p-2 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                        title="删除此记录"
+                        title="删除此记录及缓存"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
+import { deleteServerCache, clearAllCache } from '../utils/cacheStorage';
 
 const ServerContext = createContext(null);
 
@@ -167,18 +168,24 @@ export function ServerProvider({ children }) {
   }, [testConnection, showToast]);
 
   const removeProfile = useCallback((targetUrl) => {
+    const cleanUrl = String(targetUrl || '').trim().replace(/\/+$/, '');
     setProfiles((prev) => {
-      const cleanUrl = String(targetUrl || '').trim().replace(/\/+$/, '');
       const next = prev.filter((p) => p.url !== cleanUrl);
       localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
       return next;
     });
-  }, []);
+    // 同步彻底删除该服务器在 IndexedDB 中的全部离线游戏数据与封面图片
+    deleteServerCache(cleanUrl);
+    showToast('已删除连接记录并清空其离线缓存', 'info');
+  }, [showToast]);
 
   const clearProfiles = useCallback(() => {
     setProfiles([]);
     localStorage.removeItem(STORAGE_KEYS.PROFILES);
-  }, []);
+    // 清空本地全部 IndexedDB 缓存
+    clearAllCache();
+    showToast('已清空全部历史记录与离线缓存', 'info');
+  }, [showToast]);
 
   // 初始加载自动尝试连接一次
   useEffect(() => {

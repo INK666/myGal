@@ -1311,11 +1311,30 @@ const trySyncCoversFromAlternateDb = () => {
         altDb.close();
 
         if (Array.isArray(altGames) && altGames.length > 0) {
-          const updateStmt = db.prepare('UPDATE games SET cover_path = ? WHERE path = ? AND (cover_path IS NULL OR cover_path = \'\')');
+          const updateStmtByPath = db.prepare("UPDATE games SET cover_path = ? WHERE path = ? AND (cover_path IS NULL OR cover_path = '')");
+          const updateStmtByName = db.prepare("UPDATE games SET cover_path = ? WHERE name = ? AND (cover_path IS NULL OR cover_path = '')");
           db.transaction(() => {
             for (const g of altGames) {
-              if (g.path && g.cover_path && fs.existsSync(g.cover_path)) {
-                updateStmt.run(g.cover_path, g.path);
+              if (!g.cover_path) continue;
+              let targetCover = g.cover_path;
+              if (!fs.existsSync(targetCover)) {
+                const bName = path.basename(targetCover);
+                const altCoverDirs = [
+                  path.join(app.getPath('userData'), 'covers'),
+                  path.join(os.homedir(), 'AppData', 'Roaming', 'gamemanage', 'covers'),
+                  path.join(__dirname, 'electron-data', 'covers')
+                ];
+                for (const cd of altCoverDirs) {
+                  const candidate = path.join(cd, bName);
+                  if (fs.existsSync(candidate)) {
+                    targetCover = candidate;
+                    break;
+                  }
+                }
+              }
+              if (fs.existsSync(targetCover)) {
+                if (g.path) updateStmtByPath.run(targetCover, g.path);
+                if (g.name) updateStmtByName.run(targetCover, g.name);
               }
             }
           })();
@@ -3765,7 +3784,7 @@ const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameN
     } catch {}
 
     const baseName = path.basename(clean);
-    for (const dir of candidateDirs) {
+    for (const dir of coverDirs) {
       if (!dir) continue;
       try {
         const joined = path.join(dir, baseName);
@@ -3811,7 +3830,7 @@ const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameN
             const foundPath = path.join(dir, matched);
             if (db && gameId) {
               try {
-                db.prepare('UPDATE games SET cover_path = ? WHERE id = ? AND (cover_path IS NULL OR cover_path = \'\')').run(foundPath, gameId);
+                db.prepare("UPDATE games SET cover_path = ? WHERE id = ? AND (cover_path IS NULL OR cover_path = '')").run(foundPath, gameId);
               } catch {}
             }
             return foundPath;
@@ -3987,7 +4006,7 @@ const getApiStats = () => {
   };
 };
 
-const getGameFilesInternal = async (gameId, maxDepth = 3, maxResults = 300) => {
+const getGameFilesInternal = async (gameId, maxDepth = 8, maxResults = 2000) => {
   const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
   if (!game || !game.path || !fs.existsSync(game.path)) {
     return { success: false, error: '游戏文件夹不存在或未设置', files: [] };
@@ -4466,8 +4485,31 @@ const handleApiRequest = async (req, res) => {
       }
       const st = fs.statSync(targetFilePath);
       if (st.isDirectory()) {
-        sendApiError(res, 400, 'Cannot download directory directly');
-        return;
+        const folderName = path.basename(targetFilePath) || game.name || 'archive';
+        const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        try {
+          const { execSync } = require('child_process');
+          const psCommand = `Compress-Archive -Path '${targetFilePath}\\*' -DestinationPath '${tempZip}' -Force`;
+          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 120000 });
+          if (fs.existsSync(tempZip)) {
+            const zipStat = fs.statSync(tempZip);
+            res.writeHead(200, {
+              'Content-Type': 'application/zip',
+              'Content-Length': zipStat.size,
+              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"`
+            });
+            const stream = fs.createReadStream(tempZip);
+            stream.on('close', () => {
+              try { fs.unlinkSync(tempZip); } catch {}
+            });
+            stream.pipe(res);
+            return;
+          }
+        } catch (zipErr) {
+          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+          sendApiError(res, 500, '打包下载文件夹失败: ' + (zipErr?.message || String(zipErr)));
+          return;
+        }
       }
       const filename = path.basename(targetFilePath);
       res.writeHead(200, {
