@@ -85,40 +85,100 @@ export function ServerProvider({ children }) {
   // 从二维码内容解析并连接
   const connectWithQrPayload = useCallback(async (rawText) => {
     try {
-      let url = '';
+      const candidateUrls = [];
       let tk = '';
 
       if (rawText.startsWith('{')) {
         const parsed = JSON.parse(rawText);
-        url = parsed.serverUrl || parsed.url || '';
-        tk = parsed.token || '';
+        tk = parsed.token || parsed.t || '';
+        if (Array.isArray(parsed.urls) && parsed.urls.length > 0) {
+          candidateUrls.push(...parsed.urls);
+        }
+        if (parsed.serverUrl && !candidateUrls.includes(parsed.serverUrl)) {
+          candidateUrls.unshift(parsed.serverUrl);
+        }
+        if (parsed.url && !candidateUrls.includes(parsed.url)) {
+          candidateUrls.push(parsed.url);
+        }
+        if (parsed.u && !candidateUrls.includes(parsed.u)) {
+          candidateUrls.push(parsed.u);
+        }
       } else if (rawText.startsWith('mygal://')) {
-        const u = new URL(rawText);
-        url = u.searchParams.get('url') || '';
-        tk = u.searchParams.get('token') || '';
+        const queryIndex = rawText.indexOf('?');
+        const queryString = queryIndex !== -1 ? rawText.slice(queryIndex) : '';
+        const searchParams = new URLSearchParams(queryString);
+        const rawU = searchParams.get('u') || searchParams.get('url') || searchParams.get('urls') || '';
+        tk = searchParams.get('t') || searchParams.get('token') || '';
+        const port = searchParams.get('p') || searchParams.get('port') || '37689';
+
+        const splitUrls = rawU.split(',').map((s) => s.trim()).filter(Boolean);
+        for (const item of splitUrls) {
+          if (!/^https?:\/\//i.test(item)) {
+            candidateUrls.push(item.includes(':') ? `http://${item}` : `http://${item}:${port}`);
+          } else {
+            candidateUrls.push(item);
+          }
+        }
       } else if (/^https?:\/\//i.test(rawText)) {
         const u = new URL(rawText);
-        tk = u.searchParams.get('token') || '';
-        url = u.origin;
+        tk = u.searchParams.get('token') || u.searchParams.get('t') || '';
+        candidateUrls.push(u.origin);
       }
 
-      if (!url) {
+      const scoreCandidate = (urlStr) => {
+        try {
+          const u = new URL(urlStr);
+          const host = u.hostname;
+          if (host.startsWith('198.18.') || host.startsWith('169.254.') || host.startsWith('127.')) return 1;
+          if (host.startsWith('192.168.')) return 100;
+          if (host.startsWith('10.')) return 90;
+          if (host.startsWith('172.')) return 80;
+          return 50;
+        } catch {
+          return 10;
+        }
+      };
+
+      const validCandidates = Array.from(new Set(candidateUrls.filter(Boolean))).sort(
+        (a, b) => scoreCandidate(b) - scoreCandidate(a)
+      );
+      if (validCandidates.length === 0) {
         throw new Error('未识别到有效的 myGal 连接地址');
       }
 
-      const result = await testConnection(url, tk, true);
-      if (result.success) {
-        showToast('配对成功！已连接到 PC 端 myGal', 'success');
-        return true;
-      } else {
-        showToast('配对失败：' + result.error, 'error');
-        return false;
+      // 依次尝试所有候选 URL（优先尝试真实物理局域网 IP），哪个连通就用哪个
+      let lastErr = '';
+      for (const targetUrl of validCandidates) {
+        const result = await testConnection(targetUrl, tk, true);
+        if (result.success) {
+          showToast(`配对成功！已连接到 PC 端 (${targetUrl})`, 'success');
+          return true;
+        } else {
+          lastErr = result.error;
+        }
       }
+
+      showToast('配对失败：所有候选 IP 均未能连通 (' + lastErr + ')', 'error');
+      return false;
     } catch (err) {
       showToast('二维码解析失败：' + err.message, 'error');
       return false;
     }
   }, [testConnection, showToast]);
+
+  const removeProfile = useCallback((targetUrl) => {
+    setProfiles((prev) => {
+      const cleanUrl = String(targetUrl || '').trim().replace(/\/+$/, '');
+      const next = prev.filter((p) => p.url !== cleanUrl);
+      localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const clearProfiles = useCallback(() => {
+    setProfiles([]);
+    localStorage.removeItem(STORAGE_KEYS.PROFILES);
+  }, []);
 
   // 初始加载自动尝试连接一次
   useEffect(() => {
@@ -147,7 +207,9 @@ export function ServerProvider({ children }) {
           testConnection(url, tk, true);
         },
         testConnection,
-        connectWithQrPayload
+        connectWithQrPayload,
+        removeProfile,
+        clearProfiles
       }}
     >
       {children}

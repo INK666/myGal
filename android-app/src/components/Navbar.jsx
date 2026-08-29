@@ -1,5 +1,20 @@
 import React from 'react';
-import { Wifi, WifiOff, RefreshCw, BarChart3, Tags, SlidersHorizontal, LayoutGrid, Grid3X3, List, Search, X } from 'lucide-react';
+import {
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  BarChart3,
+  Tags,
+  FolderTree,
+  Folder,
+  LayoutGrid,
+  Grid3X3,
+  List,
+  Search,
+  X,
+  SlidersHorizontal,
+  ChevronRight
+} from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 
 export default function Navbar({
@@ -10,16 +25,21 @@ export default function Navbar({
   onSearchChange,
   viewMode,
   onViewModeChange,
+  categoryType, // 'tag' | 'folder'
+  onCategoryTypeChange,
   activeTag,
   onSelectTag,
   tags = [],
+  activeRootPathId,
+  onSelectRootPath,
+  rootPaths = [],
   sortField,
   sortOrder,
   onSortChange,
   onRefreshList,
   loading
 }) {
-  const { connected, checking, lastPing, serverInfo } = useServer();
+  const { connected, checking, lastPing } = useServer();
 
   return (
     <header className="sticky top-0 z-40 bg-gray-950/85 backdrop-blur-xl border-b border-white/5 pt-safe">
@@ -130,38 +150,127 @@ export default function Navbar({
         </div>
       </div>
 
-      {/* Tag Filter Chips Bar */}
-      <div className="px-4 pb-2 overflow-x-auto flex items-center gap-1.5 no-scrollbar">
-        <button
-          onClick={() => onSelectTag('')}
-          className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all ${
-            !activeTag
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-              : 'bg-gray-900/80 hover:bg-gray-850 text-gray-400 border border-white/5'
-          }`}
-        >
-          全部
-        </button>
-        {tags.map((t) => {
-          const isSelected = activeTag === t.name;
-          return (
+      {/* Category Type Switcher (目录分类 vs 标签分类) */}
+      <div className="px-4 pb-1.5 flex items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-1 bg-gray-900/70 p-1 rounded-xl border border-white/5">
+          <button
+            onClick={() => onCategoryTypeChange('folder')}
+            className={`px-3 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all ${
+              categoryType === 'folder'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <FolderTree className="w-3.5 h-3.5" />
+            <span>目录分类</span>
+            {rootPaths.length > 0 && (
+              <span className="text-[10px] opacity-75 font-mono">({rootPaths.length})</span>
+            )}
+          </button>
+          <button
+            onClick={() => onCategoryTypeChange('tag')}
+            className={`px-3 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all ${
+              categoryType === 'tag'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <Tags className="w-3.5 h-3.5" />
+            <span>标签分类</span>
+            {tags.length > 0 && (
+              <span className="text-[10px] opacity-75 font-mono">({tags.length})</span>
+            )}
+          </button>
+        </div>
+
+        {/* Active Filter Clear Helper */}
+        {(activeTag || activeRootPathId !== null) && (
+          <button
+            onClick={() => {
+              onSelectTag('');
+              onSelectRootPath(null);
+            }}
+            className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium bg-indigo-500/10 px-2 py-1 rounded-lg"
+          >
+            <span>重置筛选</span>
+            <X className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      {/* Horizontal Chips Filter Bar */}
+      <div className="px-4 pb-2.5 overflow-x-auto flex items-center gap-1.5 no-scrollbar">
+        {categoryType === 'folder' ? (
+          /* --- 目录分类 Chips --- */
+          <>
             <button
-              key={t.id}
-              onClick={() => onSelectTag(isSelected ? '' : t.name)}
-              className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1.5 ${
-                isSelected
+              onClick={() => onSelectRootPath(null)}
+              className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                activeRootPathId === null
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                  : 'bg-gray-900/80 hover:bg-gray-850 text-gray-300 border border-white/5'
+                  : 'bg-gray-900/80 hover:bg-gray-850 text-gray-400 border border-white/5'
               }`}
             >
-              <span
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ backgroundColor: t.color || '#6366f1' }}
-              />
-              <span>{t.name}</span>
+              全部目录
             </button>
-          );
-        })}
+            {rootPaths.map((rp) => {
+              const isSelected = activeRootPathId === rp.id;
+              return (
+                <button
+                  key={rp.id}
+                  onClick={() => onSelectRootPath(isSelected ? null : rp.id)}
+                  className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1.5 ${
+                    isSelected
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                      : 'bg-gray-900/80 hover:bg-gray-850 text-gray-300 border border-white/5'
+                  }`}
+                >
+                  <Folder className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-amber-400'}`} />
+                  <span className="max-w-[150px] truncate">{rp.name}</span>
+                  {typeof rp.gameCount === 'number' && (
+                    <span className="text-[10px] font-mono opacity-70 bg-black/30 px-1.5 py-0.2 rounded-full">
+                      {rp.gameCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </>
+        ) : (
+          /* --- 标签分类 Chips --- */
+          <>
+            <button
+              onClick={() => onSelectTag('')}
+              className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                !activeTag
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'bg-gray-900/80 hover:bg-gray-850 text-gray-400 border border-white/5'
+              }`}
+            >
+              全部
+            </button>
+            {tags.map((t) => {
+              const isSelected = activeTag === t.name;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => onSelectTag(isSelected ? '' : t.name)}
+                  className={`shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1.5 ${
+                    isSelected
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                      : 'bg-gray-900/80 hover:bg-gray-850 text-gray-300 border border-white/5'
+                  }`}
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ backgroundColor: t.color || '#6366f1' }}
+                  />
+                  <span>{t.name}</span>
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
     </header>
   );

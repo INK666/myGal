@@ -8,7 +8,8 @@ import {
   Gamepad2,
   AlertCircle,
   SlidersHorizontal,
-  ChevronDown
+  ChevronDown,
+  Folder
 } from 'lucide-react';
 import { api } from './api/client';
 import { ServerProvider, useServer } from './contexts/ServerContext';
@@ -26,6 +27,7 @@ function MainApp() {
   // 状态管理
   const [games, setGames] = useState([]);
   const [tags, setTags] = useState([]);
+  const [rootPaths, setRootPaths] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -35,7 +37,9 @@ function MainApp() {
   // 视图与检索配置
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [categoryType, setCategoryType] = useState('folder'); // 'folder' | 'tag'
   const [activeTag, setActiveTag] = useState('');
+  const [activeRootPathId, setActiveRootPathId] = useState(null);
   const [sortField, setSortField] = useState('imported_at');
   const [sortOrder, setSortOrder] = useState('desc');
   const [viewMode, setViewMode] = useState(() => localStorage.getItem('mygal_view_mode') || 'grid2');
@@ -62,12 +66,16 @@ function MainApp() {
     localStorage.setItem('mygal_view_mode', mode);
   };
 
-  // 加载标签
-  const loadTags = useCallback(async () => {
+  // 加载标签和目录列表
+  const loadMetadata = useCallback(async () => {
     if (!connected) return;
     try {
-      const tagList = await api.getTags();
+      const [tagList, pathList] = await Promise.all([
+        api.getTags().catch(() => []),
+        api.getRootPaths().catch(() => [])
+      ]);
       setTags(Array.isArray(tagList) ? tagList : []);
+      setRootPaths(Array.isArray(pathList) ? pathList : []);
     } catch {}
   }, [connected]);
 
@@ -86,6 +94,7 @@ function MainApp() {
         pageSize: 40,
         query: debouncedQuery,
         tag: activeTag,
+        rootPathId: activeRootPathId,
         sort: sortField,
         order: sortOrder
       });
@@ -106,18 +115,18 @@ function MainApp() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [connected, debouncedQuery, activeTag, sortField, sortOrder, showToast]);
+  }, [connected, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder, showToast]);
 
   // 依赖变化触发重新加载
   useEffect(() => {
     if (connected) {
-      loadTags();
+      loadMetadata();
       loadGames(1, false);
     } else {
       setGames([]);
       setTotal(0);
     }
-  }, [connected, debouncedQuery, activeTag, sortField, sortOrder]);
+  }, [connected, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder]);
 
   // 更新局部游戏状态
   const handleUpdateGame = (updatedGame) => {
@@ -143,6 +152,9 @@ function MainApp() {
     }
   };
 
+  // 当前所选根目录名称
+  const activeRootPathName = rootPaths.find((p) => p.id === activeRootPathId)?.name;
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col selection:bg-indigo-500 selection:text-white">
       {/* Top Navbar */}
@@ -154,17 +166,25 @@ function MainApp() {
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
+        categoryType={categoryType}
+        onCategoryTypeChange={setCategoryType}
         activeTag={activeTag}
         onSelectTag={(t) => {
           setActiveTag(t);
           setPage(1);
         }}
         tags={tags}
+        activeRootPathId={activeRootPathId}
+        onSelectRootPath={(id) => {
+          setActiveRootPathId(id);
+          setPage(1);
+        }}
+        rootPaths={rootPaths}
         sortField={sortField}
         sortOrder={sortOrder}
         onSortChange={setSortField}
         onRefreshList={() => {
-          loadTags();
+          loadMetadata();
           loadGames(1, false);
         }}
         loading={loading}
@@ -196,10 +216,16 @@ function MainApp() {
           <>
             {/* List Header Filter Status */}
             <div className="flex items-center justify-between text-xs text-gray-400 mb-3 px-1">
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span>共</span>
                 <span className="font-bold text-white font-mono">{total}</span>
                 <span>款游戏</span>
+                {activeRootPathName && (
+                  <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 font-medium flex items-center gap-1">
+                    <Folder className="w-3 h-3" />
+                    <span>{activeRootPathName}</span>
+                  </span>
+                )}
                 {activeTag && (
                   <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 font-medium">
                     #{activeTag}
@@ -209,10 +235,10 @@ function MainApp() {
 
               <button
                 onClick={handleSortToggle}
-                className="flex items-center gap-1 hover:text-white transition-colors bg-gray-900/60 px-2.5 py-1 rounded-xl border border-white/5"
+                className="flex items-center gap-1 hover:text-white transition-colors bg-gray-900/60 px-2.5 py-1 rounded-xl border border-white/5 shrink-0"
               >
                 <ArrowUpDown className="w-3 h-3 text-indigo-400" />
-                <span>{sortField === 'imported_at' ? (sortOrder === 'desc' ? '按导入时间 ↓' : '按导入时间 ↑') : '按名称 A-Z'}</span>
+                <span>{sortField === 'imported_at' ? (sortOrder === 'desc' ? '导入时间 ↓' : '导入时间 ↑') : '名称 A-Z'}</span>
               </button>
             </div>
 
@@ -226,11 +252,12 @@ function MainApp() {
               <div className="py-20 text-center text-xs text-gray-500 space-y-2">
                 <Gamepad2 className="w-10 h-10 mx-auto text-gray-700 mb-2" />
                 <p>未找到匹配的游戏数据</p>
-                {(searchQuery || activeTag) && (
+                {(searchQuery || activeTag || activeRootPathId !== null) && (
                   <button
                     onClick={() => {
                       setSearchQuery('');
                       setActiveTag('');
+                      setActiveRootPathId(null);
                     }}
                     className="text-indigo-400 underline"
                   >
@@ -293,6 +320,7 @@ function MainApp() {
         <GameDetailModal
           game={selectedGame}
           allTags={tags}
+          rootPaths={rootPaths}
           onClose={() => setSelectedGame(null)}
           onUpdateGame={handleUpdateGame}
           onOpenFileTransfer={(g) => {
@@ -323,7 +351,7 @@ function MainApp() {
         tags={tags}
         onClose={() => setTagsOpen(false)}
         onTagsUpdated={() => {
-          loadTags();
+          loadMetadata();
           loadGames(page, false);
         }}
       />

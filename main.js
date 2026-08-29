@@ -1285,7 +1285,45 @@ function initDatabase() {
       })();
     }
   } catch {}
+
+  try {
+    trySyncCoversFromAlternateDb();
+  } catch {}
 }
+
+const trySyncCoversFromAlternateDb = () => {
+  try {
+    const candidateDbPaths = [
+      path.join(os.homedir(), 'AppData', 'Roaming', 'gamemanage', 'gamemanage.db'),
+      process.env.APPDATA ? path.join(process.env.APPDATA, 'gamemanage', 'gamemanage.db') : '',
+      path.join(__dirname, 'electron-data', 'gamemanage.db'),
+      path.join(process.cwd(), 'electron-data', 'gamemanage.db')
+    ].filter(Boolean);
+
+    const currentDbPath = path.resolve(path.join(app.getPath('userData'), 'gamemanage.db'));
+
+    for (const altPath of candidateDbPaths) {
+      const resolvedAlt = path.resolve(altPath);
+      if (resolvedAlt.toLowerCase() === currentDbPath.toLowerCase() || !fs.existsSync(resolvedAlt)) continue;
+      try {
+        const altDb = new Database(resolvedAlt, { readonly: true });
+        const altGames = altDb.prepare('SELECT path, cover_path, name FROM games WHERE cover_path IS NOT NULL').all();
+        altDb.close();
+
+        if (Array.isArray(altGames) && altGames.length > 0) {
+          const updateStmt = db.prepare('UPDATE games SET cover_path = ? WHERE path = ? AND (cover_path IS NULL OR cover_path = \'\')');
+          db.transaction(() => {
+            for (const g of altGames) {
+              if (g.path && g.cover_path && fs.existsSync(g.cover_path)) {
+                updateStmt.run(g.cover_path, g.path);
+              }
+            }
+          })();
+        }
+      } catch {}
+    }
+  } catch {}
+};
 
 ipcMain.handle('select-directory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -3653,10 +3691,28 @@ const getApiSettingsFromDb = () => {
 
 const getLanAddresses = () => {
   try {
-    return Object.values(os.networkInterfaces())
-      .flat()
-      .filter((item) => item && item.family === 'IPv4' && !item.internal)
-      .map((item) => item.address);
+    const interfaces = os.networkInterfaces();
+    const list = [];
+    for (const [name, addrs] of Object.entries(interfaces)) {
+      if (!Array.isArray(addrs)) continue;
+      for (const item of addrs) {
+        if (!item || item.family !== 'IPv4' || item.internal) continue;
+        const ip = item.address;
+        const isVirtualOrTun = /tunnel|tun|tap|vethernet|virtual|docker|wsl|loopback|tailscale|zerotier/i.test(name) ||
+          ip.startsWith('198.18.') ||
+          ip.startsWith('169.254.') ||
+          ip.startsWith('192.168.56.');
+
+        let priority = 10;
+        if (ip.startsWith('192.168.') && !isVirtualOrTun) priority = 100;
+        else if (ip.startsWith('10.') && !isVirtualOrTun) priority = 90;
+        else if (ip.startsWith('172.') && !isVirtualOrTun) priority = 80;
+        else if (isVirtualOrTun) priority = 1;
+
+        list.push({ name, ip, priority });
+      }
+    }
+    return list.sort((a, b) => b.priority - a.priority).map((item) => item.ip);
   } catch {
     return [];
   }
@@ -3676,9 +3732,126 @@ const sendApiError = (res, statusCode, message) => {
   sendApiJson(res, statusCode, { success: false, data: null, error: message });
 };
 
+const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameName = null, gameAlias = null) => {
+  const coverDirs = Array.from(new Set([
+    getCoversDir(),
+    path.join(app.getPath('userData'), 'covers'),
+    path.join(os.homedir(), 'AppData', 'Roaming', 'gamemanage', 'covers'),
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'gamemanage', 'covers') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'gamemanage', 'covers') : '',
+    path.join(__dirname, 'electron-data', 'covers'),
+    path.join(process.cwd(), 'electron-data', 'covers'),
+    path.join(__dirname, 'covers'),
+    path.join(process.cwd(), 'covers')
+  ])).filter(Boolean);
+
+  // 1. 如果提供了 rawCoverPath
+  if (rawCoverPath && typeof rawCoverPath === 'string') {
+    let clean = rawCoverPath.trim();
+    if (clean.startsWith('file:///')) {
+      clean = clean.slice(8).split('?')[0];
+      clean = decodeURIComponent(clean);
+    } else if (clean.startsWith('file://')) {
+      clean = clean.slice(7).split('?')[0];
+      clean = decodeURIComponent(clean);
+    } else {
+      clean = clean.split('?')[0];
+    }
+
+    if (clean && fs.existsSync(clean)) return clean;
+    try {
+      const norm = path.normalize(clean);
+      if (norm && fs.existsSync(norm)) return norm;
+    } catch {}
+
+    const baseName = path.basename(clean);
+    for (const dir of candidateDirs) {
+      if (!dir) continue;
+      try {
+        const joined = path.join(dir, baseName);
+        if (fs.existsSync(joined)) return joined;
+      } catch {}
+    }
+  }
+
+  // 2. 在所有可能 covers 目录匹配 gameId 前缀文件
+  for (const dir of coverDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      const matched = files.find((f) => f.startsWith(`${gameId}_`) || f.startsWith(`${gameId}.`));
+      if (matched) {
+        return path.join(dir, matched);
+      }
+    } catch {}
+  }
+
+  // 3. 智能匹配：如果封面是用其他版本或旧 ID 保存的，根据游戏名称与别名在封面目录中模糊匹配
+  const cleanTokens = [gameName, gameAlias]
+    .filter(Boolean)
+    .flatMap((n) => {
+      const s = String(n).trim();
+      const stripped = s.replace(/[\(\)\[\]【】\-_.]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+      return [s, ...stripped];
+    })
+    .filter(Boolean);
+
+  if (cleanTokens.length > 0) {
+    for (const dir of coverDirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const files = fs.readdirSync(dir);
+        for (const token of cleanTokens) {
+          const lowerToken = token.toLowerCase();
+          const matched = files.find((f) => {
+            const lowerF = f.toLowerCase();
+            return lowerF.includes(lowerToken) || lowerToken.includes(lowerF.replace(/^\d+_/, '').replace(/\.[^.]+$/, ''));
+          });
+          if (matched) {
+            const foundPath = path.join(dir, matched);
+            if (db && gameId) {
+              try {
+                db.prepare('UPDATE games SET cover_path = ? WHERE id = ? AND (cover_path IS NULL OR cover_path = \'\')').run(foundPath, gameId);
+              } catch {}
+            }
+            return foundPath;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 4. 在游戏本体文件夹中查找常见封面
+  if (gameFolderPath && typeof gameFolderPath === 'string' && fs.existsSync(gameFolderPath)) {
+    const commonCoverNames = [
+      'cover.jpg', 'cover.png', 'cover.webp', 'cover.jpeg',
+      'folder.jpg', 'folder.png', 'poster.jpg', 'poster.png',
+      'banner.jpg', 'banner.png', 'thumb.jpg', 'thumb.png',
+      'front.jpg', 'front.png'
+    ];
+    for (const cName of commonCoverNames) {
+      try {
+        const p = path.join(gameFolderPath, cName);
+        if (fs.existsSync(p)) return p;
+      } catch {}
+    }
+    // 兜底扫描游戏根目录下第一张 .jpg / .png / .webp
+    try {
+      const entries = fs.readdirSync(gameFolderPath, { withFileTypes: true });
+      const imgEntry = entries.find((e) => !e.isDirectory() && /\.(jpe?g|png|webp)$/i.test(e.name));
+      if (imgEntry) {
+        return path.join(gameFolderPath, imgEntry.name);
+      }
+    } catch {}
+  }
+
+  return null;
+};
+
 const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) => {
   const tags = Array.isArray(game.tags) ? game.tags : [];
-  const hasCover = !!game.cover_path;
+  const coverFilePath = resolveCoverFilePath(game.id, game.cover_path, game.path, game.name, game.alias);
+  const hasCover = !!coverFilePath;
   const result = {
     id: game.id,
     name: game.name,
@@ -3691,7 +3864,7 @@ const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) =>
     tags,
     rootPathIds: Array.isArray(game.root_path_ids) ? game.root_path_ids : [],
     hasCover,
-    coverUrl: hasCover ? `${baseUrl}/api/covers/${game.id}` : null
+    coverUrl: `${baseUrl}/api/covers/${game.id}`
   };
   if (exposeFullPath) {
     result.path = game.path || '';
@@ -3860,8 +4033,47 @@ const getGameFilesInternal = async (gameId, maxDepth = 3, maxResults = 300) => {
   return { success: true, gameName: game.name, rootPath: root, files: results };
 };
 
+const EXCLUDE_EXE_PATTERNS = [
+  /unins\w*\.exe$/i,
+  /uninstall\w*\.exe$/i,
+  /crash\w*\.exe$/i,
+  /handler\w*\.exe$/i,
+  /unitycrashhandler\w*\.exe$/i,
+  /vcredist\w*\.exe$/i,
+  /dxsetup\.exe$/i,
+  /dotNetFx\w*\.exe$/i,
+  /setup\.exe$/i,
+  /oalinst\.exe$/i,
+  /update\w*\.exe$/i,
+  /patch\w*\.exe$/i
+];
+
+const scoreExecutable = (fileName, gameName = '', gameAlias = '') => {
+  const lower = fileName.toLowerCase();
+  for (const pat of EXCLUDE_EXE_PATTERNS) {
+    if (pat.test(lower)) return -100;
+  }
+  let score = 10;
+  const lowerGameName = (gameName || '').toLowerCase().trim();
+  const lowerAlias = (gameAlias || '').toLowerCase().trim();
+
+  if (lowerGameName && (lower.includes(lowerGameName) || lowerGameName.includes(lower.replace(/\.exe$/, '')))) {
+    score += 50;
+  }
+  if (lowerAlias && (lower.includes(lowerAlias) || lowerAlias.includes(lower.replace(/\.exe$/, '')))) {
+    score += 40;
+  }
+  if (['game.exe', 'start.exe', 'launch.exe', 'launcher.exe', 'main.exe', 'play.exe'].includes(lower)) {
+    score += 30;
+  }
+  if (lower.includes('config') || lower.includes('setting')) {
+    score -= 10;
+  }
+  return score;
+};
+
 const launchGameInternal = async (gameId, requestedExe = null) => {
-  const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
+  const game = db.prepare('SELECT id, name, alias, path FROM games WHERE id = ?').get(gameId);
   if (!game) {
     return { success: false, error: '游戏不存在' };
   }
@@ -3870,6 +4082,7 @@ const launchGameInternal = async (gameId, requestedExe = null) => {
   }
 
   let targetExe = null;
+  // 1. 用户指定
   if (requestedExe) {
     const fullExe = path.isAbsolute(requestedExe) ? requestedExe : path.join(game.path, requestedExe);
     if (fs.existsSync(fullExe)) {
@@ -3877,6 +4090,7 @@ const launchGameInternal = async (gameId, requestedExe = null) => {
     }
   }
 
+  // 2. 优先调取历史成功运行过的 exe
   if (!targetExe) {
     const history = db.prepare('SELECT exe_path FROM run_history WHERE game_id = ? ORDER BY launched_at DESC LIMIT 1').get(gameId);
     if (history?.exe_path && fs.existsSync(history.exe_path)) {
@@ -3884,17 +4098,28 @@ const launchGameInternal = async (gameId, requestedExe = null) => {
     }
   }
 
+  // 3. 扫描游戏目录并进行智能加权匹配（排除卸载程序、运行库安装程序）
   if (!targetExe) {
     try {
       const entries = await fs.promises.readdir(game.path, { withFileTypes: true });
       const exeEntries = entries.filter((e) => !e.isDirectory() && e.name.toLowerCase().endsWith('.exe'));
       if (exeEntries.length > 0) {
-        const matchName = exeEntries.find((e) => e.name.toLowerCase().includes(game.name.toLowerCase()));
-        targetExe = path.join(game.path, matchName ? matchName.name : exeEntries[0].name);
+        const scored = exeEntries
+          .map((e) => ({
+            name: e.name,
+            score: scoreExecutable(e.name, game.name, game.alias)
+          }))
+          .sort((a, b) => b.score - a.score);
+
+        const best = scored[0];
+        if (best && best.score > -50) {
+          targetExe = path.join(game.path, best.name);
+        }
       }
     } catch {}
   }
 
+  // 4. 兜底打开文件夹
   if (!targetExe) {
     shell.openPath(game.path);
     return { success: true, method: 'openFolder', message: '未找到可执行文件，已打开游戏所在文件夹' };
@@ -4034,10 +4259,36 @@ const handleApiRequest = async (req, res) => {
     // --- GET /api/root-paths ---
     if (url.pathname === '/api/root-paths' && req.method === 'GET') {
       const rootPaths = db.prepare('SELECT * FROM root_paths ORDER BY created_at DESC').all();
-      const data = exposeFullPath
-        ? rootPaths
-        : rootPaths.map((item) => ({ ...item, path: path.basename(String(item.path || '')) || item.path }));
-      sendApiJson(res, 200, { success: true, data, error: null });
+      const items = rootPaths.map((item) => {
+        const count = db.prepare(`
+          SELECT COUNT(DISTINCT g.id) AS count
+          FROM games g
+          WHERE g.root_path_id = ?
+            OR EXISTS (SELECT 1 FROM game_paths gp WHERE gp.game_id = g.id AND gp.root_path_id = ?)
+        `).get(item.id, item.id)?.count || 0;
+
+        const dirName = path.basename(String(item.path || '')) || item.path;
+        return {
+          id: item.id,
+          name: dirName,
+          path: exposeFullPath ? item.path : dirName,
+          fullPath: item.path,
+          gameCount: count
+        };
+      });
+
+      const othersCount = db.prepare('SELECT COUNT(1) AS count FROM games WHERE is_manual = 1').get()?.count || 0;
+      if (othersCount > 0) {
+        items.push({
+          id: 'others',
+          name: '其它 / 手动添加',
+          path: '其它 / 手动添加',
+          gameCount: othersCount,
+          isManual: true
+        });
+      }
+
+      sendApiJson(res, 200, { success: true, data: items, error: null });
       return;
     }
 
@@ -4260,20 +4511,23 @@ const handleApiRequest = async (req, res) => {
     const coverMatch = url.pathname.match(/^\/api\/covers\/(\d+)$/);
     if (coverMatch && req.method === 'GET') {
       const gameId = Number.parseInt(coverMatch[1], 10);
-      const game = db.prepare('SELECT cover_path FROM games WHERE id = ?').get(gameId);
-      const coverPath = game?.cover_path ? String(game.cover_path) : '';
-      if (!coverPath || !path.isAbsolute(coverPath) || !fs.existsSync(coverPath)) {
+      const game = db.prepare('SELECT id, name, alias, path, cover_path FROM games WHERE id = ?').get(gameId);
+      const resolvedCoverPath = resolveCoverFilePath(gameId, game?.cover_path, game?.path, game?.name, game?.alias);
+      if (!resolvedCoverPath || !fs.existsSync(resolvedCoverPath)) {
         sendApiError(res, 404, 'Cover not found');
         return;
       }
-      const ext = path.extname(coverPath).toLowerCase();
-      const contentType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      const ext = path.extname(resolvedCoverPath).toLowerCase();
+      const contentType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': 'private, max-age=3600',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
         'X-Content-Type-Options': 'nosniff'
       });
-      fs.createReadStream(coverPath).on('error', () => {
+      fs.createReadStream(resolvedCoverPath).on('error', () => {
         if (!res.headersSent) sendApiError(res, 500, 'Failed to read cover');
         else res.end();
       }).pipe(res);

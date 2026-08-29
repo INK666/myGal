@@ -70,8 +70,8 @@ export class ApiClient {
   }
 
   // --- 基础状态与健康检查 ---
-  async checkHealth() {
-    return this.request('/api/health');
+  async checkHealth(options = {}) {
+    return this.request('/api/health', { timeout: 3000, ...options });
   }
 
   async getStats() {
@@ -112,20 +112,22 @@ export class ApiClient {
   }
 
   async deleteTag(tagId) {
-    return this.request(`/api/tags/${tagId}`, { method: 'DELETE' });
+    const res = await this.request(`/api/tags/${tagId}`, {
+      method: 'DELETE'
+    });
+    return res.data;
   }
 
   // --- 游戏列表与详情 ---
-  async getGames({ page = 1, pageSize = 40, query = '', tag = '', rootPathId = null, sort = 'imported_at', order = 'desc' } = {}) {
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      sort,
-      order
-    });
-    if (query) params.set('query', query);
-    if (tag) params.set('tag', tag);
-    if (rootPathId !== null && rootPathId !== undefined && rootPathId !== '') params.set('rootPathId', rootPathId);
+  async getGames(options = {}) {
+    const params = new URLSearchParams();
+    if (options.page) params.set('page', options.page);
+    if (options.pageSize) params.set('pageSize', options.pageSize);
+    if (options.query) params.set('query', options.query);
+    if (options.tag) params.set('tag', options.tag);
+    if (options.rootPathId) params.set('rootPathId', options.rootPathId);
+    if (options.sort) params.set('sort', options.sort);
+    if (options.order) params.set('order', options.order);
 
     const res = await this.request(`/api/games?${params.toString()}`);
     return res.data;
@@ -160,10 +162,10 @@ export class ApiClient {
   }
 
   async addTagToGame(gameId, tagIdOrName) {
-    const body = typeof tagIdOrName === 'number' ? { tagId: tagIdOrName } : { name: tagIdOrName };
+    const isId = typeof tagIdOrName === 'number';
     const res = await this.request(`/api/games/${gameId}/tags`, {
       method: 'POST',
-      body: JSON.stringify(body)
+      body: JSON.stringify(isId ? { tagId: tagIdOrName } : { tagName: tagIdOrName })
     });
     return res.data;
   }
@@ -204,4 +206,7 @@ export class ApiClient {
   }
 }
 
-export const api = new ApiClient();
+export const api = new ApiClient(
+  typeof localStorage !== 'undefined' ? localStorage.getItem('mygal_server_url') || '' : '',
+  typeof localStorage !== 'undefined' ? localStorage.getItem('mygal_server_token') || '' : ''
+);

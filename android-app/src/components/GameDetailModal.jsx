@@ -22,11 +22,12 @@ import { useServer } from '../contexts/ServerContext';
 export default function GameDetailModal({
   game,
   allTags = [],
+  rootPaths = [],
   onClose,
   onUpdateGame,
   onOpenFileTransfer
 }) {
-  const { showToast, serverInfo } = useServer();
+  const { showToast, serverInfo, serverUrl, token } = useServer();
   const [detail, setDetail] = useState(game);
   const [aliasEditing, setAliasEditing] = useState(false);
   const [aliasValue, setAliasValue] = useState(game.alias || '');
@@ -37,10 +38,15 @@ export default function GameDetailModal({
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('#6366f1');
   const [creatingTag, setCreatingTag] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
-  const coverUrl = detail.hasCover ? api.getCoverUrl(detail.id) : null;
+  const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
+  const coverUrl = cleanServerUrl
+    ? `${cleanServerUrl}/api/covers/${detail.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    : null;
 
   useEffect(() => {
+    setImageError(false);
     setDetail(game);
     setAliasValue(game.alias || '');
     // Fetch latest fresh detail from server
@@ -49,7 +55,7 @@ export default function GameDetailModal({
         if (res) setDetail(res);
       })
       .catch(() => {});
-  }, [game.id]);
+  }, [game.id, coverUrl]);
 
   // 保存别名
   const handleSaveAlias = async () => {
@@ -192,10 +198,12 @@ export default function GameDetailModal({
           <div className="flex gap-4 items-start">
             {/* Cover 2:3 */}
             <div className="w-28 h-42 rounded-2xl bg-gray-900 overflow-hidden shrink-0 border border-white/10 shadow-xl relative flex items-center justify-center">
-              {coverUrl ? (
+              {coverUrl && !imageError ? (
                 <img
+                  key={coverUrl}
                   src={coverUrl}
                   alt={detail.name}
+                  onError={() => setImageError(true)}
                   className="w-full h-full object-cover"
                 />
               ) : (

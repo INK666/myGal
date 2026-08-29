@@ -10,7 +10,10 @@ import {
   History,
   Trash2,
   ArrowRight,
-  ExternalLink
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { useServer } from '../contexts/ServerContext';
@@ -26,15 +29,19 @@ export default function ServerConnectModal({ isOpen, onClose }) {
     error,
     testConnection,
     connectWithQrPayload,
+    removeProfile,
+    clearProfiles,
     showToast
   } = useServer();
 
   const [activeTab, setActiveTab] = useState('scan'); // 'scan' | 'manual' | 'profiles'
   const [inputUrl, setInputUrl] = useState(serverUrl);
   const [inputToken, setInputToken] = useState(token);
+  const [showToken, setShowToken] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
   const [scannerError, setScannerError] = useState(null);
   const scannerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     setInputUrl(serverUrl);
@@ -59,8 +66,13 @@ export default function ServerConnectModal({ isOpen, onClose }) {
         await html5QrCode.start(
           { facingMode: 'environment' },
           {
-            fps: 10,
-            qrbox: { width: 250, height: 250 }
+            fps: 15,
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+              const edge = Math.max(180, Math.floor(minEdge * 0.75));
+              return { width: edge, height: edge };
+            },
+            aspectRatio: 1.0
           },
           async (decodedText) => {
             if (!isMounted) return;
@@ -90,6 +102,27 @@ export default function ServerConnectModal({ isOpen, onClose }) {
       stopScanner();
     };
   }, [isOpen, activeTab]);
+
+  const handleScanFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      showToast('正在识别图片中二维码...', 'info');
+      let qrScanner = scannerRef.current;
+      if (!qrScanner) {
+        qrScanner = new Html5Qrcode('mobile-qr-reader');
+      }
+      const decodedText = await qrScanner.scanFile(file, true);
+      const ok = await connectWithQrPayload(decodedText);
+      if (ok) {
+        onClose();
+      }
+    } catch (err) {
+      showToast('未能从所选图片中识别出有效二维码', 'error');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   const stopScanner = () => {
     if (scannerRef.current) {
@@ -209,10 +242,28 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                 )}
               </div>
 
+              <div className="flex flex-col items-center gap-2 pt-1">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleScanFile}
+                  accept="image/*"
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gray-900/80 hover:bg-gray-800 border border-white/10 text-gray-200 hover:text-white text-xs font-medium flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
+                >
+                  <ImageIcon className="w-4 h-4 text-indigo-400" />
+                  <span>从手机相册 / 截图识别二维码</span>
+                </button>
+              </div>
+
               <div className="text-center text-xs text-gray-400 space-y-1">
-                <p className="font-medium text-gray-200">打开电脑端 myGal → 设置 → 移动端数据 API</p>
+                <p className="font-medium text-gray-200">电脑端已生成大方块易扫二维码（可点击放大）</p>
                 <p className="text-[11px] text-gray-500">
-                  确保手机与电脑处于同一 WiFi 局域网下
+                  若环境光线较暗或对焦困难，亦可拍照截图后直接在此选图
                 </p>
               </div>
             </div>
@@ -243,13 +294,23 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                   <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
                   <span>API 访问 Token</span>
                 </label>
-                <input
-                  type="password"
-                  value={inputToken}
-                  onChange={(e) => setInputToken(e.target.value)}
-                  placeholder="粘贴 PC 端设置页中的 Token"
-                  className="w-full bg-gray-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                />
+                <div className="relative">
+                  <input
+                    type={showToken ? "text" : "password"}
+                    value={inputToken}
+                    onChange={(e) => setInputToken(e.target.value)}
+                    placeholder="粘贴 PC 端设置页中的 Token"
+                    className="w-full bg-gray-900 border border-white/10 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowToken(!showToken)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-gray-400 hover:text-white transition-colors"
+                    title={showToken ? "隐藏 Token" : "显示 Token"}
+                  >
+                    {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <button
@@ -275,6 +336,22 @@ export default function ServerConnectModal({ isOpen, onClose }) {
           {/* --- Tab 3: Saved Profiles --- */}
           {activeTab === 'profiles' && (
             <div className="space-y-3">
+              {profiles.length > 0 && (
+                <div className="flex items-center justify-between px-1 pb-1">
+                  <span className="text-[11px] text-gray-400">已保存 {profiles.length} 条记录</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearProfiles();
+                      showToast('已清空所有历史连接记录', 'info');
+                    }}
+                    className="text-[11px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>清空历史</span>
+                  </button>
+                </div>
+              )}
               {profiles.length === 0 ? (
                 <div className="p-8 text-center text-xs text-gray-500">
                   暂无已保存的历史连接
@@ -287,14 +364,28 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                       testConnection(p.url, p.token, true);
                       onClose();
                     }}
-                    className="glass-panel hover:bg-gray-850 p-3.5 rounded-2xl flex items-center justify-between cursor-pointer active-press border border-white/5"
+                    className="glass-panel hover:bg-gray-850 p-3.5 rounded-2xl flex items-center justify-between cursor-pointer active-press border border-white/5 transition-all group"
                   >
-                    <div className="min-w-0 flex-1 mr-3">
+                    <div className="min-w-0 flex-1 mr-2">
                       <div className="font-bold text-xs text-white truncate">{p.name || 'myGal PC'}</div>
                       <div className="text-[11px] font-mono text-gray-400 truncate mt-0.5">{p.url}</div>
                     </div>
-                    <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 shrink-0">
-                      <ArrowRight className="w-4 h-4" />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeProfile(p.url);
+                          showToast('已删除历史连接记录', 'info');
+                        }}
+                        className="p-2 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                        title="删除此记录"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                        <ArrowRight className="w-4 h-4" />
+                      </div>
                     </div>
                   </div>
                 ))

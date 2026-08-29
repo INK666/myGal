@@ -1,10 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Pin, ImageOff, Folder, Tag, Play, MoreVertical } from 'lucide-react';
-import { api } from '../api/client';
+import { useServer } from '../contexts/ServerContext';
 
 export default function GameCard({ game, viewMode = 'grid2', onClick }) {
+  const { serverUrl, token } = useServer();
   const [imageError, setImageError] = useState(false);
-  const coverUrl = game.hasCover ? api.getCoverUrl(game.id) : null;
+
+  const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
+  const coverUrl = cleanServerUrl
+    ? `${cleanServerUrl}/api/covers/${game.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    : null;
+
+  useEffect(() => {
+    setImageError(false);
+  }, [game.id, coverUrl, game.updatedAt]);
 
   // --- 列表视图 (List Mode) ---
   if (viewMode === 'list') {
@@ -17,6 +26,7 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
         <div className="w-16 h-22 rounded-xl bg-gray-900 overflow-hidden shrink-0 relative border border-white/10 flex items-center justify-center">
           {coverUrl && !imageError ? (
             <img
+              key={coverUrl}
               src={coverUrl}
               alt={game.name}
               onError={() => setImageError(true)}
@@ -85,6 +95,7 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
         <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
           {coverUrl && !imageError ? (
             <img
+              key={coverUrl}
               src={coverUrl}
               alt={game.name}
               onError={() => setImageError(true)}
@@ -125,6 +136,7 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
       <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
         {coverUrl && !imageError ? (
           <img
+            key={coverUrl}
             src={coverUrl}
             alt={game.name}
             onError={() => setImageError(true)}
