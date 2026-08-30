@@ -185,6 +185,15 @@ export class ApiClient {
     return res.data;
   }
 
+  async uploadGameCover(gameId, imageData) {
+    const res = await this.request(`/api/games/${gameId}/cover`, {
+      method: 'POST',
+      body: JSON.stringify({ image: imageData }),
+      timeout: 35000
+    });
+    return res.data;
+  }
+
   async launchGame(gameId, exePath = null) {
     const res = await this.request(`/api/games/${gameId}/launch`, {
       method: 'POST',

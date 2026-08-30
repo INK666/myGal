@@ -48,10 +48,21 @@ const isPathUnderDirectory = (filePath, dirPath) => {
   }
 };
 
-const safeUnlinkCover = (coverPath) => {
+const safeUnlinkCover = (coverPath, excludeGameId = null) => {
   if (!coverPath) return;
   if (typeof coverPath !== 'string') return;
   if (!path.isAbsolute(coverPath)) return;
+
+  if (db) {
+    try {
+      const query = excludeGameId !== null && excludeGameId !== undefined
+        ? db.prepare('SELECT COUNT(*) as count FROM games WHERE cover_path = ? AND id != ?').get(coverPath, excludeGameId)
+        : db.prepare('SELECT COUNT(*) as count FROM games WHERE cover_path = ?').get(coverPath);
+      if (query && query.count > 0) {
+        return;
+      }
+    } catch {}
+  }
 
   const coversDir = getCoversDir();
   const legacyCoversDir = path.join(__dirname, 'covers');
@@ -1890,6 +1901,10 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   // 优化：预先准备 SQL 语句
   const selectCoverStmt = db.prepare('SELECT cover_path FROM games WHERE id = ?');
   const deleteGameStmt = db.prepare('DELETE FROM games WHERE id = ?');
+  const deleteGamePathsByGameIdStmt = db.prepare('DELETE FROM game_paths WHERE game_id = ?');
+  const deleteGameTagsByGameIdStmt = db.prepare('DELETE FROM game_tags WHERE game_id = ?');
+  const deleteGamePathByIdStmt = db.prepare('DELETE FROM game_paths WHERE id = ?');
+  const deleteGamePathByPathStmt = db.prepare('DELETE FROM game_paths WHERE game_id = ? AND path = ?');
   const updateGameStmt = db.prepare('UPDATE games SET path = ?, root_path_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
   
   // 优化：使用事务批量处理所有数据库操作（关键优化！）
@@ -1903,10 +1918,15 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
         created_at: null 
       }];
 
-      const validPaths = pathList.filter(p => {
-        if (!p.path) return false;
-        if (!pathExistsMap.get(p.path)) return false;
-        return hasValidRoot(p.root_path_id);
+      const validPaths = [];
+      const invalidPaths = [];
+
+      pathList.forEach(p => {
+        if (p.path && pathExistsMap.get(p.path) && hasValidRoot(p.root_path_id)) {
+          validPaths.push(p);
+        } else {
+          invalidPaths.push(p);
+        }
       });
 
       if (validPaths.length === 0) {
@@ -1914,10 +1934,21 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
         if (row?.cover_path) {
           coversToDelete.push(row.cover_path);
         }
+        deleteGamePathsByGameIdStmt.run(game.id);
+        deleteGameTagsByGameIdStmt.run(game.id);
         deleteGameStmt.run(game.id);
         totalDeleted++;
         return;
       }
+
+      // 清理该游戏已失效的路径记录
+      invalidPaths.forEach(p => {
+        if (p.id) {
+          deleteGamePathByIdStmt.run(p.id);
+        } else if (p.path) {
+          deleteGamePathByPathStmt.run(game.id, p.path);
+        }
+      });
 
       validPaths.sort((a, b) => {
         const aManualScore = a.root_path_id === null || a.root_path_id === undefined ? 1 : 0;
@@ -1937,7 +1968,12 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
 
       const primary = validPaths[0];
       updateGameStmt.run(primary.path, primary.root_path_id, game.id);
+      insertGamePathStmt.run(game.id, primary.path, primary.root_path_id);
     });
+
+    // 兜底清理孤立记录
+    db.prepare('DELETE FROM game_paths WHERE game_id NOT IN (SELECT id FROM games)').run();
+    db.prepare('DELETE FROM game_tags WHERE game_id NOT IN (SELECT id FROM games)').run();
   })();  // 事务结束，一次性提交所有更改
   
   // 事务完成后再删除封面文件（不阻塞数据库操作）
@@ -2003,10 +2039,20 @@ const processGames = (games) => {
     if (game.root_path_id !== null && game.root_path_id !== undefined) {
       rootPathIdSet.add(Number(game.root_path_id));
     }
+
+    let validCoverPath = game.cover_path;
+    if (validCoverPath) {
+      if (!fs.existsSync(validCoverPath)) {
+        try {
+          db.prepare('UPDATE games SET cover_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(game.id);
+        } catch {}
+        validCoverPath = null;
+      }
+    }
     
     return {
       ...game,
-      cover_path: game.cover_path ? `file:///${game.cover_path.replace(/\\/g, '/')}?t=${Date.now()}` : null,
+      cover_path: validCoverPath ? `file:///${validCoverPath.replace(/\\/g, '/')}?t=${Date.now()}` : null,
       tags: game.tags ? game.tags.split(',') : [],
       paths: Array.from(pathSet),
       root_path_ids: Array.from(rootPathIdSet).filter(Number.isFinite).sort((a, b) => a - b)
@@ -2207,7 +2253,7 @@ ipcMain.handle('update-game-cover', async (event, gameId, coverPath) => {
     return false;
   }
   
-  safeUnlinkCover(game.cover_path);
+  safeUnlinkCover(game.cover_path, gameId);
   
   if (!coverPath) {
     const stmt = db.prepare('UPDATE games SET cover_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
@@ -2444,7 +2490,7 @@ const scrapeGameCoverCore = async (gameId) => {
     const fileName = `${gameId}_${safeTitle}.jpg`;
     const newCoverPath = path.join(coversDir, fileName);
 
-    safeUnlinkCover(game.cover_path);
+    safeUnlinkCover(game.cover_path, gameId);
 
     fs.writeFileSync(newCoverPath, out);
     db.prepare('UPDATE games SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newCoverPath, gameId);
@@ -2562,7 +2608,7 @@ ipcMain.handle('delete-game', async (event, gameId, deleteFiles = false) => {
       }
     }
 
-    safeUnlinkCover(game.cover_path);
+    safeUnlinkCover(game.cover_path, gameId);
     return true;
   } catch (error) {
     console.error('delete-game failed:', error);
@@ -3617,8 +3663,8 @@ ipcMain.handle('capture-screen-cover', async (event, gameId) => {
         const sanitizedName = game.name.replace(/[<>:"/\\|?*]/g, '_');
         const newFileName = `${gameId}_${sanitizedName}.png`;
         const newCoverPath = path.join(coversDir, newFileName);
-        safeUnlinkCover(game.cover_path);
-        safeUnlinkCover(newCoverPath);
+        safeUnlinkCover(game.cover_path, gameId);
+        safeUnlinkCover(newCoverPath, gameId);
         fs.copyFileSync(tempPath, newCoverPath);
         const stmt = db.prepare('UPDATE games SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
         stmt.run(newCoverPath, gameId);
@@ -3687,9 +3733,9 @@ const createApiToken = () => crypto.randomBytes(32).toString('hex');
 
 const ensureApiSettings = () => {
   if (!readApiSetting(apiSettingKeys.enabled, '')) writeApiSetting(apiSettingKeys.enabled, 'true');
-  if (!readApiSetting(apiSettingKeys.host, '')) writeApiSetting(apiSettingKeys.host, '127.0.0.1');
+  if (!readApiSetting(apiSettingKeys.host, '')) writeApiSetting(apiSettingKeys.host, '0.0.0.0');
   if (!readApiSetting(apiSettingKeys.port, '')) writeApiSetting(apiSettingKeys.port, '37689');
-  if (!readApiSetting(apiSettingKeys.exposeFullPath, '')) writeApiSetting(apiSettingKeys.exposeFullPath, 'false');
+  if (!readApiSetting(apiSettingKeys.exposeFullPath, '')) writeApiSetting(apiSettingKeys.exposeFullPath, 'true');
   if (!readApiSetting(apiSettingKeys.allowRemoteLaunch, '')) writeApiSetting(apiSettingKeys.allowRemoteLaunch, 'true');
   if (!readApiSetting(apiSettingKeys.token, '')) writeApiSetting(apiSettingKeys.token, createApiToken());
 };
@@ -3697,13 +3743,13 @@ const ensureApiSettings = () => {
 const getApiSettingsFromDb = () => {
   ensureApiSettings();
   const port = Number.parseInt(readApiSetting(apiSettingKeys.port, '37689'), 10);
-  const host = readApiSetting(apiSettingKeys.host, '127.0.0.1') === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+  const host = readApiSetting(apiSettingKeys.host, '0.0.0.0') === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0';
   return {
     enabled: toBoolSetting(readApiSetting(apiSettingKeys.enabled, 'true'), true),
     host,
     port: Number.isFinite(port) && port > 0 && port <= 65535 ? port : 37689,
     token: readApiSetting(apiSettingKeys.token, ''),
-    exposeFullPath: toBoolSetting(readApiSetting(apiSettingKeys.exposeFullPath, 'false'), false),
+    exposeFullPath: toBoolSetting(readApiSetting(apiSettingKeys.exposeFullPath, 'true'), true),
     allowRemoteLaunch: toBoolSetting(readApiSetting(apiSettingKeys.allowRemoteLaunch, 'true'), true)
   };
 };
@@ -3871,6 +3917,7 @@ const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) =>
   const tags = Array.isArray(game.tags) ? game.tags : [];
   const coverFilePath = resolveCoverFilePath(game.id, game.cover_path, game.path, game.name, game.alias);
   const hasCover = !!coverFilePath;
+  const version = game.updated_at ? new Date(game.updated_at).getTime() : (game.imported_at ? new Date(game.imported_at).getTime() : '');
   const result = {
     id: game.id,
     name: game.name,
@@ -3883,7 +3930,7 @@ const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) =>
     tags,
     rootPathIds: Array.isArray(game.root_path_ids) ? game.root_path_ids : [],
     hasCover,
-    coverUrl: `${baseUrl}/api/covers/${game.id}`
+    coverUrl: hasCover ? `${baseUrl}/api/covers/${game.id}${version ? `?v=${version}` : ''}` : null
   };
   if (exposeFullPath) {
     result.path = game.path || '';
@@ -4164,7 +4211,7 @@ const readRequestBody = (req) => new Promise((resolve, reject) => {
   let body = '';
   req.on('data', (chunk) => {
     body += chunk;
-    if (body.length > 10 * 1024 * 1024) {
+    if (body.length > 25 * 1024 * 1024) {
       req.destroy();
       reject(new Error('Payload too large'));
     }
@@ -4432,6 +4479,62 @@ const handleApiRequest = async (req, res) => {
       return;
     }
 
+    // --- /api/games/:id/cover (POST to upload/update custom cover) ---
+    const uploadCoverMatch = url.pathname.match(/^\/api\/games\/(\d+)\/cover$/);
+    if (uploadCoverMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(uploadCoverMatch[1], 10);
+      const game = db.prepare('SELECT id, name, cover_path FROM games WHERE id = ?').get(gameId);
+      if (!game) {
+        sendApiError(res, 404, '游戏不存在');
+        return;
+      }
+      const body = await readRequestBody(req);
+      if (!body.image) {
+        sendApiError(res, 400, '缺少图片数据');
+        return;
+      }
+      let base64Data = String(body.image);
+      let ext = '.jpg';
+      const dataUrlMatch = base64Data.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+      if (dataUrlMatch) {
+        const format = dataUrlMatch[1].toLowerCase();
+        ext = format === 'png' ? '.png' : format === 'webp' ? '.webp' : format === 'gif' ? '.gif' : '.jpg';
+        base64Data = dataUrlMatch[2];
+      } else if (body.ext) {
+        ext = body.ext.startsWith('.') ? body.ext : `.${body.ext}`;
+      }
+      try {
+        const buffer = Buffer.from(base64Data, 'base64');
+        if (!buffer || buffer.length === 0) {
+          sendApiError(res, 400, '图片数据解析失败');
+          return;
+        }
+        const coversDir = getCoversDir();
+        if (!fs.existsSync(coversDir)) {
+          fs.mkdirSync(coversDir, { recursive: true });
+        }
+        safeUnlinkCover(game.cover_path, gameId);
+        const sanitizedName = game.name.replace(/[<>:"/\\|?*]/g, '_');
+        const newFileName = `${gameId}_${sanitizedName}_custom_${Date.now()}${ext}`;
+        const newCoverPath = path.join(coversDir, newFileName);
+        fs.writeFileSync(newCoverPath, buffer);
+
+        db.prepare('UPDATE games SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newCoverPath, gameId);
+        sendApiJson(res, 200, {
+          success: true,
+          data: {
+            id: gameId,
+            coverPath: newCoverPath,
+            coverUrl: `${baseUrl}/api/covers/${gameId}?v=${Date.now()}`
+          },
+          error: null
+        });
+      } catch (uploadErr) {
+        sendApiError(res, 500, '保存封面失败: ' + (uploadErr?.message || String(uploadErr)));
+      }
+      return;
+    }
+
     // --- /api/games/:id/launch ---
     const launchMatch = url.pathname.match(/^\/api\/games\/(\d+)\/launch$/);
     if (launchMatch && req.method === 'POST') {
@@ -4563,7 +4666,7 @@ const handleApiRequest = async (req, res) => {
       const contentType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': 'no-cache, must-revalidate',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, OPTIONS',
         'Cross-Origin-Resource-Policy': 'cross-origin',

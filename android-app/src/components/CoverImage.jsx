@@ -1,9 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ImageOff } from 'lucide-react';
-import { getCoverBlob, saveCoverBlob } from '../utils/cacheStorage';
+import { getCoverBlobWithMeta, saveCoverBlob, deleteCoverBlob } from '../utils/cacheStorage';
 
 // 内存 Blob URL 缓存，避免重复请求与内存泄漏
 const blobCache = new Map();
+
+export function clearBlobCache() {
+  blobCache.forEach((objectUrl) => {
+    try {
+      if (typeof objectUrl === 'string' && objectUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch {}
+  });
+  blobCache.clear();
+}
 
 export default function CoverImage({
   src,
@@ -19,37 +30,51 @@ export default function CoverImage({
     if (blobCache.has(src)) return blobCache.get(src);
     return src;
   });
-  const [hasError, setHasError] = useState(false);
-  const [loading, setLoading] = useState(!src || !blobCache.has(src));
+  const [hasError, setHasError] = useState(!src);
+  const [loading, setLoading] = useState(Boolean(src) && !blobCache.has(src));
   const retryWithFetchRef = useRef(false);
 
   useEffect(() => {
     let isCancelled = false;
     retryWithFetchRef.current = false;
 
-    if (!src && !gameId) {
+    if (!src) {
       setImageSrc(null);
       setHasError(true);
       setLoading(false);
+      if (serverUrl && gameId) {
+        deleteCoverBlob(serverUrl, gameId).catch(() => {});
+      }
       return;
     }
 
-    // 1. 检查内存缓存
-    if (src && blobCache.has(src)) {
+    // 1. 检查内存缓存 (精确匹配带版本号的完整 URL)
+    if (blobCache.has(src)) {
       setImageSrc(blobCache.get(src));
       setHasError(false);
       setLoading(false);
       return;
     }
 
+    // 提取当前 URL 里的版本参数 ?v=...
+    let currentVersion = '';
+    try {
+      const urlObj = new URL(src, 'http://localhost');
+      currentVersion = urlObj.searchParams.get('v') || '';
+    } catch {}
+
     // 2. 检查 IndexedDB 离线缓存
     const checkIndexedDb = async () => {
       if (serverUrl && gameId) {
         try {
-          const cachedBlob = await getCoverBlob(serverUrl, gameId);
-          if (cachedBlob && !isCancelled) {
-            const objectUrl = URL.createObjectURL(cachedBlob);
-            if (src) blobCache.set(src, objectUrl);
+          const cached = await getCoverBlobWithMeta(serverUrl, gameId);
+          if (cached?.blob && !isCancelled) {
+            // 如果服务端有新版本号且与缓存版本不一致，则不使用过期缓存，触发网络获取
+            if (currentVersion && cached.version && cached.version !== currentVersion) {
+              return false;
+            }
+            const objectUrl = URL.createObjectURL(cached.blob);
+            blobCache.set(src, objectUrl);
             setImageSrc(objectUrl);
             setHasError(false);
             setLoading(false);
@@ -62,14 +87,9 @@ export default function CoverImage({
 
     checkIndexedDb().then((foundInIdb) => {
       if (foundInIdb || isCancelled) return;
-      if (src) {
-        setImageSrc(src);
-        setHasError(false);
-        setLoading(true);
-      } else {
-        setHasError(true);
-        setLoading(false);
-      }
+      setImageSrc(src);
+      setHasError(false);
+      setLoading(true);
     });
 
     return () => {
@@ -84,15 +104,24 @@ export default function CoverImage({
       if (resp.ok) {
         const blob = await resp.blob();
         if (blob && blob.size > 0) {
+          let v = '';
+          try {
+            const u = new URL(url, 'http://localhost');
+            v = u.searchParams.get('v') || '';
+          } catch {}
           const objectUrl = URL.createObjectURL(blob);
           blobCache.set(url, objectUrl);
           if (serverUrl && gameId) {
-            saveCoverBlob(serverUrl, gameId, blob);
+            saveCoverBlob(serverUrl, gameId, blob, v);
           }
           setImageSrc(objectUrl);
           setHasError(false);
           setLoading(false);
           return true;
+        }
+      } else if (resp.status === 404) {
+        if (serverUrl && gameId) {
+          deleteCoverBlob(serverUrl, gameId).catch(() => {});
         }
       }
     } catch (err) {
@@ -102,7 +131,7 @@ export default function CoverImage({
   };
 
   const handleImgError = async () => {
-    // 发生图片加载失败（可能因网络断开、跨域或 WebView 拦截），尝试 fetch 兜底
+    // 发生图片加载失败，尝试 fetch 兜底
     if (!retryWithFetchRef.current && src) {
       retryWithFetchRef.current = true;
       const success = await fetchAndCacheBlob(src);
@@ -116,14 +145,19 @@ export default function CoverImage({
     setLoading(false);
     setHasError(false);
     // 当图片首次成功通过 <img> 加载后，异步在后台拉取 blob 存入 IndexedDB 供离线使用
-    if (src && !imageSrc.startsWith('blob:') && serverUrl && gameId) {
-      getCoverBlob(serverUrl, gameId).then((existing) => {
-        if (!existing) {
+    if (src && !imageSrc?.startsWith?.('blob:') && serverUrl && gameId) {
+      let v = '';
+      try {
+        const u = new URL(src, 'http://localhost');
+        v = u.searchParams.get('v') || '';
+      } catch {}
+      getCoverBlobWithMeta(serverUrl, gameId).then((existing) => {
+        if (!existing || (v && existing.version !== v)) {
           fetch(src, { mode: 'cors' })
             .then((r) => (r.ok ? r.blob() : null))
             .then((blob) => {
               if (blob && blob.size > 0) {
-                saveCoverBlob(serverUrl, gameId, blob);
+                saveCoverBlob(serverUrl, gameId, blob, v);
               }
             })
             .catch(() => {});

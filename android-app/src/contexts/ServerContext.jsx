@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
 import { deleteServerCache, clearAllCache } from '../utils/cacheStorage';
+import { clearBlobCache } from '../components/CoverImage';
 
 const ServerContext = createContext(null);
 
@@ -11,7 +12,7 @@ const STORAGE_KEYS = {
 };
 
 export function ServerProvider({ children }) {
-  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem(STORAGE_KEYS.SERVER_URL) || 'http://192.168.1.100:37689');
+  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem(STORAGE_KEYS.SERVER_URL) || '');
   const [token, setToken] = useState(() => localStorage.getItem(STORAGE_KEYS.TOKEN) || '');
   const [profiles, setProfiles] = useState(() => {
     try {
@@ -37,6 +38,12 @@ export function ServerProvider({ children }) {
 
   // 刷新当前连接
   const testConnection = useCallback(async (targetUrl = serverUrl, targetToken = token, saveOnSuccess = true) => {
+    if (!targetUrl) {
+      setConnected(false);
+      setServerInfo(null);
+      setLastPing(null);
+      return { success: false, error: '未配置服务地址' };
+    }
     setChecking(true);
     setError(null);
     const start = performance.now();
@@ -60,9 +67,15 @@ export function ServerProvider({ children }) {
           // 更新配置列表
           setProfiles((prev) => {
             const cleanUrl = targetUrl.trim().replace(/\/+$/, '');
+            const existing = prev.find((p) => p.url === cleanUrl);
             const filtered = prev.filter((p) => p.url !== cleanUrl);
             const next = [
-              { url: cleanUrl, token: targetToken, name: res.data?.app || 'myGal PC', lastConnected: Date.now() },
+              {
+                url: cleanUrl,
+                token: targetToken,
+                gameCount: typeof existing?.gameCount === 'number' ? existing.gameCount : null,
+                lastConnected: Date.now()
+              },
               ...filtered
             ].slice(0, 10);
             localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
@@ -169,22 +182,72 @@ export function ServerProvider({ children }) {
 
   const removeProfile = useCallback((targetUrl) => {
     const cleanUrl = String(targetUrl || '').trim().replace(/\/+$/, '');
+    let nextProfiles = [];
     setProfiles((prev) => {
-      const next = prev.filter((p) => p.url !== cleanUrl);
+      nextProfiles = prev.filter((p) => p.url !== cleanUrl);
+      localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(nextProfiles));
+      return nextProfiles;
+    });
+
+    // 同步彻底删除该服务器在 IndexedDB 中的全部离线游戏数据与封面图片
+    deleteServerCache(cleanUrl);
+    clearBlobCache();
+
+    // 检查是否删除的是当前连接/活动的服务器
+    const currentClean = String(serverUrl || '').trim().replace(/\/+$/, '');
+    if (currentClean.toLowerCase() === cleanUrl.toLowerCase()) {
+      if (nextProfiles.length > 0) {
+        // 若还有其它已保存的 PC 端游戏库，切换至第一个
+        const next = nextProfiles[0];
+        setServerUrl(next.url);
+        setToken(next.token || '');
+        localStorage.setItem(STORAGE_KEYS.SERVER_URL, next.url);
+        localStorage.setItem(STORAGE_KEYS.TOKEN, next.token || '');
+        api.setCredentials(next.url, next.token || '');
+        testConnection(next.url, next.token || '', true);
+      } else {
+        // 若已无任何游戏库，彻底重置当前连接状态
+        setServerUrl('');
+        setToken('');
+        setConnected(false);
+        setServerInfo(null);
+        setLastPing(null);
+        setError(null);
+        localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
+        localStorage.removeItem(STORAGE_KEYS.TOKEN);
+        api.setCredentials('', '');
+      }
+    }
+
+    showToast('已删除该PC端游戏库并彻底清除其离线缓存', 'info');
+  }, [serverUrl, testConnection, showToast]);
+
+  const updateProfileGameCount = useCallback((targetUrl, count) => {
+    const cleanUrl = String(targetUrl || '').trim().replace(/\/+$/, '');
+    if (!cleanUrl) return;
+    setProfiles((prev) => {
+      const next = prev.map((p) => (p.url === cleanUrl ? { ...p, gameCount: count } : p));
       localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
       return next;
     });
-    // 同步彻底删除该服务器在 IndexedDB 中的全部离线游戏数据与封面图片
-    deleteServerCache(cleanUrl);
-    showToast('已删除连接记录并清空其离线缓存', 'info');
-  }, [showToast]);
+  }, []);
 
   const clearProfiles = useCallback(() => {
     setProfiles([]);
     localStorage.removeItem(STORAGE_KEYS.PROFILES);
-    // 清空本地全部 IndexedDB 缓存
+    setServerUrl('');
+    setToken('');
+    setConnected(false);
+    setServerInfo(null);
+    setLastPing(null);
+    setError(null);
+    localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
+    localStorage.removeItem(STORAGE_KEYS.TOKEN);
+    api.setCredentials('', '');
+    // 清空本地全部 IndexedDB 缓存与内存 Blob
     clearAllCache();
-    showToast('已清空全部历史记录与离线缓存', 'info');
+    clearBlobCache();
+    showToast('已清空全部PC端游戏库与离线缓存', 'info');
   }, [showToast]);
 
   // 初始加载自动尝试连接一次
@@ -216,7 +279,8 @@ export function ServerProvider({ children }) {
         testConnection,
         connectWithQrPayload,
         removeProfile,
-        clearProfiles
+        clearProfiles,
+        updateProfileGameCount
       }}
     >
       {children}

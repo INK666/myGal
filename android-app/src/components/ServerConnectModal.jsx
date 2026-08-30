@@ -8,15 +8,19 @@ import {
   AlertCircle,
   Camera,
   History,
+  Monitor,
   Trash2,
   ArrowRight,
   ExternalLink,
   Eye,
   EyeOff,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Loader2
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { useServer } from '../contexts/ServerContext';
+import { decodeQrFromImage } from '../utils/qrDecoder';
+import { getServerCache } from '../utils/cacheStorage';
 
 export default function ServerConnectModal({ isOpen, onClose }) {
   const {
@@ -40,8 +44,33 @@ export default function ServerConnectModal({ isOpen, onClose }) {
   const [showToken, setShowToken] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
   const [scannerError, setScannerError] = useState(null);
+  const [decodingFile, setDecodingFile] = useState(false);
+  const [profileStats, setProfileStats] = useState({});
   const scannerRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'profiles') return;
+    let isMounted = true;
+    const loadStats = async () => {
+      const statsMap = {};
+      for (const p of profiles) {
+        try {
+          const cache = await getServerCache(p.url);
+          if (cache) {
+            statsMap[p.url] = typeof cache.total === 'number' ? cache.total : (cache.games?.length || 0);
+          }
+        } catch {}
+      }
+      if (isMounted) {
+        setProfileStats(statsMap);
+      }
+    };
+    loadStats();
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, activeTab, profiles]);
 
   useEffect(() => {
     setInputUrl(serverUrl);
@@ -106,20 +135,20 @@ export default function ServerConnectModal({ isOpen, onClose }) {
   const handleScanFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setDecodingFile(true);
     try {
       showToast('正在识别图片中二维码...', 'info');
-      let qrScanner = scannerRef.current;
-      if (!qrScanner) {
-        qrScanner = new Html5Qrcode('mobile-qr-reader');
-      }
-      const decodedText = await qrScanner.scanFile(file, true);
+      const decodedText = await decodeQrFromImage(file);
+      showToast('已成功识别二维码，正在连接...', 'info');
       const ok = await connectWithQrPayload(decodedText);
       if (ok) {
+        stopScanner();
         onClose();
       }
     } catch (err) {
-      showToast('未能从所选图片中识别出有效二维码', 'error');
+      showToast(err?.message || '未能从所选图片中识别出有效二维码', 'error');
     } finally {
+      setDecodingFile(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -216,8 +245,8 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                 : 'text-gray-400 hover:text-gray-200 bg-gray-900/60'
             }`}
           >
-            <History className="w-3.5 h-3.5" />
-            <span>历史记录</span>
+            <Monitor className="w-3.5 h-3.5" />
+            <span>PC端游戏库</span>
           </button>
         </div>
 
@@ -252,11 +281,21 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                 />
                 <button
                   type="button"
+                  disabled={decodingFile}
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-full py-2.5 px-4 rounded-xl bg-gray-900/80 hover:bg-gray-800 border border-white/10 text-gray-200 hover:text-white text-xs font-medium flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
+                  className="w-full py-2.5 px-4 rounded-xl bg-gray-900/80 hover:bg-gray-800 border border-white/10 text-gray-200 hover:text-white text-xs font-medium flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <ImageIcon className="w-4 h-4 text-indigo-400" />
-                  <span>从手机相册 / 截图识别二维码</span>
+                  {decodingFile ? (
+                    <>
+                      <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+                      <span>正在识别图片二维码...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon className="w-4 h-4 text-indigo-400" />
+                      <span>从手机相册 / 截图识别二维码</span>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -338,7 +377,7 @@ export default function ServerConnectModal({ isOpen, onClose }) {
             <div className="space-y-3">
               {profiles.length > 0 && (
                 <div className="flex items-center justify-between px-1 pb-1">
-                  <span className="text-[11px] text-gray-400">已保存 {profiles.length} 条记录</span>
+                  <span className="text-[11px] text-gray-400">已保存 {profiles.length} 个 PC端游戏库</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -347,46 +386,69 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                     className="text-[11px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
                   >
                     <Trash2 className="w-3 h-3" />
-                    <span>清空历史与缓存</span>
+                    <span>清空全部游戏库与缓存</span>
                   </button>
                 </div>
               )}
               {profiles.length === 0 ? (
                 <div className="p-8 text-center text-xs text-gray-500">
-                  暂无已保存的历史连接
+                  暂无已保存的 PC端游戏库
                 </div>
               ) : (
-                profiles.map((p, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => {
-                      testConnection(p.url, p.token, true);
-                      onClose();
-                    }}
-                    className="glass-panel hover:bg-gray-850 p-3.5 rounded-2xl flex items-center justify-between cursor-pointer active-press border border-white/5 transition-all group"
-                  >
-                    <div className="min-w-0 flex-1 mr-2">
-                      <div className="font-bold text-xs text-white truncate">{p.name || 'myGal PC'}</div>
-                      <div className="text-[11px] font-mono text-gray-400 truncate mt-0.5">{p.url}</div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeProfile(p.url);
-                        }}
-                        className="p-2 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                        title="删除此记录及缓存"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                      <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                        <ArrowRight className="w-4 h-4" />
+                profiles.map((p, idx) => {
+                  const isCurrent =
+                    (serverUrl || '').trim().replace(/\/+$/, '').toLowerCase() ===
+                    (p.url || '').trim().replace(/\/+$/, '').toLowerCase();
+                  const count =
+                    typeof profileStats[p.url] === 'number'
+                      ? profileStats[p.url]
+                      : typeof p.gameCount === 'number'
+                      ? p.gameCount
+                      : null;
+
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        testConnection(p.url, p.token, true);
+                        onClose();
+                      }}
+                      className={`glass-panel hover:bg-gray-850 p-3.5 rounded-2xl flex items-center justify-between cursor-pointer active-press border transition-all group ${
+                        isCurrent ? 'border-indigo-500/40 bg-indigo-950/20' : 'border-white/5'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1 mr-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-white">
+                            {count !== null ? `${count} 款游戏` : '已连接游戏库'}
+                          </span>
+                          {isCurrent && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-medium font-mono">
+                              当前连接
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-mono text-gray-400 truncate mt-0.5">{p.url}</div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeProfile(p.url);
+                          }}
+                          className="p-2 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                          title="删除此PC端游戏库及缓存"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                          <ArrowRight className="w-4 h-4" />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}

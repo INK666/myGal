@@ -21,10 +21,10 @@ import TagManagerModal from './components/TagManagerModal';
 import StatsModal from './components/StatsModal';
 import FileTransferModal from './components/FileTransferModal';
 import WallpaperModal, { PRESET_WALLPAPERS } from './components/WallpaperModal';
-import { getServerCache, saveServerCache, getCoverBlob, saveCoverBlob } from './utils/cacheStorage';
+import { getServerCache, saveServerCache, getCoverBlobWithMeta, saveCoverBlob, deleteCoverBlob } from './utils/cacheStorage';
 
 function MainApp() {
-  const { serverUrl, token, connected, checking, showToast } = useServer();
+  const { serverUrl, token, connected, checking, showToast, updateProfileGameCount } = useServer();
 
   // 壁纸与个性化配置
   const [wallpaperConfig, setWallpaperConfig] = useState(() => {
@@ -94,6 +94,11 @@ function MainApp() {
 
   // 加载标签和目录列表
   const loadMetadata = useCallback(async () => {
+    if (!serverUrl) {
+      setTags([]);
+      setRootPaths([]);
+      return;
+    }
     if (connected) {
       try {
         const [tagList, pathList] = await Promise.all([
@@ -195,21 +200,30 @@ function MainApp() {
           // 当无过滤加载第 1 页时，保存到 IndexedDB 本地缓存
           if (targetPage === 1 && !debouncedQuery && !activeTag && activeRootPathId === null && serverUrl) {
             saveServerCache(serverUrl, { games: res.items, total: res.total });
+            updateProfileGameCount?.(serverUrl, res.total || res.items?.length || 0);
             // 后台预热前 40 款游戏的封面缓存
             const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
             res.items.forEach((g) => {
               if (g.hasCover) {
-                const coverUrl = `${cleanServerUrl}/api/covers/${g.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-                getCoverBlob(serverUrl, g.id).then((existing) => {
-                  if (!existing) {
+                const version = g.updatedAt ? new Date(g.updatedAt).getTime() : '';
+                const vParam = version ? `&v=${version}` : '';
+                const coverUrl = g.coverUrl
+                  ? (token && !g.coverUrl.includes('token=') ? `${g.coverUrl}${g.coverUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : g.coverUrl)
+                  : `${cleanServerUrl}/api/covers/${g.id}?token=${encodeURIComponent(token || '')}${vParam}`;
+                
+                getCoverBlobWithMeta(serverUrl, g.id).then((existing) => {
+                  const versionStr = version ? String(version) : '';
+                  if (!existing || (versionStr && existing.version !== versionStr)) {
                     fetch(coverUrl, { mode: 'cors' })
                       .then((r) => (r.ok ? r.blob() : null))
                       .then((blob) => {
-                        if (blob && blob.size > 0) saveCoverBlob(serverUrl, g.id, blob);
+                        if (blob && blob.size > 0) saveCoverBlob(serverUrl, g.id, blob, versionStr);
                       })
                       .catch(() => {});
                   }
                 });
+              } else {
+                deleteCoverBlob(serverUrl, g.id).catch(() => {});
               }
             });
           }
@@ -232,6 +246,7 @@ function MainApp() {
           setIsOfflineCache(true);
           setCachedTime(cache.updatedAt ? new Date(cache.updatedAt).toLocaleString('zh-CN') : null);
           setHasMore(false);
+          updateProfileGameCount?.(serverUrl, typeof cache.total === 'number' ? cache.total : cache.games.length);
         } else {
           setGames([]);
           setTotal(0);
@@ -253,9 +268,18 @@ function MainApp() {
 
   // 依赖变化触发重新加载
   useEffect(() => {
+    if (!serverUrl) {
+      setGames([]);
+      setTags([]);
+      setRootPaths([]);
+      setTotal(0);
+      setIsOfflineCache(false);
+      setCachedTime(null);
+      return;
+    }
     loadMetadata();
     loadGames(1, false);
-  }, [connected, serverUrl, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder]);
+  }, [connected, serverUrl, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder, loadMetadata, loadGames]);
 
   // 更新局部游戏状态
   const handleUpdateGame = (updatedGame) => {

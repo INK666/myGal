@@ -7,9 +7,20 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
   const { serverUrl, token } = useServer();
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
-  const coverUrl = cleanServerUrl
-    ? `${cleanServerUrl}/api/covers/${game.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
-    : null;
+  const getCoverUrl = () => {
+    if (!cleanServerUrl || game.hasCover === false) return null;
+    if (game.coverUrl) {
+      if (token && !game.coverUrl.includes('token=')) {
+        const sep = game.coverUrl.includes('?') ? '&' : '?';
+        return `${game.coverUrl}${sep}token=${encodeURIComponent(token)}`;
+      }
+      return game.coverUrl;
+    }
+    const version = game.updatedAt ? new Date(game.updatedAt).getTime() : '';
+    const vParam = version ? `&v=${version}` : '';
+    return `${cleanServerUrl}/api/covers/${game.id}?token=${encodeURIComponent(token || '')}${vParam}`;
+  };
+  const coverUrl = getCoverUrl();
 
   // --- 列表视图 (List Mode) ---
   if (viewMode === 'list') {

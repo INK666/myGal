@@ -10,7 +10,10 @@
     "electron": "electron . --dev --user-data-dir=./electron-data",
     "electron-prod": "electron . --user-data-dir=./electron-data",
     "build": "vite build && electron-builder",
-    "build:vite": "vite build"
+    "build:vite": "vite build",
+    "build:all": "node scripts/build-all.js",
+    "build:pc": "node scripts/build-all.js --pc",
+    "build:android": "node scripts/build-all.js --android"
   },
   "keywords": [
     "game",

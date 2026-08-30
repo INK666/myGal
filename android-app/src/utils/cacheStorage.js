@@ -48,7 +48,7 @@ export const normalizeServerKey = (url) => {
 /**
  * 保存指定服务器的游戏列表与元数据
  */
-export async function saveServerCache(serverUrl, { games = [], total = 0, tags = [], rootPaths = [], stats = null }) {
+export async function saveServerCache(serverUrl, data = {}) {
   const key = normalizeServerKey(serverUrl);
   if (!key) return;
 
@@ -66,11 +66,11 @@ export async function saveServerCache(serverUrl, { games = [], total = 0, tags =
 
     const payload = {
       serverUrl: key,
-      games: games.length > 0 ? games : (existing?.games || []),
-      total: total || games.length || existing?.total || 0,
-      tags: tags.length > 0 ? tags : (existing?.tags || []),
-      rootPaths: rootPaths.length > 0 ? rootPaths : (existing?.rootPaths || []),
-      stats: stats || existing?.stats || null,
+      games: 'games' in data ? (Array.isArray(data.games) ? data.games : []) : (existing?.games || []),
+      total: 'total' in data ? Number(data.total) || 0 : ('games' in data && Array.isArray(data.games) ? data.games.length : (existing?.total || 0)),
+      tags: 'tags' in data ? (Array.isArray(data.tags) ? data.tags : []) : (existing?.tags || []),
+      rootPaths: 'rootPaths' in data ? (Array.isArray(data.rootPaths) ? data.rootPaths : []) : (existing?.rootPaths || []),
+      stats: 'stats' in data ? data.stats : (existing?.stats || null),
       updatedAt: Date.now()
     };
 
@@ -109,7 +109,7 @@ export async function getServerCache(serverUrl) {
 /**
  * 保存单张封面 Blob
  */
-export async function saveCoverBlob(serverUrl, gameId, blob) {
+export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
   const sKey = normalizeServerKey(serverUrl);
   if (!sKey || !gameId || !blob) return;
 
@@ -123,6 +123,7 @@ export async function saveCoverBlob(serverUrl, gameId, blob) {
       serverUrl: sKey,
       gameId: Number(gameId) || gameId,
       blob,
+      version: version ? String(version) : null,
       updatedAt: Date.now()
     });
   } catch (err) {
@@ -131,9 +132,9 @@ export async function saveCoverBlob(serverUrl, gameId, blob) {
 }
 
 /**
- * 获取单张封面 Blob
+ * 获取单张封面 Blob 及元数据 (含版本信息)
  */
-export async function getCoverBlob(serverUrl, gameId) {
+export async function getCoverBlobWithMeta(serverUrl, gameId) {
   const sKey = normalizeServerKey(serverUrl);
   if (!sKey || !gameId) return null;
 
@@ -146,13 +147,43 @@ export async function getCoverBlob(serverUrl, gameId) {
     return await new Promise((resolve) => {
       const req = store.get(key);
       req.onsuccess = () => {
-        if (req.result?.blob) resolve(req.result.blob);
+        if (req.result?.blob) resolve(req.result);
         else resolve(null);
       };
       req.onerror = () => resolve(null);
     });
   } catch {
     return null;
+  }
+}
+
+/**
+ * 获取单张封面 Blob
+ */
+export async function getCoverBlob(serverUrl, gameId) {
+  const meta = await getCoverBlobWithMeta(serverUrl, gameId);
+  return meta?.blob || null;
+}
+
+/**
+ * 删除单张封面 Blob
+ */
+export async function deleteCoverBlob(serverUrl, gameId) {
+  const sKey = normalizeServerKey(serverUrl);
+  if (!sKey || !gameId) return;
+
+  const key = `${sKey}::${gameId}`;
+  try {
+    const db = await getDb();
+    const tx = db.transaction('covers', 'readwrite');
+    const store = tx.objectStore('covers');
+    store.delete(key);
+    await new Promise((res) => {
+      tx.oncomplete = res;
+      tx.onerror = res;
+    });
+  } catch (err) {
+    console.warn('Failed to delete cover blob from IndexedDB:', err);
   }
 }
 
@@ -169,7 +200,10 @@ export async function deleteServerCache(serverUrl) {
     // 1. 删除 servers 记录
     const tx1 = db.transaction('servers', 'readwrite');
     tx1.objectStore('servers').delete(sKey);
-    await new Promise((res) => { tx1.oncomplete = res; tx1.onerror = res; });
+    await new Promise((res, rej) => {
+      tx1.oncomplete = res;
+      tx1.onerror = () => rej(tx1.error);
+    });
 
     // 2. 批量删除 covers 记录
     const tx2 = db.transaction('covers', 'readwrite');
@@ -184,7 +218,10 @@ export async function deleteServerCache(serverUrl) {
         cursor.continue();
       }
     };
-    await new Promise((res) => { tx2.oncomplete = res; tx2.onerror = res; });
+    await new Promise((res, rej) => {
+      tx2.oncomplete = res;
+      tx2.onerror = () => rej(tx2.error);
+    });
     console.log(`[Cache] All cached data and covers for ${serverUrl} deleted successfully.`);
   } catch (err) {
     console.warn(`Failed to delete server cache for ${serverUrl}:`, err);
@@ -204,8 +241,14 @@ export async function clearAllCache() {
     tx2.objectStore('covers').clear();
 
     await Promise.all([
-      new Promise((res) => { tx1.oncomplete = res; }),
-      new Promise((res) => { tx2.oncomplete = res; })
+      new Promise((res, rej) => {
+        tx1.oncomplete = res;
+        tx1.onerror = () => rej(tx1.error);
+      }),
+      new Promise((res, rej) => {
+        tx2.oncomplete = res;
+        tx2.onerror = () => rej(tx2.error);
+      })
     ]);
     console.log('[Cache] All local cache cleared.');
   } catch (err) {

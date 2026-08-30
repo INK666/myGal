@@ -1,11 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Pin,
-  Edit2,
-  Check,
   Sparkles,
-  Play,
   Download,
   FolderOpen,
   Plus,
@@ -13,12 +10,13 @@ import {
   Calendar,
   Layers,
   ImageOff,
-  ExternalLink,
-  Save
+  ImagePlus,
+  Loader2
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
 import CoverImage from './CoverImage';
+import { saveCoverBlob } from '../utils/cacheStorage';
 
 export default function GameDetailModal({
   game,
@@ -30,51 +28,100 @@ export default function GameDetailModal({
 }) {
   const { serverUrl, token, connected, showToast } = useServer();
   const [detail, setDetail] = useState(game);
-  const [aliasEditing, setAliasEditing] = useState(false);
-  const [aliasValue, setAliasValue] = useState(game.alias || '');
   const [scraping, setScraping] = useState(false);
-  const [launching, setLaunching] = useState(false);
+  const [uploadingCover, setUploadingCover] = useState(false);
   const [showTagSelector, setShowTagSelector] = useState(false);
   const [tagSearch, setTagSearch] = useState('');
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('#6366f1');
   const [creatingTag, setCreatingTag] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const coverFileInputRef = useRef(null);
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
-  const coverUrl = cleanServerUrl
-    ? `${cleanServerUrl}/api/covers/${detail.id}${token ? `?token=${encodeURIComponent(token)}` : ''}`
-    : null;
+  const getCoverUrl = () => {
+    if (!cleanServerUrl || detail.hasCover === false) return null;
+    if (detail.coverUrl) {
+      if (token && !detail.coverUrl.includes('token=')) {
+        const sep = detail.coverUrl.includes('?') ? '&' : '?';
+        return `${detail.coverUrl}${sep}token=${encodeURIComponent(token)}`;
+      }
+      return detail.coverUrl;
+    }
+    const version = detail.updatedAt ? new Date(detail.updatedAt).getTime() : '';
+    const vParam = version ? `&v=${version}` : '';
+    return `${cleanServerUrl}/api/covers/${detail.id}?token=${encodeURIComponent(token || '')}${vParam}`;
+  };
+  const coverUrl = getCoverUrl();
 
   useEffect(() => {
     setImageError(false);
     setDetail(game);
-    setAliasValue(game.alias || '');
     // 联网时拉取最新详情
     if (connected) {
       api.getGameDetail(game.id)
         .then((res) => {
-          if (res) setDetail(res);
+          if (res) {
+            setDetail(res);
+            onUpdateGame(res);
+          }
         })
         .catch(() => {});
     }
-  }, [game.id, coverUrl, connected]);
+  }, [game.id, connected]);
 
-  // 保存别名
-  const handleSaveAlias = async () => {
+  // 导入手机相册中的图片作为游戏封面
+  const handleImportCoverFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     if (!connected) {
-      showToast('当前处于离线缓存模式，修改别名需先连接 PC 端', 'warning');
+      showToast('当前处于离线缓存模式，导入封面需先连接 PC 端', 'warning');
       return;
     }
+    setUploadingCover(true);
     try {
-      await api.updateGameAlias(detail.id, aliasValue.trim());
-      const updated = { ...detail, alias: aliasValue.trim() };
-      setDetail(updated);
-      onUpdateGame(updated);
-      setAliasEditing(false);
-      showToast('别名已更新', 'success');
+      showToast('正在上传并设置封面...', 'info');
+      const reader = new FileReader();
+      const base64Promise = new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = (err) => reject(err);
+      });
+      reader.readAsDataURL(file);
+      const dataUrl = await base64Promise;
+
+      const res = await api.uploadGameCover(detail.id, dataUrl);
+      if (res) {
+        let freshDetail = null;
+        try {
+          freshDetail = await api.getGameDetail(detail.id);
+        } catch {}
+
+        const nowIso = new Date().toISOString();
+        const updated = freshDetail || {
+          ...detail,
+          hasCover: true,
+          cover_path: res.coverPath || detail.cover_path,
+          updatedAt: nowIso,
+          coverUrl: `${cleanServerUrl}/api/covers/${detail.id}?v=${Date.now()}`
+        };
+
+        setDetail(updated);
+        onUpdateGame(updated);
+
+        // 异步更新 IndexedDB 封面缓存
+        if (serverUrl) {
+          saveCoverBlob(serverUrl, detail.id, file, Date.now()).catch(() => {});
+        }
+
+        showToast('自定义封面导入成功！', 'success');
+      } else {
+        showToast('导入封面失败', 'error');
+      }
     } catch (err) {
-      showToast('更新别名失败: ' + err.message, 'error');
+      showToast('导入封面出错: ' + (err?.message || String(err)), 'error');
+    } finally {
+      setUploadingCover(false);
+      if (coverFileInputRef.current) coverFileInputRef.current.value = '';
     }
   };
 
@@ -149,12 +196,24 @@ export default function GameDetailModal({
     try {
       const res = await api.scrapeCover(detail.id);
       if (res?.success) {
-        const updated = {
+        // 刮削成功后，立即拉取服务端最新的完整详情（包含新 coverUrl、updatedAt 与厂商标签）
+        let freshDetail = null;
+        try {
+          freshDetail = await api.getGameDetail(detail.id);
+        } catch {}
+
+        const nowIso = new Date().toISOString();
+        const updated = freshDetail || {
           ...detail,
           hasCover: true,
           cover_path: res.coverPath,
-          tags: res.vendorTags && res.vendorTags.length > 0 ? Array.from(new Set([...(detail.tags || []), ...res.vendorTags])) : detail.tags
+          updatedAt: nowIso,
+          coverUrl: `${cleanServerUrl}/api/covers/${detail.id}?v=${Date.now()}`,
+          tags: res.vendorTags && res.vendorTags.length > 0
+            ? Array.from(new Set([...(detail.tags || []), ...res.vendorTags]))
+            : detail.tags
         };
+
         setDetail(updated);
         onUpdateGame(updated);
         showToast(`封面刮削成功！(来源: ${res.provider})`, 'success');
@@ -165,28 +224,6 @@ export default function GameDetailModal({
       showToast('刮削出错: ' + err.message, 'error');
     } finally {
       setScraping(false);
-    }
-  };
-
-  // 远程启动游戏
-  const handleRemoteLaunch = async () => {
-    if (!connected) {
-      showToast('当前处于离线缓存模式，启动游戏需先连接 PC 端', 'warning');
-      return;
-    }
-    if (launching) return;
-    setLaunching(true);
-    try {
-      const res = await api.launchGame(detail.id);
-      if (res?.success) {
-        showToast(`已在电脑上启动: ${res.launchedExe || detail.name}`, 'success');
-      } else {
-        showToast('启动失败: ' + (res?.error || '未知原因'), 'error');
-      }
-    } catch (err) {
-      showToast('远程启动失败: ' + err.message, 'error');
-    } finally {
-      setLaunching(false);
     }
   };
 
@@ -231,64 +268,17 @@ export default function GameDetailModal({
                 gameId={detail.id}
                 alt={detail.name}
                 fallbackIconSize="w-8 h-8"
-                fallbackTitle={detail.alias || detail.name}
+                fallbackTitle={detail.name}
               />
             </div>
 
-            {/* Title & Alias Area */}
-            <div className="flex-1 min-w-0 space-y-2">
+            {/* Title & Core Info Area */}
+            <div className="flex-1 min-w-0 space-y-2.5">
               <div>
-                <div className="text-[11px] text-gray-500 font-medium">游戏名称</div>
+                <div className="text-[11px] text-gray-500 font-medium mb-0.5">游戏名称</div>
                 <h2 className="text-base font-bold text-white leading-snug break-words">
                   {detail.name}
                 </h2>
-              </div>
-
-              {/* Alias Edit */}
-              <div>
-                <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1">
-                  <span>别名 (展示用)</span>
-                  {!aliasEditing && (
-                    <button
-                      onClick={() => setAliasEditing(true)}
-                      className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>修改</span>
-                    </button>
-                  )}
-                </div>
-                {aliasEditing ? (
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      value={aliasValue}
-                      onChange={(e) => setAliasValue(e.target.value)}
-                      placeholder="设置别名/中文译名..."
-                      className="flex-1 bg-gray-900 border border-indigo-500/50 rounded-xl px-2.5 py-1 text-xs text-white focus:outline-none"
-                      autoFocus
-                    />
-                    <button
-                      onClick={handleSaveAlias}
-                      className="p-1.5 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setAliasValue(detail.alias || '');
-                        setAliasEditing(false);
-                      }}
-                      className="p-1.5 rounded-xl bg-gray-800 text-gray-400 hover:text-white"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-sm font-semibold text-indigo-300 break-words">
-                    {detail.alias || <span className="text-gray-600 font-normal italic">未设置别名</span>}
-                  </div>
-                )}
               </div>
 
               {/* Pinned & Imported Info */}
@@ -315,18 +305,14 @@ export default function GameDetailModal({
 
           {/* Quick Action Grid */}
           <div className="grid grid-cols-3 gap-2.5">
-            {/* Launch on PC */}
-            <button
-              onClick={handleRemoteLaunch}
-              disabled={launching}
-              className="glass-panel p-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 text-center active-press hover:bg-indigo-950/40 hover:border-indigo-500/40 transition-all"
-            >
-              <div className="w-9 h-9 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center shadow-inner">
-                <Play className={`w-4 h-4 fill-indigo-400 ${launching ? 'animate-bounce' : ''}`} />
-              </div>
-              <span className="text-xs font-bold text-white">电脑上启动</span>
-              <span className="text-[10px] text-gray-400">远程调起游戏</span>
-            </button>
+            {/* 隐藏的图片文件上传 input */}
+            <input
+              type="file"
+              ref={coverFileInputRef}
+              onChange={handleImportCoverFile}
+              accept="image/*"
+              className="hidden"
+            />
 
             {/* Scrape Cover */}
             <button
@@ -341,6 +327,31 @@ export default function GameDetailModal({
                 {scraping ? '刮削中...' : '重新刮削'}
               </span>
               <span className="text-[10px] text-gray-400">云端匹配封面</span>
+            </button>
+
+            {/* Import Custom Cover from Phone */}
+            <button
+              onClick={() => {
+                if (!connected) {
+                  showToast('当前处于离线缓存模式，导入封面需先连接 PC 端', 'warning');
+                  return;
+                }
+                coverFileInputRef.current?.click();
+              }}
+              disabled={uploadingCover}
+              className="glass-panel p-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 text-center active-press hover:bg-indigo-950/40 hover:border-indigo-500/40 transition-all"
+            >
+              <div className="w-9 h-9 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center shadow-inner">
+                {uploadingCover ? (
+                  <Loader2 className="w-4 h-4 text-indigo-300 animate-spin" />
+                ) : (
+                  <ImagePlus className="w-4 h-4 text-indigo-400" />
+                )}
+              </div>
+              <span className="text-xs font-bold text-white">
+                {uploadingCover ? '上传中...' : '导入封面'}
+              </span>
+              <span className="text-[10px] text-gray-400">选择手机图片</span>
             </button>
 
             {/* Data & Saves Transfer */}

@@ -1010,7 +1010,7 @@ function SettingsModal({
                       <span className="text-sm text-gray-300">暴露完整路径</span>
                       <input
                         type="checkbox"
-                        checked={!!apiSettings.exposeFullPath}
+                        checked={apiSettings.exposeFullPath !== false}
                         onChange={(e) => setApiSettings({ ...apiSettings, exposeFullPath: e.target.checked })}
                         className="h-4 w-4 accent-indigo-500 rounded"
                       />
@@ -1021,12 +1021,12 @@ function SettingsModal({
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">监听地址</label>
                       <select
-                        value={apiSettings.host || '127.0.0.1'}
+                        value={apiSettings.host || '0.0.0.0'}
                         onChange={(e) => setApiSettings({ ...apiSettings, host: e.target.value })}
                         className="w-full bg-gray-900/70 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/80"
                       >
-                        <option value="127.0.0.1">127.0.0.1 (仅本机访问)</option>
                         <option value="0.0.0.0">0.0.0.0 (允许局域网/手机连接)</option>
+                        <option value="127.0.0.1">127.0.0.1 (仅本机访问)</option>
                       </select>
                     </div>
                     <div>

@@ -41,7 +41,18 @@ export default function Navbar({
   onRefreshList,
   loading
 }) {
-  const { connected, checking, lastPing } = useServer();
+  const { connected, checking, serverUrl } = useServer();
+
+  // 提取 IP / Host 地址用于左上角展示
+  const displayHost = (() => {
+    if (!serverUrl) return '';
+    try {
+      const u = new URL(serverUrl.startsWith('http') ? serverUrl : `http://${serverUrl}`);
+      return u.hostname || u.host || serverUrl;
+    } catch {
+      return serverUrl.replace(/^https?:\/\//i, '').split('/')[0].split(':')[0] || serverUrl;
+    }
+  })();
 
   return (
     <header className="sticky top-0 z-40 bg-gray-950/85 backdrop-blur-xl border-b border-white/5 pt-safe">
@@ -62,10 +73,17 @@ export default function Navbar({
             <button
               onClick={onOpenConnect}
               className="flex items-center gap-1.5 text-[11px] font-medium text-gray-400 hover:text-gray-200 transition-colors"
+              title="点击打开 PC 连接匹配窗口"
             >
               <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} />
-              <span className="truncate max-w-[120px]">
-                {checking ? '连接中...' : connected ? `${lastPing ? lastPing + 'ms' : '已连接'}` : '未连接'}
+              <span className="truncate max-w-[130px] font-mono">
+                {checking
+                  ? (displayHost ? `${displayHost}...` : '连接中...')
+                  : connected
+                  ? displayHost
+                  : displayHost
+                  ? `${displayHost} (离线)`
+                  : '未连接'}
               </span>
             </button>
           </div>
