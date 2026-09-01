@@ -602,22 +602,14 @@ function App() {
       const paths = Array.isArray(pathsOverride) ? pathsOverride : rootPaths;
 
       if (paths.length === 0) {
-        setSearchQuery('');
-        setSelectedTag('');
-        setSelectedRootPathId(null);
-        setCurrentPage(1);
-        await loadGames();
+        await handleGameUpdate();
         return { success: true, imported: 0, deleted: 0 };
       }
 
       const result = await window.electronAPI.importGames();
       if (result?.success) {
         await reloadRootPathsOnly();
-        setSearchQuery('');
-        setSelectedTag('');
-        setSelectedRootPathId(null);
-        setCurrentPage(1);
-        await loadGames();
+        await handleGameUpdate();
       }
       return result;
     } catch (error) {

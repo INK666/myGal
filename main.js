@@ -1203,6 +1203,10 @@ function initDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_run_history_launched_at ON run_history(launched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_games_name ON games(name);
+    CREATE INDEX IF NOT EXISTS idx_games_root_path_id ON games(root_path_id);
+    CREATE INDEX IF NOT EXISTS idx_game_paths_game_id ON game_paths(game_id);
+    CREATE INDEX IF NOT EXISTS idx_game_paths_root_path_id ON game_paths(root_path_id);
   `);
   
   // 数据迁移：将旧的单个根目录设置迁移到root_paths表
@@ -1696,22 +1700,24 @@ ipcMain.handle('clear-project-background', async () => {
 
 ipcMain.handle('import-games', async (event, rootPathId = null) => {
   let rootPaths = [];
+  const allDbRoots = db.prepare('SELECT id, path FROM root_paths').all();
   
   if (rootPathId) {
     // 从特定根目录导入
-    const stmt = db.prepare('SELECT id, path FROM root_paths WHERE id = ?');
-    const rootPath = stmt.get(rootPathId);
+    const rootPath = allDbRoots.find(rp => rp.id === rootPathId);
     if (!rootPath || !fs.existsSync(rootPath.path)) {
-      return { success: false, error: '目录不存在' };
+      return { success: false, error: '目录不存在或不可访问' };
     }
     rootPaths = [rootPath];
   } else {
-    // 从所有根目录导入
-    const stmt = db.prepare('SELECT id, path FROM root_paths');
-    rootPaths = stmt.all().filter(rp => fs.existsSync(rp.path));
+    // 从所有有效根目录导入
+    rootPaths = allDbRoots.filter(rp => fs.existsSync(rp.path));
     
+    if (rootPaths.length === 0 && allDbRoots.length > 0) {
+      return { success: false, error: '没有有效的根目录（可能目录不存在或移动硬盘未连接）' };
+    }
     if (rootPaths.length === 0) {
-      return { success: false, error: '没有有效的根目录' };
+      return { success: false, error: '没有配置根目录' };
     }
   }
   
@@ -1762,10 +1768,10 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   
   let totalImported = 0;
   const importedGameIds = [];
+  const knownExistingPaths = new Set();
   
   // 优化：异步并发扫描根目录，限制并发数为 4
   const batchSize = 4;
-  const allScannedGames = [];
   
   for (let i = 0; i < rootPaths.length; i += batchSize) {
     const batch = rootPaths.slice(i, i + batchSize);
@@ -1799,65 +1805,82 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
       })
     );
     
-    // 处理这一批扫描结果
-    for (const { rootPath, gameItems, success } of batchResults) {
-      if (!success) continue;
-      
-      const refreshedAt = Date.now();
-      
-      gameItems.forEach(name => {
-        const gamePath = path.join(rootPath.path, name);
-        if (isIgnoredPathStmt.get(gamePath)) {
-          return;
-        }
-        const existing = findGameByPathStmt.get(gamePath, gamePath);
+    // 关键优化：使用事务批量执行入库与更新操作，消除单条写入的磁盘 fsync 阻塞
+    db.transaction(() => {
+      for (const { rootPath, gameItems, success } of batchResults) {
+        if (!success) continue;
         
-        if (existing) {
-          updateGameNameStmt.run(name, existing.id);
-          const info = insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
-          if ((info?.changes || 0) > 0) {
-            updateImportedAtStmt.run(refreshedAt, existing.id);
+        const refreshedAt = Date.now();
+        
+        gameItems.forEach(name => {
+          const gamePath = path.join(rootPath.path, name);
+          knownExistingPaths.add(gamePath);
+
+          if (isIgnoredPathStmt.get(gamePath)) {
+            return;
           }
-        } else {
-          const existingByName = findScannedGameByNameStmt.get(name);
-          if (existingByName) {
-            const info = insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+          const existing = findGameByPathStmt.get(gamePath, gamePath);
+          
+          if (existing) {
+            updateGameNameStmt.run(name, existing.id);
+            const info = insertGamePathStmt.run(existing.id, gamePath, rootPath.id);
             if ((info?.changes || 0) > 0) {
-              updateImportedAtStmt.run(refreshedAt, existingByName.id);
+              updateImportedAtStmt.run(refreshedAt, existing.id);
             }
           } else {
-            const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
-            insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
-            importedGameIds.push(result.lastInsertRowid);
+            const existingByName = findScannedGameByNameStmt.get(name);
+            if (existingByName) {
+              const info = insertGamePathStmt.run(existingByName.id, gamePath, rootPath.id);
+              if ((info?.changes || 0) > 0) {
+                updateImportedAtStmt.run(refreshedAt, existingByName.id);
+              }
+            } else {
+              const result = insertGameStmt.run(name, gamePath, rootPath.id, refreshedAt);
+              insertGamePathStmt.run(result.lastInsertRowid, gamePath, rootPath.id);
+              importedGameIds.push(result.lastInsertRowid);
+            }
+            totalImported++;
           }
-          totalImported++;
-        }
-      });
+        });
 
-      updateRootLastRefreshedAtStmt.run(refreshedAt, rootPath.id);
-    }
+        updateRootLastRefreshedAtStmt.run(refreshedAt, rootPath.id);
+      }
+    })();
   }
   
-  // ========== 使用 Worker 线程检查文件 ==========
+  // ========== 检查失效文件与清理 ==========
   
-  const allGames = db.prepare('SELECT id, path, root_path_id FROM games').all();
+  // 在线与离线根目录分类（保护离线移动硬盘不被清空）
+  const onlineRootIds = new Set(allDbRoots.filter(rp => fs.existsSync(rp.path)).map(rp => rp.id));
+  const offlineRootIds = new Set(allDbRoots.filter(rp => !fs.existsSync(rp.path)).map(rp => rp.id));
+
+  // 作用域收敛：如果指定了 rootPathId，只检索与该根目录相关的游戏
+  const allGames = rootPathId
+    ? db.prepare(`
+        SELECT DISTINCT g.id, g.path, g.root_path_id
+        FROM games g
+        LEFT JOIN game_paths gp ON gp.game_id = g.id
+        WHERE g.root_path_id = ? OR gp.root_path_id = ?
+      `).all(rootPathId, rootPathId)
+    : db.prepare('SELECT id, path, root_path_id FROM games').all();
+
   let totalDeleted = 0;
 
-  const validRootPaths = db.prepare('SELECT id, path FROM root_paths').all()
-    .filter(rp => fs.existsSync(rp.path));
-
-  const hasValidRoot = (rootPathId) => {
-    if (rootPathId === null || rootPathId === undefined) {
-      return true;
-    }
-    return validRootPaths.some(rp => rp.id === rootPathId);
-  };
-
-  // 一次性获取所有游戏路径
-  const allGamePaths = db.prepare(`
-    SELECT game_id, id, path, root_path_id, created_at 
-    FROM game_paths
-  `).all();
+  // 获取相关游戏的所有路径
+  const allGamePaths = rootPathId
+    ? db.prepare(`
+        SELECT gp.game_id, gp.id, gp.path, gp.root_path_id, gp.created_at
+        FROM game_paths gp
+        WHERE gp.game_id IN (
+          SELECT DISTINCT g.id FROM games g
+          LEFT JOIN game_paths gp2 ON gp2.game_id = g.id
+          WHERE g.root_path_id = ? OR gp2.root_path_id = ?
+        )
+      `).all(rootPathId, rootPathId)
+    : db.prepare(`
+        SELECT game_id, id, path, root_path_id, created_at 
+        FROM game_paths
+      `).all();
 
   // 按 game_id 分组
   const pathsByGameId = new Map();
@@ -1868,9 +1891,13 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
     pathsByGameId.get(p.game_id).push(p);
   });
 
-  // 收集所有需要检查的路径
+  // 收集需要检查的路径（削减冗余：本次扫描刚刚确认存在的路径直接标为 true，不重复送给 Worker）
+  const pathExistsMap = new Map();
+  knownExistingPaths.forEach(p => {
+    pathExistsMap.set(p, true);
+  });
+
   const pathsToCheck = [];
-  const pathCheckMap = new Map();
   
   allGames.forEach(game => {
     const paths = pathsByGameId.get(game.id) || [];
@@ -1883,51 +1910,58 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
 
     pathList.forEach(p => {
       if (p.path) {
-        pathsToCheck.push(p.path);
-        if (!pathCheckMap.has(p.path)) {
-          pathCheckMap.set(p.path, []);
+        // 如果是指定根目录刷新，且该路径不属于当前根目录，则不检查（保持原样）
+        if (rootPathId && p.root_path_id !== rootPathId) {
+          return;
         }
-        pathCheckMap.get(p.path).push({ gameId: game.id, pathInfo: p });
+        // 如果属于离线根目录（如未插上的移动硬盘），不检查也不删除（启动离线保护）
+        if (!rootPathId && p.root_path_id && offlineRootIds.has(p.root_path_id)) {
+          return;
+        }
+        // 如果本次扫描中未确认为存在，则需要加入 Worker 检查队列
+        if (!pathExistsMap.has(p.path)) {
+          pathsToCheck.push(p.path);
+        }
       }
     });
   });
 
-  // 使用 Worker 线程异步检查文件（完全不阻塞主进程）
-  const pathExistsMap = await new Promise((resolve, reject) => {
-    const workerPath = path.join(__dirname, 'workers', 'pathChecker.js');
-    const worker = new Worker(workerPath, {
-      workerData: { paths: pathsToCheck }
+  // 只有存在未确定状态的路径时，才唤起 Worker 线程异步检查
+  if (pathsToCheck.length > 0) {
+    const uniquePathsToCheck = [...new Set(pathsToCheck)];
+    const workerResults = await new Promise((resolve, reject) => {
+      const workerPath = path.join(__dirname, 'workers', 'pathChecker.js');
+      const worker = new Worker(workerPath, {
+        workerData: { paths: uniquePathsToCheck }
+      });
+
+      worker.on('message', (msg) => {
+        if (msg.type === 'complete') {
+          resolve(msg.results);
+          worker.terminate();
+        } else if (msg.type === 'error') {
+          reject(new Error(msg.error));
+          worker.terminate();
+        }
+      });
+
+      worker.on('error', (error) => {
+        reject(error);
+      });
+
+      worker.on('exit', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Worker stopped with exit code ${code}`));
+        }
+      });
     });
 
-    worker.on('message', (msg) => {
-      if (msg.type === 'progress') {
-        // 可以在这里发送进度事件给前端
-        // event.sender.send('import-progress', msg);
-      } else if (msg.type === 'complete') {
-        resolve(new Map(Object.entries(msg.results)));
-        worker.terminate();
-      } else if (msg.type === 'error') {
-        reject(new Error(msg.error));
-        worker.terminate();
-      }
+    Object.entries(workerResults || {}).forEach(([p, exists]) => {
+      pathExistsMap.set(p, exists);
     });
+  }
 
-    worker.on('error', (error) => {
-      reject(error);
-    });
-
-    worker.on('exit', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Worker stopped with exit code ${code}`));
-      }
-    });
-  });
-
-  // 使用检查结果处理游戏
-  // 优化：收集要删除的封面，避免在事务中进行文件 I/O
-  const coversToDelete = [];
-  
-  // 优化：预先准备 SQL 语句
+  // 预先准备 SQL 语句
   const selectCoverStmt = db.prepare('SELECT cover_path FROM games WHERE id = ?');
   const deleteGameStmt = db.prepare('DELETE FROM games WHERE id = ?');
   const deleteGamePathsByGameIdStmt = db.prepare('DELETE FROM game_paths WHERE game_id = ?');
@@ -1936,7 +1970,9 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   const deleteGamePathByPathStmt = db.prepare('DELETE FROM game_paths WHERE game_id = ? AND path = ?');
   const updateGameStmt = db.prepare('UPDATE games SET path = ?, root_path_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
   
-  // 优化：使用事务批量处理所有数据库操作（关键优化！）
+  const coversToDelete = [];
+
+  // 使用事务批量处理失效路径清理和孤儿游戏删除
   db.transaction(() => {
     allGames.forEach(game => {
       const paths = pathsByGameId.get(game.id) || [];
@@ -1951,7 +1987,26 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
       const invalidPaths = [];
 
       pathList.forEach(p => {
-        if (p.path && pathExistsMap.get(p.path) && hasValidRoot(p.root_path_id)) {
+        if (!p.path) {
+          invalidPaths.push(p);
+          return;
+        }
+
+        // 情况 1：指定单目录刷新，非当前刷新根目录的路径一律保留
+        if (rootPathId && p.root_path_id !== rootPathId) {
+          validPaths.push(p);
+          return;
+        }
+
+        // 情况 2：离线根目录（如未插上的移动硬盘）启动保护，一律保留
+        if (!rootPathId && p.root_path_id && offlineRootIds.has(p.root_path_id)) {
+          validPaths.push(p);
+          return;
+        }
+
+        // 情况 3：在线根目录或手动添加的路径，根据物理检查结果判定
+        const exists = pathExistsMap.get(p.path);
+        if (exists) {
           validPaths.push(p);
         } else {
           invalidPaths.push(p);
@@ -2003,9 +2058,9 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
     // 兜底清理孤立记录
     db.prepare('DELETE FROM game_paths WHERE game_id NOT IN (SELECT id FROM games)').run();
     db.prepare('DELETE FROM game_tags WHERE game_id NOT IN (SELECT id FROM games)').run();
-  })();  // 事务结束，一次性提交所有更改
-  
-  // 事务完成后再删除封面文件（不阻塞数据库操作）
+  })();
+
+  // 事务完成后再异步删除封面文件（不阻塞数据库操作）
   coversToDelete.forEach(p => safeUnlinkCover(p));
 
   return { success: true, imported: totalImported, deleted: totalDeleted, importedGameIds };
