@@ -24,7 +24,8 @@ import {
   Layers,
   ArrowUpDown,
   CheckCircle2,
-  Check
+  Check,
+  Package
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
@@ -32,6 +33,7 @@ import { useServer } from '../contexts/ServerContext';
 export default function FileTransferModal({ game, isOpen, onClose }) {
   const { showToast } = useServer();
   const [allFiles, setAllFiles] = useState([]);
+  const [isSingleFile, setIsSingleFile] = useState(false);
   const [loading, setLoading] = useState(false);
   const [currentPath, setCurrentPath] = useState(''); // 当前所在目录相对路径，空字符串表示根目录
   const [search, setSearch] = useState('');
@@ -55,6 +57,8 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       const res = await api.getGameFiles(game.id);
       if (res?.success) {
         setAllFiles(res.files || []);
+        const single = !!res.isSingleFile || (res.files?.length === 1 && !res.files[0]?.isDir && !res.files[0]?.path?.includes('/'));
+        setIsSingleFile(single);
       } else {
         showToast('获取文件列表失败: ' + (res?.error || '未知错误'), 'error');
       }
@@ -93,7 +97,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
     if (file.isDir) return <Folder className="w-5 h-5 text-amber-400 fill-amber-400/20 shrink-0" />;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
 
-    if (['xp3', 'dat', 'pak', 'arc', 'bin', 'rar', 'zip', '7z', 'tar', 'gz'].includes(ext)) {
+    if (['xp3', 'dat', 'pak', 'arc', 'bin', 'rar', 'zip', '7z', 'tar', 'gz', 'iso'].includes(ext)) {
       return <FileArchive className="w-5 h-5 text-blue-400 shrink-0" />;
     }
     if (['exe', 'bat', 'cmd', 'msi'].includes(ext)) {
@@ -122,7 +126,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
     const downloadUrl = api.getDownloadFileUrl(game.id, relPath);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = fileName || relPath.split('/').pop() || 'download';
+    a.download = fileName || relPath.split('/').pop() || (game.alias || game.name || 'download');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -135,6 +139,23 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       const downloadName = isDirectory ? `${item.name}.zip` : item.name;
       triggerSingleDownload(item.path, downloadName);
       showToast(isDirectory ? `正在打包下载文件夹: ${item.name}` : `开始下载: ${item.name}`, 'success');
+    } catch (err) {
+      showToast('下载出错: ' + err.message, 'error');
+    }
+  };
+
+  // 一键下载整个游戏（单文件/压缩包直接下载，文件夹打包为 .zip 下载）
+  const handleDownloadWholeGame = () => {
+    try {
+      if (isSingleFile && allFiles.length > 0) {
+        const fileObj = allFiles[0];
+        triggerSingleDownload(fileObj.path, fileObj.name);
+        showToast(`开始下载压缩包: ${fileObj.name}`, 'success');
+      } else {
+        const zipName = `${game.alias || game.name}.zip`;
+        triggerSingleDownload('', zipName);
+        showToast(`已向 PC 端请求打包下载完整游戏: ${zipName}`, 'info');
+      }
     } catch (err) {
       showToast('下载出错: ' + err.message, 'error');
     }
@@ -310,7 +331,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
         return ['exe', 'bat', 'cmd'].includes(ext);
       }
       if (filterType === 'data') {
-        return ['xp3', 'pak', 'arc', 'bin', 'rar', 'zip', '7z'].includes(ext);
+        return ['xp3', 'pak', 'arc', 'bin', 'rar', 'zip', '7z', 'iso'].includes(ext);
       }
       if (filterType === 'media') {
         return ['jpg', 'png', 'webp', 'mp3', 'ogg', 'wav', 'mp4', 'avi'].includes(ext);
@@ -384,8 +405,8 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
             <div className="min-w-0">
               <h3 className="font-bold text-sm text-white truncate flex items-center gap-2">
                 <span>文件/数据下载管理</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 font-mono">
-                  {allFiles.length} 项
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono ${isSingleFile ? 'bg-blue-500/20 text-blue-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                  {isSingleFile ? '单文件/压缩包' : `${allFiles.length} 项`}
                 </span>
               </h3>
               <p className="text-[11px] text-gray-400 truncate mt-0.5">{game.alias || game.name}</p>
@@ -399,6 +420,36 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
           </button>
         </div>
 
+        {/* --- 单文件/压缩包模式专享快速下载横幅 --- */}
+        {isSingleFile && allFiles.length > 0 && (
+          <div className="mx-4 mt-3 p-3 rounded-2xl bg-gradient-to-r from-blue-950/70 via-indigo-950/50 to-blue-900/40 border border-blue-500/30 shadow-lg flex items-center justify-between gap-3 animate-fade-in shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-blue-600/25 text-blue-300 flex items-center justify-center shrink-0 border border-blue-500/30 shadow-inner">
+                <Package className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-white truncate">{allFiles[0].name}</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/25 text-blue-300 font-mono font-semibold">
+                    {(allFiles[0].name.split('.').pop() || 'FILE').toUpperCase()}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 font-mono mt-0.5 truncate">
+                  大小: {formatSize(allFiles[0].size)} {allFiles[0].mtime ? `· 修改时间: ${formatDate(allFiles[0].mtime)}` : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleDownloadWholeGame}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-1.5 active-press shrink-0"
+              title="直接下载完整压缩包文件"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>下载文件</span>
+            </button>
+          </div>
+        )}
+
         {/* --- 搜索与快捷过滤胶囊栏 --- */}
         <div className="px-4 py-3 bg-gray-950/40 border-b border-white/5 space-y-2.5">
           <div className="relative">
@@ -407,7 +458,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索当前游戏中的文件或子路径..."
+              placeholder={isSingleFile ? "搜索文件名..." : "搜索当前游戏中的文件或子路径..."}
               className="w-full bg-gray-900/90 border border-white/10 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
             />
             {search && (
@@ -420,35 +471,37 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
             )}
           </div>
 
-          <div className="flex gap-1.5 overflow-x-auto no-scrollbar text-xs py-0.5">
-            {[
-              { key: 'all', label: '全部' },
-              { key: 'saves', label: '存档/配置', icon: Save },
-              { key: 'exe', label: '运行程序', icon: PlaySquare },
-              { key: 'data', label: '封包数据', icon: FileArchive },
-              { key: 'media', label: '图片/影音', icon: ImageIcon }
-            ].map((tab) => {
-              const Icon = tab.icon;
-              const active = filterType === tab.key;
-              return (
-                <button
-                  key={tab.key}
-                  onClick={() => setFilterType(tab.key)}
-                  className={`px-3 py-1 rounded-xl font-medium transition-all shrink-0 flex items-center gap-1.5 active-press ${
-                    active
-                      ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                      : 'bg-gray-900/70 text-gray-400 hover:text-gray-200 border border-white/5'
-                  }`}
-                >
-                  {Icon && <Icon className="w-3 h-3" />}
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          {!isSingleFile && (
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar text-xs py-0.5">
+              {[
+                { key: 'all', label: '全部' },
+                { key: 'saves', label: '存档/配置', icon: Save },
+                { key: 'exe', label: '运行程序', icon: PlaySquare },
+                { key: 'data', label: '封包数据', icon: FileArchive },
+                { key: 'media', label: '图片/影音', icon: ImageIcon }
+              ].map((tab) => {
+                const Icon = tab.icon;
+                const active = filterType === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    onClick={() => setFilterType(tab.key)}
+                    className={`px-3 py-1 rounded-xl font-medium transition-all shrink-0 flex items-center gap-1.5 active-press ${
+                      active
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                        : 'bg-gray-900/70 text-gray-400 hover:text-gray-200 border border-white/5'
+                    }`}
+                  >
+                    {Icon && <Icon className="w-3 h-3" />}
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* --- Windows 文件夹式面包屑路径导航栏 --- */}
+        {/* --- Windows 文件夹式面包屑路径导航与整包下载栏 --- */}
         <div className="px-4 py-2 bg-gray-900/70 border-b border-white/5 flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 py-0.5">
             {currentPath && (
@@ -486,31 +539,45 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
             ))}
           </div>
 
-          <button
-            onClick={() => {
-              if (sortField === 'name') {
-                if (sortOrder === 'asc') setSortOrder('desc');
-                else { setSortField('size'); setSortOrder('desc'); }
-              } else if (sortField === 'size') {
-                if (sortOrder === 'desc') setSortOrder('asc');
-                else { setSortField('mtime'); setSortOrder('desc'); }
-              } else {
-                setSortField('name');
-                setSortOrder('asc');
-              }
-            }}
-            className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-white bg-gray-850 px-2 py-1 rounded-lg border border-white/5 shrink-0"
-            title="切换排序"
-          >
-            <ArrowUpDown className="w-3 h-3 text-emerald-400" />
-            <span>
-              {sortField === 'name'
-                ? `名称 ${sortOrder === 'asc' ? 'A-Z' : 'Z-A'}`
-                : sortField === 'size'
-                ? `大小 ${sortOrder === 'desc' ? '大-小' : '小-大'}`
-                : '时间'}
-            </span>
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* 向上一个级别：一键打包下载完整游戏按钮 */}
+            {!isSingleFile && (
+              <button
+                onClick={handleDownloadWholeGame}
+                className="flex items-center gap-1 text-[11px] text-emerald-300 hover:text-white bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 px-2.5 py-1 rounded-lg shrink-0 active-press font-semibold transition-all shadow-sm"
+                title="打包下载整个游戏文件夹为 .zip"
+              >
+                <Download className="w-3 h-3 text-emerald-400" />
+                <span>整包下载</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                if (sortField === 'name') {
+                  if (sortOrder === 'asc') setSortOrder('desc');
+                  else { setSortField('size'); setSortOrder('desc'); }
+                } else if (sortField === 'size') {
+                  if (sortOrder === 'desc') setSortOrder('asc');
+                  else { setSortField('mtime'); setSortOrder('desc'); }
+                } else {
+                  setSortField('name');
+                  setSortOrder('asc');
+                }
+              }}
+              className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-white bg-gray-850 px-2 py-1 rounded-lg border border-white/5 shrink-0"
+              title="切换排序"
+            >
+              <ArrowUpDown className="w-3 h-3 text-emerald-400" />
+              <span>
+                {sortField === 'name'
+                  ? `名称 ${sortOrder === 'asc' ? 'A-Z' : 'Z-A'}`
+                  : sortField === 'size'
+                  ? `大小 ${sortOrder === 'desc' ? '大-小' : '小-大'}`
+                  : '时间'}
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* --- 列表顶栏：全选与列名 --- */}
@@ -545,7 +612,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
           ) : displayedItems.length === 0 ? (
             <div className="py-24 text-center text-xs text-gray-500 space-y-2">
               <FolderOpen className="w-10 h-10 mx-auto text-gray-700 mb-2" />
-              <p>{search ? '未找到匹配的文件或文件夹' : '当前文件夹为空'}</p>
+              <p>{search ? '未找到匹配的文件或文件夹' : '当前文件列表为空'}</p>
             </div>
           ) : (
             displayedItems.map((item) => {
@@ -593,6 +660,11 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
                         {isDir && item.itemCount > 0 && (
                           <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 font-mono">
                             {item.itemCount} 项
+                          </span>
+                        )}
+                        {!isDir && isSingleFile && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-mono">
+                            完整文件
                           </span>
                         )}
                       </div>

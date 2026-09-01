@@ -208,10 +208,14 @@ export class ApiClient {
     return res.data;
   }
 
-  getDownloadFileUrl(gameId, relativeFilePath) {
-    const params = new URLSearchParams({ file: relativeFilePath });
+  getDownloadFileUrl(gameId, relativeFilePath = '') {
+    const params = new URLSearchParams();
+    if (relativeFilePath) {
+      params.set('file', relativeFilePath);
+    }
     if (this.token) params.set('token', this.token);
-    return `${this.serverUrl}/api/games/${gameId}/download?${params.toString()}`;
+    const query = params.toString();
+    return `${this.serverUrl}/api/games/${gameId}/download${query ? `?${query}` : ''}`;
   }
 }
 

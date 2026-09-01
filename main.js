@@ -1300,7 +1300,36 @@ function initDatabase() {
   try {
     trySyncCoversFromAlternateDb();
   } catch {}
+
+  try {
+    sanitizeMismatchedCovers();
+  } catch {}
 }
+
+const sanitizeMismatchedCovers = () => {
+  try {
+    const rows = db.prepare("SELECT id, name, cover_path FROM games WHERE cover_path IS NOT NULL AND cover_path != ''").all();
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    const resetStmt = db.prepare("UPDATE games SET cover_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    
+    db.transaction(() => {
+      for (const row of rows) {
+        const cPath = row.cover_path;
+        if (!cPath) continue;
+        const bName = path.basename(cPath);
+        const match = bName.match(/^(\d+)_/);
+        if (match) {
+          const ownerId = Number.parseInt(match[1], 10);
+          if (Number.isFinite(ownerId) && ownerId !== Number(row.id)) {
+            resetStmt.run(row.id);
+          }
+        }
+      }
+    })();
+  } catch (err) {
+    console.warn('sanitizeMismatchedCovers failed:', err);
+  }
+};
 
 const trySyncCoversFromAlternateDb = () => {
   try {
@@ -3797,7 +3826,7 @@ const sendApiError = (res, statusCode, message) => {
   sendApiJson(res, statusCode, { success: false, data: null, error: message });
 };
 
-const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameName = null, gameAlias = null) => {
+const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null) => {
   const coverDirs = Array.from(new Set([
     getCoversDir(),
     path.join(app.getPath('userData'), 'covers'),
@@ -3810,7 +3839,7 @@ const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameN
     path.join(process.cwd(), 'covers')
   ])).filter(Boolean);
 
-  // 1. 如果提供了 rawCoverPath
+  // 1. 如果提供了 rawCoverPath，且在磁盘上存在
   if (rawCoverPath && typeof rawCoverPath === 'string') {
     let clean = rawCoverPath.trim();
     if (clean.startsWith('file:///')) {
@@ -3839,73 +3868,41 @@ const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameN
     }
   }
 
-  // 2. 在所有可能 covers 目录匹配 gameId 前缀文件
-  for (const dir of coverDirs) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const files = fs.readdirSync(dir);
-      const matched = files.find((f) => f.startsWith(`${gameId}_`) || f.startsWith(`${gameId}.`));
-      if (matched) {
-        return path.join(dir, matched);
-      }
-    } catch {}
-  }
-
-  // 3. 智能匹配：如果封面是用其他版本或旧 ID 保存的，根据游戏名称与别名在封面目录中模糊匹配
-  const cleanTokens = [gameName, gameAlias]
-    .filter(Boolean)
-    .flatMap((n) => {
-      const s = String(n).trim();
-      const stripped = s.replace(/[\(\)\[\]【】\-_.]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
-      return [s, ...stripped];
-    })
-    .filter(Boolean);
-
-  if (cleanTokens.length > 0) {
+  // 2. 仅在 covers 目录中精准匹配该游戏 ID 的专属封面文件 (${gameId}_* 或 ${gameId}.*)
+  if (gameId) {
     for (const dir of coverDirs) {
       if (!fs.existsSync(dir)) continue;
       try {
         const files = fs.readdirSync(dir);
-        for (const token of cleanTokens) {
-          const lowerToken = token.toLowerCase();
-          const matched = files.find((f) => {
-            const lowerF = f.toLowerCase();
-            return lowerF.includes(lowerToken) || lowerToken.includes(lowerF.replace(/^\d+_/, '').replace(/\.[^.]+$/, ''));
-          });
-          if (matched) {
-            const foundPath = path.join(dir, matched);
-            if (db && gameId) {
-              try {
-                db.prepare("UPDATE games SET cover_path = ? WHERE id = ? AND (cover_path IS NULL OR cover_path = '')").run(foundPath, gameId);
-              } catch {}
-            }
-            return foundPath;
-          }
+        const matched = files.find((f) => f.startsWith(`${gameId}_`) || f.startsWith(`${gameId}.`));
+        if (matched) {
+          return path.join(dir, matched);
         }
       } catch {}
     }
   }
 
-  // 4. 在游戏本体文件夹中查找常见封面
+  // 3. 在游戏本体文件夹中查找常见封面 (仅当 gameFolderPath 是真实存在的目录时)
   if (gameFolderPath && typeof gameFolderPath === 'string' && fs.existsSync(gameFolderPath)) {
-    const commonCoverNames = [
-      'cover.jpg', 'cover.png', 'cover.webp', 'cover.jpeg',
-      'folder.jpg', 'folder.png', 'poster.jpg', 'poster.png',
-      'banner.jpg', 'banner.png', 'thumb.jpg', 'thumb.png',
-      'front.jpg', 'front.png'
-    ];
-    for (const cName of commonCoverNames) {
-      try {
-        const p = path.join(gameFolderPath, cName);
-        if (fs.existsSync(p)) return p;
-      } catch {}
-    }
-    // 兜底扫描游戏根目录下第一张 .jpg / .png / .webp
     try {
-      const entries = fs.readdirSync(gameFolderPath, { withFileTypes: true });
-      const imgEntry = entries.find((e) => !e.isDirectory() && /\.(jpe?g|png|webp)$/i.test(e.name));
-      if (imgEntry) {
-        return path.join(gameFolderPath, imgEntry.name);
+      const stat = fs.statSync(gameFolderPath);
+      if (stat.isDirectory()) {
+        const commonCoverNames = [
+          'cover.jpg', 'cover.png', 'cover.webp', 'cover.jpeg',
+          'folder.jpg', 'folder.png', 'poster.jpg', 'poster.png',
+          'banner.jpg', 'banner.png', 'thumb.jpg', 'thumb.png',
+          'front.jpg', 'front.png'
+        ];
+        for (const cName of commonCoverNames) {
+          const p = path.join(gameFolderPath, cName);
+          if (fs.existsSync(p)) return p;
+        }
+        // 兜底扫描游戏根目录下第一张 .jpg / .png / .webp
+        const entries = fs.readdirSync(gameFolderPath, { withFileTypes: true });
+        const imgEntry = entries.find((e) => !e.isDirectory() && /\.(jpe?g|png|webp)$/i.test(e.name));
+        if (imgEntry) {
+          return path.join(gameFolderPath, imgEntry.name);
+        }
       }
     } catch {}
   }
@@ -3915,7 +3912,7 @@ const resolveCoverFilePath = (gameId, rawCoverPath, gameFolderPath = null, gameN
 
 const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) => {
   const tags = Array.isArray(game.tags) ? game.tags : [];
-  const coverFilePath = resolveCoverFilePath(game.id, game.cover_path, game.path, game.name, game.alias);
+  const coverFilePath = resolveCoverFilePath(game.id, game.cover_path, game.path);
   const hasCover = !!coverFilePath;
   const version = game.updated_at ? new Date(game.updated_at).getTime() : (game.imported_at ? new Date(game.imported_at).getTime() : '');
   const result = {
@@ -4056,9 +4053,36 @@ const getApiStats = () => {
 const getGameFilesInternal = async (gameId, maxDepth = 8, maxResults = 2000) => {
   const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
   if (!game || !game.path || !fs.existsSync(game.path)) {
-    return { success: false, error: '游戏文件夹不存在或未设置', files: [] };
+    return { success: false, error: '游戏文件夹或文件不存在', files: [] };
   }
   const root = path.resolve(game.path);
+  let rootStat;
+  try {
+    rootStat = await fs.promises.stat(root);
+  } catch (err) {
+    return { success: false, error: '无法读取文件状态: ' + (err?.message || String(err)), files: [] };
+  }
+
+  // 若游戏路径本身为单文件（如 .zip / .7z / .rar / .iso / .exe 等）
+  if (!rootStat.isDirectory()) {
+    const fileName = path.basename(root);
+    return {
+      success: true,
+      gameName: game.name,
+      rootPath: root,
+      isSingleFile: true,
+      files: [
+        {
+          name: fileName,
+          path: fileName,
+          isDir: false,
+          size: rootStat.size || 0,
+          mtime: rootStat.mtimeMs || null
+        }
+      ]
+    };
+  }
+
   const results = [];
 
   const scanDir = async (dir, currentDepth) => {
@@ -4096,7 +4120,7 @@ const getGameFilesInternal = async (gameId, maxDepth = 8, maxResults = 2000) => 
   };
 
   await scanDir(root, 1);
-  return { success: true, gameName: game.name, rootPath: root, files: results };
+  return { success: true, gameName: game.name, rootPath: root, isSingleFile: false, files: results };
 };
 
 const EXCLUDE_EXE_PATTERNS = [
@@ -4575,14 +4599,75 @@ const handleApiRequest = async (req, res) => {
         sendApiError(res, 404, '游戏不存在或未找到文件路径');
         return;
       }
-      const requestedFile = String(url.searchParams.get('file') || '').trim();
-      if (!requestedFile) {
-        sendApiError(res, 400, 'Parameter "file" is required');
+      const rootPath = path.resolve(game.path);
+      let rootStat;
+      try {
+        rootStat = fs.statSync(rootPath);
+      } catch (err) {
+        sendApiError(res, 500, '读取游戏路径信息失败: ' + (err?.message || String(err)));
         return;
       }
-      const rootDir = path.resolve(game.path);
-      const targetFilePath = path.resolve(rootDir, requestedFile);
-      if (!targetFilePath.startsWith(rootDir) || !fs.existsSync(targetFilePath)) {
+
+      const requestedFile = String(url.searchParams.get('file') || '').trim();
+
+      // 情况 1：游戏路径本身就是单文件（压缩包 .zip/.7z/.rar/.iso 或可执行程序等）
+      if (!rootStat.isDirectory()) {
+        const filename = path.basename(rootPath);
+        const ext = path.extname(filename).toLowerCase();
+        let contentType = 'application/octet-stream';
+        if (ext === '.zip') contentType = 'application/zip';
+        else if (ext === '.rar') contentType = 'application/x-rar-compressed';
+        else if (ext === '.7z') contentType = 'application/x-7z-compressed';
+        else if (ext === '.tar' || ext === '.gz') contentType = 'application/x-tar';
+
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': rootStat.size,
+          'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}"`
+        });
+        fs.createReadStream(rootPath).pipe(res);
+        return;
+      }
+
+      // 情况 2：游戏路径为文件夹
+      // 2.1 用户请求整个游戏（file 为空、'.'、'/' 或未传） -> 向上一个级别直接打包下载整个游戏文件夹！
+      if (!requestedFile || requestedFile === '.' || requestedFile === '/' || requestedFile === '*') {
+        const folderName = game.name || path.basename(rootPath) || 'game';
+        const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        try {
+          const { execSync } = require('child_process');
+          const safePath = rootPath.replace(/'/g, "''");
+          const safeZip = tempZip.replace(/'/g, "''");
+          const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
+          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 300000 });
+          if (fs.existsSync(tempZip)) {
+            const zipStat = fs.statSync(tempZip);
+            res.writeHead(200, {
+              'Content-Type': 'application/zip',
+              'Content-Length': zipStat.size,
+              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"; filename*=UTF-8''${encodeURIComponent(folderName + '.zip')}"`
+            });
+            const stream = fs.createReadStream(tempZip);
+            const cleanup = () => {
+              try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+            };
+            stream.on('close', cleanup);
+            stream.on('error', cleanup);
+            stream.pipe(res);
+            return;
+          } else {
+            throw new Error('生成的临时压缩文件不存在');
+          }
+        } catch (zipErr) {
+          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+          sendApiError(res, 500, '打包下载游戏文件夹失败: ' + (zipErr?.message || String(zipErr)));
+          return;
+        }
+      }
+
+      // 2.2 用户请求文件夹内的某个具体子文件或子目录
+      const targetFilePath = path.resolve(rootPath, requestedFile);
+      if (!targetFilePath.startsWith(rootPath) || !fs.existsSync(targetFilePath)) {
         sendApiError(res, 403, '文件不存在或超出安全访问范围');
         return;
       }
@@ -4592,33 +4677,40 @@ const handleApiRequest = async (req, res) => {
         const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
         try {
           const { execSync } = require('child_process');
-          const psCommand = `Compress-Archive -Path '${targetFilePath}\\*' -DestinationPath '${tempZip}' -Force`;
-          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 120000 });
+          const safePath = targetFilePath.replace(/'/g, "''");
+          const safeZip = tempZip.replace(/'/g, "''");
+          const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
+          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 180000 });
           if (fs.existsSync(tempZip)) {
             const zipStat = fs.statSync(tempZip);
             res.writeHead(200, {
               'Content-Type': 'application/zip',
               'Content-Length': zipStat.size,
-              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"`
+              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"; filename*=UTF-8''${encodeURIComponent(folderName + '.zip')}"`
             });
             const stream = fs.createReadStream(tempZip);
-            stream.on('close', () => {
-              try { fs.unlinkSync(tempZip); } catch {}
-            });
+            const cleanup = () => {
+              try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+            };
+            stream.on('close', cleanup);
+            stream.on('error', cleanup);
             stream.pipe(res);
             return;
+          } else {
+            throw new Error('生成的临时压缩文件不存在');
           }
         } catch (zipErr) {
           try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
-          sendApiError(res, 500, '打包下载文件夹失败: ' + (zipErr?.message || String(zipErr)));
+          sendApiError(res, 500, '打包下载子文件夹失败: ' + (zipErr?.message || String(zipErr)));
           return;
         }
       }
+
       const filename = path.basename(targetFilePath);
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'Content-Length': st.size,
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}"`
       });
       fs.createReadStream(targetFilePath).pipe(res);
       return;
@@ -4657,7 +4749,7 @@ const handleApiRequest = async (req, res) => {
     if (coverMatch && req.method === 'GET') {
       const gameId = Number.parseInt(coverMatch[1], 10);
       const game = db.prepare('SELECT id, name, alias, path, cover_path FROM games WHERE id = ?').get(gameId);
-      const resolvedCoverPath = resolveCoverFilePath(gameId, game?.cover_path, game?.path, game?.name, game?.alias);
+      const resolvedCoverPath = resolveCoverFilePath(gameId, game?.cover_path, game?.path);
       if (!resolvedCoverPath || !fs.existsSync(resolvedCoverPath)) {
         sendApiError(res, 404, 'Cover not found');
         return;
@@ -4700,6 +4792,10 @@ const stopApiServer = () => new Promise((resolve) => {
 });
 
 const startApiServer = async () => {
+  try {
+    sanitizeMismatchedCovers();
+  } catch {}
+
   const settings = getApiSettingsFromDb();
   if (!settings.enabled) {
     await stopApiServer();
