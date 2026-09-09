@@ -107,7 +107,105 @@ export async function getServerCache(serverUrl) {
 }
 
 /**
- * 保存单张封面 Blob
+ * 局部更新指定服务器离线缓存中的单款游戏信息 (如修改别名、标签、置顶状态等)
+ */
+export async function updateGameInServerCache(serverUrl, updatedGame) {
+  const key = normalizeServerKey(serverUrl);
+  if (!key || !updatedGame?.id) return;
+
+  try {
+    const db = await getDb();
+    const tx = db.transaction('servers', 'readwrite');
+    const store = tx.objectStore('servers');
+
+    const existing = await new Promise((res) => {
+      const req = store.get(key);
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => res(null);
+    });
+
+    if (existing && Array.isArray(existing.games)) {
+      const index = existing.games.findIndex((g) => g.id === updatedGame.id);
+      if (index !== -1) {
+        existing.games[index] = { ...existing.games[index], ...updatedGame };
+      } else {
+        existing.games.unshift(updatedGame);
+        existing.total = Math.max(existing.total || 0, existing.games.length);
+      }
+      existing.updatedAt = Date.now();
+      store.put(existing);
+      await new Promise((res, rej) => {
+        tx.oncomplete = res;
+        tx.onerror = () => rej(tx.error);
+      });
+    }
+  } catch (err) {
+    console.warn('Failed to update game in server cache:', err);
+  }
+}
+
+/**
+ * 将高分辨率大图在手机本地快速压缩为轻量缩略图 (WebP, 最大宽高 360x540, 质量 0.72)
+ * 将原本 2MB~5MB 的大图压缩为 15KB~30KB，节省 99% 的 IndexedDB 占用并消除内存暴涨
+ */
+export async function compressImageBlob(blob, maxWidth = 360, maxHeight = 540, quality = 0.72) {
+  if (!blob || !(blob instanceof Blob)) return blob;
+  if (blob.size < 40 * 1024 && (blob.type === 'image/webp' || blob.type === 'image/jpeg')) {
+    return blob;
+  }
+  if (typeof document === 'undefined') return blob;
+
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const width = img.naturalWidth || img.width;
+      const height = img.naturalHeight || img.height;
+      if (!width || !height) {
+        resolve(blob);
+        return;
+      }
+
+      const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+      const targetWidth = Math.max(1, Math.round(width * ratio));
+      const targetHeight = Math.max(1, Math.round(height * ratio));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) {
+        resolve(blob);
+        return;
+      }
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'medium';
+      ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+      canvas.toBlob(
+        (compressedBlob) => {
+          if (compressedBlob && compressedBlob.size > 0 && compressedBlob.size < blob.size) {
+            resolve(compressedBlob);
+          } else {
+            resolve(blob);
+          }
+        },
+        'image/webp',
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(blob);
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * 保存单张封面 Blob (自动经过 WebP 移动端轻量化压缩)
  */
 export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
   const sKey = normalizeServerKey(serverUrl);
@@ -115,6 +213,7 @@ export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
 
   const key = `${sKey}::${gameId}`;
   try {
+    const optimizedBlob = await compressImageBlob(blob);
     const db = await getDb();
     const tx = db.transaction('covers', 'readwrite');
     const store = tx.objectStore('covers');
@@ -122,7 +221,7 @@ export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
       key,
       serverUrl: sKey,
       gameId: Number(gameId) || gameId,
-      blob,
+      blob: optimizedBlob,
       version: version ? String(version) : null,
       updatedAt: Date.now()
     });
@@ -254,4 +353,76 @@ export async function clearAllCache() {
   } catch (err) {
     console.warn('Failed to clear all cache:', err);
   }
+}
+
+/**
+ * 批量并发全量预热封面图片缓存（带并发控制与进度回调，默认无上限全量预热）
+ * @param {string} serverUrl 服务器地址
+ * @param {Array} games 游戏对象列表
+ * @param {string} [token] 认证 token
+ * @param {Function} [onProgress] 进度回调 (0 ~ 100)
+ * @param {number} [limit=0] 预热上限数量 (0 表示不限制，全量预热)
+ */
+export async function preloadCovers(serverUrl, games, token = '', onProgress = null, limit = 0) {
+  const cleanServerUrl = normalizeServerKey(serverUrl);
+  if (!cleanServerUrl || !Array.isArray(games) || games.length === 0) {
+    onProgress?.(100);
+    return;
+  }
+
+  const rawServerUrl = String(serverUrl || '').trim().replace(/\/+$/, '');
+  const filtered = games.filter((g) => g && g.hasCover);
+  const gamesWithCover = limit > 0 ? filtered.slice(0, limit) : filtered;
+  const total = gamesWithCover.length;
+
+  if (total === 0) {
+    onProgress?.(100);
+    return;
+  }
+
+  const concurrency = 6;
+  let cursor = 0;
+  let finishedCount = 0;
+
+  const worker = async () => {
+    while (cursor < total) {
+      const idx = cursor++;
+      if (idx >= total) break;
+      const g = gamesWithCover[idx];
+
+      try {
+        const version = g.updatedAt ? new Date(g.updatedAt).getTime() : '';
+        const vParam = version ? `&v=${version}` : '';
+        const coverUrl = g.coverUrl
+          ? (token && !g.coverUrl.includes('token=')
+              ? `${g.coverUrl}${g.coverUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+              : g.coverUrl)
+          : `${rawServerUrl}/api/covers/${g.id}?thumb=1&token=${encodeURIComponent(token || '')}${vParam}`;
+
+        const existing = await getCoverBlobWithMeta(cleanServerUrl, g.id);
+        const versionStr = version ? String(version) : '';
+
+        // 若本地不存在或版本过旧，则请求 20KB 轻量化缩略图并缓存
+        if (!existing || (versionStr && existing.version !== versionStr)) {
+          const resp = await fetch(coverUrl, { mode: 'cors' });
+          if (resp.ok) {
+            const blob = await resp.blob();
+            if (blob && blob.size > 0) {
+              await saveCoverBlob(cleanServerUrl, g.id, blob, versionStr);
+            }
+          }
+        }
+      } catch {
+        // 单张预热失败不中断整体进度
+      } finally {
+        finishedCount++;
+        const percent = Math.round((finishedCount / total) * 100);
+        onProgress?.(percent);
+      }
+    }
+  };
+
+  const pool = Array.from({ length: Math.min(concurrency, total) }, () => worker());
+  await Promise.all(pool);
+  onProgress?.(100);
 }

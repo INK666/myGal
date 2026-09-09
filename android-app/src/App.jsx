@@ -7,9 +7,9 @@ import {
   ArrowUpDown,
   Gamepad2,
   AlertCircle,
-  SlidersHorizontal,
   ChevronDown,
-  Folder
+  Folder,
+  X
 } from 'lucide-react';
 import { api } from './api/client';
 import { ServerProvider, useServer } from './contexts/ServerContext';
@@ -21,7 +21,12 @@ import TagManagerModal from './components/TagManagerModal';
 import StatsModal from './components/StatsModal';
 import FileTransferModal from './components/FileTransferModal';
 import WallpaperModal, { PRESET_WALLPAPERS } from './components/WallpaperModal';
-import { getServerCache, saveServerCache, getCoverBlobWithMeta, saveCoverBlob, deleteCoverBlob } from './utils/cacheStorage';
+import {
+  getServerCache,
+  saveServerCache,
+  updateGameInServerCache,
+  preloadCovers
+} from './utils/cacheStorage';
 
 function MainApp() {
   const { serverUrl, token, connected, checking, showToast, updateProfileGameCount } = useServer();
@@ -56,9 +61,12 @@ function MainApp() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
-  // 离线缓存状态
+  // 离线缓存与全量同步进度状态 (0 ~ 100，null 时隐藏进度条)
+  const [cacheProgress, setCacheProgress] = useState(null);
   const [isOfflineCache, setIsOfflineCache] = useState(false);
   const [cachedTime, setCachedTime] = useState(null);
+  const [cachedTotal, setCachedTotal] = useState(0);
+  const syncInProgressRef = useRef(false);
 
   // 视图与检索配置
   const [searchQuery, setSearchQuery] = useState('');
@@ -92,7 +100,119 @@ function MainApp() {
     localStorage.setItem('mygal_view_mode', mode);
   };
 
-  // 加载标签和目录列表
+  // 离线状态下在内存中过滤与排序完整缓存数据
+  const filterOfflineGames = useCallback(
+    (allCachedGames) => {
+      if (!Array.isArray(allCachedGames)) return [];
+      let filtered = [...allCachedGames];
+
+      // 关键词过滤
+      if (debouncedQuery) {
+        const q = debouncedQuery.toLowerCase();
+        filtered = filtered.filter(
+          (g) =>
+            (g.name && g.name.toLowerCase().includes(q)) ||
+            (g.alias && g.alias.toLowerCase().includes(q)) ||
+            (g.path && g.path.toLowerCase().includes(q))
+        );
+      }
+
+      // 标签过滤
+      if (activeTag) {
+        filtered = filtered.filter((g) => Array.isArray(g.tags) && g.tags.includes(activeTag));
+      }
+
+      // 目录过滤
+      if (activeRootPathId !== null) {
+        filtered = filtered.filter(
+          (g) => Array.isArray(g.rootPathIds) && g.rootPathIds.includes(activeRootPathId)
+        );
+      }
+
+      // 排序（置顶项始终排在最前面）
+      filtered.sort((a, b) => {
+        if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+          return a.pinned ? -1 : 1;
+        }
+        if (sortField === 'imported_at') {
+          const tA = Number(a.importedAt) || 0;
+          const tB = Number(b.importedAt) || 0;
+          return sortOrder === 'asc' ? tA - tB : tB - tA;
+        } else {
+          const nA = String(a.alias || a.name || '');
+          const nB = String(b.alias || b.name || '');
+          return sortOrder === 'asc' ? nA.localeCompare(nB) : nB.localeCompare(nA);
+        }
+      });
+
+      return filtered;
+    },
+    [debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder]
+  );
+
+  // 后台全量同步离线缓存与全库封面预热 (采用 20KB 轻量化 WebP，平滑且不爆内存)
+  const syncOfflineCache = useCallback(async () => {
+    if (!connected || !serverUrl || syncInProgressRef.current) return;
+    syncInProgressRef.current = true;
+    setCacheProgress(2);
+
+    try {
+      const [tagList, pathList, allGamesRes] = await Promise.all([
+        api.getTags().catch(() => []),
+        api.getRootPaths().catch(() => []),
+        api.getAllGames().catch((err) => {
+          console.warn('getAllGames failed during sync:', err);
+          return null;
+        })
+      ]);
+
+      const safeTags = Array.isArray(tagList) ? tagList : [];
+      const safePaths = Array.isArray(pathList) ? pathList : [];
+      setTags(safeTags);
+      setRootPaths(safePaths);
+
+      if (allGamesRes?.items && Array.isArray(allGamesRes.items)) {
+        const allItems = allGamesRes.items;
+        const realTotal = typeof allGamesRes.total === 'number' ? allGamesRes.total : allItems.length;
+
+        // 保存完整游戏列表与分类元数据到 IndexedDB
+        await saveServerCache(serverUrl, {
+          games: allItems,
+          total: realTotal,
+          tags: safeTags,
+          rootPaths: safePaths
+        });
+
+        updateProfileGameCount?.(serverUrl, realTotal);
+        setCachedTotal(allItems.length);
+        setCacheProgress(5);
+
+        // 全量并发预热所有游戏封面 (轻量化 20KB WebP，已缓存的瞬间跳过，新封面平滑推进)
+        await preloadCovers(
+          serverUrl,
+          allItems,
+          token,
+          (coverPct) => {
+            setCacheProgress(Math.min(99, Math.round(5 + coverPct * 0.94)));
+          }
+        );
+      } else {
+        await saveServerCache(serverUrl, { tags: safeTags, rootPaths: safePaths });
+      }
+
+      setCacheProgress(100);
+      setTimeout(() => {
+        setCacheProgress(null);
+      }, 500);
+    } catch (err) {
+      console.warn('Sync offline cache error:', err);
+      setCacheProgress(null);
+    } finally {
+      syncInProgressRef.current = false;
+    }
+  }, [connected, serverUrl, token, updateProfileGameCount]);
+
+  // 加载元数据
   const loadMetadata = useCallback(async () => {
     if (!serverUrl) {
       setTags([]);
@@ -109,10 +229,6 @@ function MainApp() {
         const safePaths = Array.isArray(pathList) ? pathList : [];
         setTags(safeTags);
         setRootPaths(safePaths);
-        // 保存元数据到 IndexedDB 缓存
-        if (serverUrl) {
-          saveServerCache(serverUrl, { tags: safeTags, rootPaths: safePaths });
-        }
       } catch {}
     } else if (serverUrl) {
       // 离线时从缓存读取元数据
@@ -120,151 +236,120 @@ function MainApp() {
       if (cache) {
         if (Array.isArray(cache.tags)) setTags(cache.tags);
         if (Array.isArray(cache.rootPaths)) setRootPaths(cache.rootPaths);
+        if (typeof cache.total === 'number' || (Array.isArray(cache.games) && cache.games.length > 0)) {
+          setCachedTotal(Array.isArray(cache.games) ? cache.games.length : cache.total);
+        }
       }
     }
   }, [connected, serverUrl]);
 
-  // 离线状态下在内存中过滤与排序缓存数据
-  const filterOfflineGames = useCallback((allCachedGames) => {
-    let filtered = [...allCachedGames];
+  // 加载游戏列表 (在线服务端分页 / 离线全量内存分页)
+  const loadGames = useCallback(
+    async (targetPage = 1, isAppend = false) => {
+      const PAGE_SIZE = 40;
 
-    // 关键词过滤
-    if (debouncedQuery) {
-      const q = debouncedQuery.toLowerCase();
-      filtered = filtered.filter(
-        (g) =>
-          (g.name && g.name.toLowerCase().includes(q)) ||
-          (g.alias && g.alias.toLowerCase().includes(q))
-      );
-    }
-
-    // 标签过滤
-    if (activeTag) {
-      filtered = filtered.filter((g) => Array.isArray(g.tags) && g.tags.includes(activeTag));
-    }
-
-    // 目录过滤
-    if (activeRootPathId !== null) {
-      filtered = filtered.filter(
-        (g) => Array.isArray(g.rootPathIds) && g.rootPathIds.includes(activeRootPathId)
-      );
-    }
-
-    // 排序
-    filtered.sort((a, b) => {
-      if (sortField === 'imported_at') {
-        const tA = Number(a.importedAt) || 0;
-        const tB = Number(b.importedAt) || 0;
-        return sortOrder === 'asc' ? tA - tB : tB - tA;
-      } else {
-        const nA = String(a.alias || a.name || '');
-        const nB = String(b.alias || b.name || '');
-        return sortOrder === 'asc' ? nA.localeCompare(nB) : nB.localeCompare(nA);
-      }
-    });
-
-    return filtered;
-  }, [debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder]);
-
-  // 加载游戏列表
-  const loadGames = useCallback(async (targetPage = 1, isAppend = false) => {
-    if (connected) {
-      if (isAppend) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-      }
-
-      try {
-        const res = await api.getGames({
-          page: targetPage,
-          pageSize: 40,
-          query: debouncedQuery,
-          tag: activeTag,
-          rootPathId: activeRootPathId,
-          sort: sortField,
-          order: sortOrder
-        });
-
-        if (res?.items) {
-          if (isAppend) {
-            setGames((prev) => [...prev, ...res.items]);
-          } else {
-            setGames(res.items);
-          }
-          setTotal(res.total || 0);
-          setPage(targetPage);
-          setHasMore(targetPage * 40 < res.total);
-          setIsOfflineCache(false);
-
-          // 当无过滤加载第 1 页时，保存到 IndexedDB 本地缓存
-          if (targetPage === 1 && !debouncedQuery && !activeTag && activeRootPathId === null && serverUrl) {
-            saveServerCache(serverUrl, { games: res.items, total: res.total });
-            updateProfileGameCount?.(serverUrl, res.total || res.items?.length || 0);
-            // 后台预热前 40 款游戏的封面缓存
-            const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
-            res.items.forEach((g) => {
-              if (g.hasCover) {
-                const version = g.updatedAt ? new Date(g.updatedAt).getTime() : '';
-                const vParam = version ? `&v=${version}` : '';
-                const coverUrl = g.coverUrl
-                  ? (token && !g.coverUrl.includes('token=') ? `${g.coverUrl}${g.coverUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : g.coverUrl)
-                  : `${cleanServerUrl}/api/covers/${g.id}?token=${encodeURIComponent(token || '')}${vParam}`;
-                
-                getCoverBlobWithMeta(serverUrl, g.id).then((existing) => {
-                  const versionStr = version ? String(version) : '';
-                  if (!existing || (versionStr && existing.version !== versionStr)) {
-                    fetch(coverUrl, { mode: 'cors' })
-                      .then((r) => (r.ok ? r.blob() : null))
-                      .then((blob) => {
-                        if (blob && blob.size > 0) saveCoverBlob(serverUrl, g.id, blob, versionStr);
-                      })
-                      .catch(() => {});
-                  }
-                });
-              } else {
-                deleteCoverBlob(serverUrl, g.id).catch(() => {});
-              }
-            });
-          }
-        }
-      } catch (err) {
-        showToast('加载游戏列表失败: ' + err.message, 'error');
-      } finally {
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    } else if (serverUrl) {
-      // 离线模式：从 IndexedDB 读取缓存
-      setLoading(true);
-      try {
-        const cache = await getServerCache(serverUrl);
-        if (cache && Array.isArray(cache.games) && cache.games.length > 0) {
-          const filtered = filterOfflineGames(cache.games);
-          setGames(filtered);
-          setTotal(filtered.length);
-          setIsOfflineCache(true);
-          setCachedTime(cache.updatedAt ? new Date(cache.updatedAt).toLocaleString('zh-CN') : null);
-          setHasMore(false);
-          updateProfileGameCount?.(serverUrl, typeof cache.total === 'number' ? cache.total : cache.games.length);
+      if (connected) {
+        if (isAppend) {
+          setLoadingMore(true);
         } else {
+          setLoading(true);
+        }
+
+        try {
+          const res = await api.getGames({
+            page: targetPage,
+            pageSize: PAGE_SIZE,
+            query: debouncedQuery,
+            tag: activeTag,
+            rootPathId: activeRootPathId,
+            sort: sortField,
+            order: sortOrder
+          });
+
+          if (res?.items) {
+            if (isAppend) {
+              setGames((prev) => [...prev, ...res.items]);
+            } else {
+              setGames(res.items);
+            }
+            setTotal(res.total || 0);
+            setPage(targetPage);
+            setHasMore(targetPage * PAGE_SIZE < res.total);
+            setIsOfflineCache(false);
+          }
+        } catch (err) {
+          showToast('加载游戏列表失败: ' + err.message, 'error');
+        } finally {
+          setLoading(false);
+          setLoadingMore(false);
+        }
+      } else if (serverUrl) {
+        // 离线模式：从 IndexedDB 读取全量缓存并在前端分页
+        if (isAppend) {
+          setLoadingMore(true);
+        } else {
+          setLoading(true);
+        }
+
+        try {
+          const cache = await getServerCache(serverUrl);
+          if (cache && Array.isArray(cache.games) && cache.games.length > 0) {
+            const allFiltered = filterOfflineGames(cache.games);
+            const startIndex = (targetPage - 1) * PAGE_SIZE;
+            const pageSlice = allFiltered.slice(startIndex, startIndex + PAGE_SIZE);
+
+            if (isAppend) {
+              setGames((prev) => [...prev, ...pageSlice]);
+            } else {
+              setGames(pageSlice);
+            }
+            setTotal(allFiltered.length);
+            setPage(targetPage);
+            setHasMore(targetPage * PAGE_SIZE < allFiltered.length);
+            setIsOfflineCache(true);
+            setCachedTotal(cache.games.length);
+            setCachedTime(
+              cache.updatedAt ? new Date(cache.updatedAt).toLocaleString('zh-CN') : null
+            );
+            updateProfileGameCount?.(
+              serverUrl,
+              typeof cache.total === 'number' ? cache.total : cache.games.length
+            );
+          } else {
+            setGames([]);
+            setTotal(0);
+            setIsOfflineCache(false);
+            setHasMore(false);
+          }
+        } catch {
           setGames([]);
           setTotal(0);
           setIsOfflineCache(false);
+          setHasMore(false);
+        } finally {
+          setLoading(false);
+          setLoadingMore(false);
         }
-      } catch {
+      } else {
         setGames([]);
         setTotal(0);
         setIsOfflineCache(false);
-      } finally {
-        setLoading(false);
+        setHasMore(false);
       }
-    } else {
-      setGames([]);
-      setTotal(0);
-      setIsOfflineCache(false);
-    }
-  }, [connected, serverUrl, token, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder, showToast, filterOfflineGames]);
+    },
+    [
+      connected,
+      serverUrl,
+      debouncedQuery,
+      activeTag,
+      activeRootPathId,
+      sortField,
+      sortOrder,
+      showToast,
+      filterOfflineGames,
+      updateProfileGameCount
+    ]
+  );
 
   // 依赖变化触发重新加载
   useEffect(() => {
@@ -279,15 +364,33 @@ function MainApp() {
     }
     loadMetadata();
     loadGames(1, false);
-  }, [connected, serverUrl, debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder, loadMetadata, loadGames]);
 
-  // 更新局部游戏状态
+    if (connected) {
+      syncOfflineCache();
+    }
+  }, [
+    connected,
+    serverUrl,
+    debouncedQuery,
+    activeTag,
+    activeRootPathId,
+    sortField,
+    sortOrder,
+    loadMetadata,
+    loadGames,
+    syncOfflineCache
+  ]);
+
+  // 更新局部游戏状态并同步到 IndexedDB 缓存
   const handleUpdateGame = (updatedGame) => {
     setGames((prev) =>
       prev.map((g) => (g.id === updatedGame.id ? { ...g, ...updatedGame } : g))
     );
     if (selectedGame?.id === updatedGame.id) {
       setSelectedGame((prev) => ({ ...prev, ...updatedGame }));
+    }
+    if (serverUrl) {
+      updateGameInServerCache(serverUrl, updatedGame);
     }
   };
 
@@ -365,33 +468,32 @@ function MainApp() {
           setPage(1);
         }}
         rootPaths={rootPaths}
-        sortField={sortField}
-        sortOrder={sortOrder}
-        onSortChange={setSortField}
         onRefreshList={() => {
           loadMetadata();
           loadGames(1, false);
+          syncOfflineCache();
         }}
         loading={loading}
+        cacheProgress={cacheProgress}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 px-4 py-3 max-w-4xl mx-auto w-full pb-16 relative z-10">
-        {/* 未连接且无任何离线缓存时显示 Hero 配对引导 */}
+      <main className="flex-1 px-3.5 py-2.5 max-w-4xl mx-auto w-full pb-16 relative z-10">
+        {/* 未连接且无任何离线缓存时显示配对引导 */}
         {!connected && !isOfflineCache && games.length === 0 ? (
-          <div className="my-12 glass-panel rounded-3xl p-8 text-center space-y-5 border border-white/10 shadow-2xl">
-            <div className="w-16 h-16 rounded-2xl bg-indigo-600/20 text-indigo-400 mx-auto flex items-center justify-center shadow-inner">
-              <WifiOff className="w-8 h-8" />
+          <div className="my-10 glass-panel rounded-3xl p-7 text-center space-y-4 border border-white/10 shadow-2xl">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-600/20 text-indigo-400 mx-auto flex items-center justify-center shadow-inner">
+              <WifiOff className="w-7 h-7" />
             </div>
-            <div className="space-y-2 max-w-sm mx-auto">
-              <h2 className="text-xl font-bold text-white">尚未连接 PC 端 myGal</h2>
+            <div className="space-y-1.5 max-w-sm mx-auto">
+              <h2 className="text-lg font-bold text-white">尚未连接 PC 端 myGal</h2>
               <p className="text-xs text-gray-400 leading-relaxed">
-                在同一 WiFi 局域网下，打开电脑上的 myGal 设置页，点击下方按钮扫描二维码即可一秒完成配对！
+                在同一 WiFi 局域网下，打开电脑端 myGal 设置页扫描二维码即可配对
               </p>
             </div>
             <button
               onClick={() => setConnectOpen(true)}
-              className="px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 active-press transition-all flex items-center gap-2 mx-auto"
+              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 active-press transition-all flex items-center gap-2 mx-auto"
             >
               <QrCode className="w-4 h-4" />
               <span>扫码连接电脑</span>
@@ -399,41 +501,39 @@ function MainApp() {
           </div>
         ) : (
           <>
-            {/* 离线缓存横幅 */}
+            {/* 离线缓存提示胶囊条 (精简紧凑) */}
             {isOfflineCache && (
-              <div className="mb-3.5 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-center justify-between gap-2.5 shadow-sm">
-                <div className="flex items-center gap-2 text-xs min-w-0">
-                  <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
-                  <div className="truncate">
-                    <span className="font-bold">离线缓存模式</span>
-                    <span className="text-gray-400 ml-1.5 text-[11px]">
-                      (已缓存 {total} 款游戏{cachedTime ? ` · 同步于 ${cachedTime}` : ''})
-                    </span>
-                  </div>
+              <div className="mb-2.5 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-center justify-between gap-2 shadow-sm">
+                <div className="flex items-center gap-1.5 text-[11px] min-w-0">
+                  <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="font-bold">离线模式</span>
+                  <span className="text-gray-400 truncate text-[10px]">
+                    (已缓存 {cachedTotal || total} 款游戏{cachedTime ? ` · ${cachedTime}` : ''})
+                  </span>
                 </div>
                 <button
                   onClick={() => setConnectOpen(true)}
-                  className="text-xs px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-medium shrink-0 active-press transition-all"
+                  className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-medium shrink-0 active-press transition-all"
                 >
-                  连接电脑
+                  连接
                 </button>
               </div>
             )}
 
-            {/* List Header Filter Status */}
-            <div className="flex items-center justify-between text-xs text-gray-400 mb-3 px-1">
+            {/* List Header Filter Status & Sort Bar */}
+            <div className="flex items-center justify-between text-xs text-gray-400 mb-2.5 px-0.5">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span>共</span>
                 <span className="font-bold text-white font-mono">{total}</span>
-                <span>款游戏</span>
+                <span>款</span>
                 {activeRootPathName && (
-                  <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 font-medium flex items-center gap-1">
-                    <Folder className="w-3 h-3" />
+                  <span className="px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[10px] font-medium flex items-center gap-1">
+                    <Folder className="w-2.5 h-2.5" />
                     <span>{activeRootPathName}</span>
                   </span>
                 )}
                 {activeTag && (
-                  <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 font-medium">
+                  <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 text-[10px] font-medium">
                     #{activeTag}
                   </span>
                 )}
@@ -441,10 +541,16 @@ function MainApp() {
 
               <button
                 onClick={handleSortToggle}
-                className="flex items-center gap-1 hover:text-white transition-colors bg-gray-900/60 px-2.5 py-1 rounded-xl border border-white/5 shrink-0"
+                className="flex items-center gap-1 hover:text-white transition-colors bg-gray-900/60 px-2 py-1 rounded-lg border border-white/5 text-[11px] shrink-0"
               >
                 <ArrowUpDown className="w-3 h-3 text-indigo-400" />
-                <span>{sortField === 'imported_at' ? (sortOrder === 'desc' ? '导入时间 ↓' : '导入时间 ↑') : '名称 A-Z'}</span>
+                <span>
+                  {sortField === 'imported_at'
+                    ? sortOrder === 'desc'
+                      ? '导入时间 ↓'
+                      : '导入时间 ↑'
+                    : '名称 A-Z'}
+                </span>
               </button>
             </div>
 
@@ -474,7 +580,7 @@ function MainApp() {
             ) : (
               <>
                 <div
-                  className={`grid gap-3 ${
+                  className={`grid gap-2.5 ${
                     viewMode === 'grid2'
                       ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'
                       : viewMode === 'grid3'
@@ -494,21 +600,21 @@ function MainApp() {
 
                 {/* Load More Button */}
                 {hasMore && (
-                  <div className="pt-6 pb-4 text-center">
+                  <div className="pt-5 pb-3 text-center">
                     <button
                       onClick={() => loadGames(page + 1, true)}
                       disabled={loadingMore}
-                      className="px-6 py-2.5 rounded-2xl bg-gray-900/80 hover:bg-gray-850 text-xs font-semibold text-gray-300 hover:text-white border border-white/5 active-press transition-all disabled:opacity-50 inline-flex items-center gap-2"
+                      className="px-5 py-2 rounded-xl bg-gray-900/80 hover:bg-gray-850 text-xs font-semibold text-gray-300 hover:text-white border border-white/5 active-press transition-all disabled:opacity-50 inline-flex items-center gap-1.5"
                     >
                       {loadingMore ? (
                         <>
-                          <div className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                          <span>加载更多中...</span>
+                          <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                          <span>加载中...</span>
                         </>
                       ) : (
                         <>
                           <span>加载更多</span>
-                          <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+                          <ChevronDown className="w-3 h-3 text-gray-500" />
                         </>
                       )}
                     </button>
@@ -587,3 +693,4 @@ export default function App() {
     </ServerProvider>
   );
 }
+

@@ -3982,7 +3982,7 @@ const sanitizeApiGame = (game, { exposeFullPath = false, baseUrl = '' } = {}) =>
     tags,
     rootPathIds: Array.isArray(game.root_path_ids) ? game.root_path_ids : [],
     hasCover,
-    coverUrl: hasCover ? `${baseUrl}/api/covers/${game.id}${version ? `?v=${version}` : ''}` : null
+    coverUrl: hasCover ? `${baseUrl}/api/covers/${game.id}?thumb=1${version ? `&v=${version}` : ''}` : null
   };
   if (exposeFullPath) {
     result.path = game.path || '';
@@ -4012,10 +4012,11 @@ const requireApiAuth = (req, settings) => {
   }
 };
 
-const queryApiGames = ({ page = 1, pageSize = 60, query = '', tag = '', rootPathId = null, sort = 'imported_at', order = 'desc' } = {}) => {
+const queryApiGames = ({ page = 1, pageSize = 60, query = '', tag = '', rootPathId = null, sort = 'imported_at', order = 'desc', all = false } = {}) => {
+  const isAll = all === true || all === 'true' || all === '1' || pageSize === 'all' || pageSize === '0';
   const safePage = Math.max(1, Number.parseInt(String(page), 10) || 1);
-  const safePageSize = Math.max(1, Math.min(200, Number.parseInt(String(pageSize), 10) || 60));
-  const offset = (safePage - 1) * safePageSize;
+  const safePageSize = isAll ? 100000 : Math.max(1, Math.min(500, Number.parseInt(String(pageSize), 10) || 60));
+  const offset = isAll ? 0 : (safePage - 1) * safePageSize;
   const rootPathKey = typeof rootPathId === 'string' ? rootPathId.trim().toLowerCase() : '';
   const isOthers = rootPathKey === 'others';
   const parsedRootPathId = isOthers ? Number.NaN : Number.parseInt(String(rootPathId ?? ''), 10);
@@ -4047,18 +4048,28 @@ const queryApiGames = ({ page = 1, pageSize = 60, query = '', tag = '', rootPath
 
   const total = db.prepare(`SELECT COUNT(DISTINCT g.id) as count FROM games g ${whereSql}`).get(...params).count;
 
-  const rows = db.prepare(`
-    SELECT g.*, GROUP_CONCAT(t.name) as tags
-    FROM games g
-    LEFT JOIN game_tags gt ON g.id = gt.game_id
-    LEFT JOIN tags t ON gt.tag_id = t.id
-    ${whereSql}
-    GROUP BY g.id
-    ${orderByClause}
-    LIMIT ? OFFSET ?
-  `).all(...params, safePageSize, offset);
+  const rows = isAll
+    ? db.prepare(`
+        SELECT g.*, GROUP_CONCAT(t.name) as tags
+        FROM games g
+        LEFT JOIN game_tags gt ON g.id = gt.game_id
+        LEFT JOIN tags t ON gt.tag_id = t.id
+        ${whereSql}
+        GROUP BY g.id
+        ${orderByClause}
+      `).all(...params)
+    : db.prepare(`
+        SELECT g.*, GROUP_CONCAT(t.name) as tags
+        FROM games g
+        LEFT JOIN game_tags gt ON g.id = gt.game_id
+        LEFT JOIN tags t ON gt.tag_id = t.id
+        ${whereSql}
+        GROUP BY g.id
+        ${orderByClause}
+        LIMIT ? OFFSET ?
+      `).all(...params, safePageSize, offset);
 
-  return { games: processGames(rows), total, page: safePage, pageSize: safePageSize };
+  return { games: processGames(rows), total, page: safePage, pageSize: isAll ? total : safePageSize };
 };
 
 const getApiStats = () => {
@@ -4469,7 +4480,8 @@ const handleApiRequest = async (req, res) => {
         tag: url.searchParams.get('tag') || '',
         rootPathId: url.searchParams.get('rootPathId') || null,
         sort: url.searchParams.get('sort') || 'imported_at',
-        order: url.searchParams.get('order') || 'desc'
+        order: url.searchParams.get('order') || 'desc',
+        all: url.searchParams.get('all') || ''
       });
       sendApiJson(res, 200, {
         success: true,
@@ -4809,6 +4821,29 @@ const handleApiRequest = async (req, res) => {
         sendApiError(res, 404, 'Cover not found');
         return;
       }
+
+      const wantThumb = url.searchParams.has('thumb') || url.searchParams.has('w');
+      if (wantThumb) {
+        try {
+          const stream = sharp(resolvedCoverPath)
+            .resize(360, 540, { fit: 'cover', withoutEnlargement: true })
+            .webp({ quality: 75 });
+          res.writeHead(200, {
+            'Content-Type': 'image/webp',
+            'Cache-Control': 'public, max-age=86400',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Cross-Origin-Resource-Policy': 'cross-origin',
+            'X-Content-Type-Options': 'nosniff'
+          });
+          stream.on('error', () => {
+            if (!res.headersSent) sendApiError(res, 500, 'Failed to process cover');
+            else res.end();
+          }).pipe(res);
+          return;
+        } catch {}
+      }
+
       const ext = path.extname(resolvedCoverPath).toLowerCase();
       const contentType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
       res.writeHead(200, {

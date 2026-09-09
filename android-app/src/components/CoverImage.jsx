@@ -2,8 +2,33 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ImageOff } from 'lucide-react';
 import { getCoverBlobWithMeta, saveCoverBlob, deleteCoverBlob } from '../utils/cacheStorage';
 
-// 内存 Blob URL 缓存，避免重复请求与内存泄漏
+// 内存 Blob URL 缓存 (严格限制最多保留 35 张当前视口图片，超量自动回收 ObjectURL 释放 RAM)
+const MAX_BLOB_CACHE_SIZE = 35;
 const blobCache = new Map();
+
+function getBlobCache(key) {
+  if (!blobCache.has(key)) return null;
+  const val = blobCache.get(key);
+  blobCache.delete(key);
+  blobCache.set(key, val);
+  return val;
+}
+
+function setBlobCache(key, objectUrl) {
+  if (blobCache.has(key)) {
+    blobCache.delete(key);
+  } else if (blobCache.size >= MAX_BLOB_CACHE_SIZE) {
+    const oldestKey = blobCache.keys().next().value;
+    const oldUrl = blobCache.get(oldestKey);
+    try {
+      if (typeof oldUrl === 'string' && oldUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(oldUrl);
+      }
+    } catch {}
+    blobCache.delete(oldestKey);
+  }
+  blobCache.set(key, objectUrl);
+}
 
 export function clearBlobCache() {
   blobCache.forEach((objectUrl) => {
@@ -27,11 +52,12 @@ export default function CoverImage({
 }) {
   const [imageSrc, setImageSrc] = useState(() => {
     if (!src) return null;
-    if (blobCache.has(src)) return blobCache.get(src);
+    const cached = getBlobCache(src);
+    if (cached) return cached;
     return src;
   });
   const [hasError, setHasError] = useState(!src);
-  const [loading, setLoading] = useState(Boolean(src) && !blobCache.has(src));
+  const [loading, setLoading] = useState(Boolean(src) && !getBlobCache(src));
   const retryWithFetchRef = useRef(false);
 
   useEffect(() => {
@@ -49,8 +75,9 @@ export default function CoverImage({
     }
 
     // 1. 检查内存缓存 (精确匹配带版本号的完整 URL)
-    if (blobCache.has(src)) {
-      setImageSrc(blobCache.get(src));
+    const memCached = getBlobCache(src);
+    if (memCached) {
+      setImageSrc(memCached);
       setHasError(false);
       setLoading(false);
       return;
@@ -74,7 +101,7 @@ export default function CoverImage({
               return false;
             }
             const objectUrl = URL.createObjectURL(cached.blob);
-            blobCache.set(src, objectUrl);
+            setBlobCache(src, objectUrl);
             setImageSrc(objectUrl);
             setHasError(false);
             setLoading(false);
@@ -110,7 +137,7 @@ export default function CoverImage({
             v = u.searchParams.get('v') || '';
           } catch {}
           const objectUrl = URL.createObjectURL(blob);
-          blobCache.set(url, objectUrl);
+          setBlobCache(url, objectUrl);
           if (serverUrl && gameId) {
             saveCoverBlob(serverUrl, gameId, blob, v);
           }

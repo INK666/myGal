@@ -121,6 +121,7 @@ export class ApiClient {
   // --- 游戏列表与详情 ---
   async getGames(options = {}) {
     const params = new URLSearchParams();
+    if (options.all) params.set('all', options.all);
     if (options.page) params.set('page', options.page);
     if (options.pageSize) params.set('pageSize', options.pageSize);
     if (options.query) params.set('query', options.query);
@@ -131,6 +132,47 @@ export class ApiClient {
 
     const res = await this.request(`/api/games?${params.toString()}`);
     return res.data;
+  }
+
+  /**
+   * 全量获取当前服务端的全部游戏列表（供离线缓存同步使用）
+   * @param {Function} [onProgress] 进度回调 (0 ~ 100)
+   */
+  async getAllGames(onProgress = null) {
+    try {
+      onProgress?.(10);
+      const res = await this.getGames({ all: 1, pageSize: 'all' });
+      if (res?.items && Array.isArray(res.items)) {
+        const total = typeof res.total === 'number' ? res.total : res.items.length;
+        // 如果已获取完整列表或数量达到 total，直接返回
+        if (res.items.length >= total || res.items.length > 200) {
+          onProgress?.(100);
+          return { items: res.items, total };
+        }
+      }
+
+      // 服务端若为旧版本限制分页（如单页上限200），通过自动循环分页兜底
+      let allItems = Array.isArray(res?.items) ? [...res.items] : [];
+      let page = 2;
+      const total = res?.total || allItems.length;
+
+      while (allItems.length < total) {
+        const percent = Math.min(95, Math.round(10 + (allItems.length / Math.max(1, total)) * 85));
+        onProgress?.(percent);
+
+        const nextRes = await this.getGames({ page, pageSize: 200 });
+        if (!nextRes?.items || nextRes.items.length === 0) break;
+        allItems = [...allItems, ...nextRes.items];
+        page++;
+        if (page > 50) break; // 安全防死循环上限 (10000款)
+      }
+
+      onProgress?.(100);
+      return { items: allItems, total: total || allItems.length };
+    } catch (err) {
+      onProgress?.(100);
+      throw err;
+    }
   }
 
   async getGameDetail(gameId) {
