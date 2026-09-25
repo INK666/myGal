@@ -13,7 +13,8 @@ import {
   Search,
   X,
   Palette,
-  CloudUpload
+  CloudUpload,
+  Sparkles
 } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 
@@ -22,6 +23,7 @@ export default function Navbar({
   onOpenStats,
   onOpenTags,
   onOpenWallpaper,
+  onOpenBulkScrape,
   searchQuery,
   onSearchChange,
   viewMode,
@@ -130,6 +132,13 @@ export default function Navbar({
             title="统计概览"
           >
             <BarChart3 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={onOpenBulkScrape}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-white bg-gray-900/60 hover:bg-gray-800 border border-white/5 active-press transition-all"
+            title="移动端批量刮削与策略"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
           </button>
         </div>
       </div>

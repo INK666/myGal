@@ -3,7 +3,7 @@
  * 负责记录离线状态下的置顶 (pinned) 与别名 (alias) 修改，并在重新连接到 PC 端时严格、精准地推送更新
  */
 
-import { normalizeServerKey, getLibraryStorageKey } from './cacheStorage';
+import { normalizeServerKey, getLibraryStorageKey, getCoverBlob } from './cacheStorage';
 
 const PENDING_SYNC_EVENT = 'mygal:pending-changes-updated';
 
@@ -59,7 +59,7 @@ export function getPendingChanges(serverUrl, token = '') {
 
     return list.filter((item) => {
       const validId = typeof item?.gameId === 'number' && Number.isFinite(item.gameId) && item.gameId > 0;
-      const validType = item?.type === 'alias' || item?.type === 'pinned';
+      const validType = item?.type === 'alias' || item?.type === 'pinned' || item?.type === 'cover';
       return validId && validType;
     });
   } catch (err) {
@@ -103,7 +103,7 @@ export function enqueueOfflineChange(serverUrl, { gameId, gameName = '', type, v
     return;
   }
 
-  if (type !== 'alias' && type !== 'pinned') {
+  if (type !== 'alias' && type !== 'pinned' && type !== 'cover') {
     console.error('[SyncQueue] Unsupported change type:', type);
     return;
   }
@@ -115,6 +115,9 @@ export function enqueueOfflineChange(serverUrl, { gameId, gameName = '', type, v
     normalizedValue = s ? s : null;
   } else if (type === 'pinned') {
     normalizedValue = Boolean(value);
+  } else if (type === 'cover') {
+    // 封面已持久化在 IndexedDB，队列中仅做轻量引用记录
+    normalizedValue = value || true;
   }
 
   const currentList = getPendingChanges(serverUrl, token);
@@ -196,13 +199,15 @@ export function getPendingChangesForGame(serverUrl, gameId) {
   const list = getPendingChanges(serverUrl);
   const aliasItem = list.find((it) => it.gameId === numId && it.type === 'alias');
   const pinnedItem = list.find((it) => it.gameId === numId && it.type === 'pinned');
+  const coverItem = list.find((it) => it.gameId === numId && it.type === 'cover');
 
   return {
-    hasPending: Boolean(aliasItem || pinnedItem),
+    hasPending: Boolean(aliasItem || pinnedItem || coverItem),
     hasPendingAlias: Boolean(aliasItem),
     pendingAlias: aliasItem ? aliasItem.value : undefined,
     hasPendingPinned: Boolean(pinnedItem),
-    pendingPinned: pinnedItem ? pinnedItem.value : undefined
+    pendingPinned: pinnedItem ? pinnedItem.value : undefined,
+    hasPendingCover: Boolean(coverItem)
   };
 }
 
@@ -224,6 +229,8 @@ export function applyPendingChangesToGames(games, serverUrl) {
       target.alias = item.value;
     } else if (item.type === 'pinned') {
       target.pinned = item.value;
+    } else if (item.type === 'cover') {
+      target.hasCover = true;
     }
   }
 
@@ -266,6 +273,10 @@ export async function pushPendingChangesToPc(serverUrl, api, showToast = null) {
   isSyncingPending = true;
   console.log(`[SyncQueue] Starting to push ${pendingList.length} offline changes to PC:`, pendingList);
 
+  if (typeof showToast === 'function') {
+    showToast('正在推送离线改动至 PC 端...', 'info', 2000);
+  }
+
   let successCount = 0;
   let failedCount = 0;
   const remaining = [];
@@ -303,6 +314,22 @@ export async function pushPendingChangesToPc(serverUrl, api, showToast = null) {
           await api.updateGamePinned(gameId, pinValue);
           successCount++;
           appliedSummaries.push(`《${item.gameName || `#${gameId}`}》${pinValue ? '已置顶' : '取消置顶'}`);
+        } else if (item.type === 'cover') {
+          // 精确推送离线刮削或导入的封面：POST /api/games/:id/cover
+          const blob = await getCoverBlob(serverUrl, gameId, api.token);
+          if (blob) {
+            const dataUrl = await new Promise((res, rej) => {
+              const reader = new FileReader();
+              reader.onload = () => res(reader.result);
+              reader.onerror = rej;
+              reader.readAsDataURL(blob);
+            });
+            await api.uploadGameCover(gameId, dataUrl);
+            successCount++;
+            appliedSummaries.push(`《${item.gameName || `#${gameId}`}》封面已同步至电脑`);
+          } else {
+            console.warn(`[SyncQueue] No cover blob found in IndexedDB for game #${gameId}`);
+          }
         } else {
           console.warn('[SyncQueue] Skipping unsupported type:', item);
         }
@@ -318,16 +345,15 @@ export async function pushPendingChangesToPc(serverUrl, api, showToast = null) {
     savePendingChanges(serverUrl, remaining);
 
     if (successCount > 0) {
-      const summaryText = appliedSummaries.slice(0, 2).join(', ') + (appliedSummaries.length > 2 ? ` 等共${successCount}项` : '');
-      const msg = `已自动将离线修改推送到 PC 端: ${summaryText}`;
-      console.log('[SyncQueue] ' + msg);
+      const msg = '已将离线改动同步至 PC 端';
+      console.log('[SyncQueue] ' + msg, appliedSummaries);
       if (typeof showToast === 'function') {
-        showToast(msg, 'success', 3500);
+        showToast(msg, 'success', 2500);
       }
     }
 
     if (failedCount > 0 && typeof showToast === 'function') {
-      showToast(`${failedCount} 项离线修改暂未推送成功，将在网络恢复后重试`, 'warning');
+      showToast('部分离线改动暂未推送成功，将在网络恢复后重试', 'warning');
     }
 
     return { total: pendingList.length, successCount, failedCount };

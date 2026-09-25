@@ -60,7 +60,7 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
           </div>
           {game.alias && (
             <div className="text-[11px] text-gray-400 truncate mb-1">
-              原名: {game.name}
+              {game.name}
             </div>
           )}
 

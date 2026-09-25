@@ -14,14 +14,13 @@ import {
   Loader2,
   Pencil,
   Check,
-  Copy,
   FileArchive
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
 import CoverImage from './CoverImage';
-import { saveCoverBlob } from '../utils/cacheStorage';
-import { copyToClipboard } from '../utils/clipboard';
+import { saveCoverBlob, updateGameInCache, compressImageBlob } from '../utils/cacheStorage';
+import { scrapeGameCoverLocally } from '../utils/mobileScraper';
 import {
   enqueueOfflineChange,
   removePendingChangeForField,
@@ -49,7 +48,6 @@ export default function GameDetailModal({
   const [newTagColor, setNewTagColor] = useState('#6366f1');
   const [creatingTag, setCreatingTag] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const [copiedTarget, setCopiedTarget] = useState(null); // 'main' | 'original' | 'editing-original' | null
   const coverFileInputRef = useRef(null);
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
@@ -94,21 +92,6 @@ export default function GameDetailModal({
         .catch(() => {});
     }
   }, [game.id, connected, serverUrl]);
-
-  // 复制文本到剪贴板
-  const handleCopyText = async (text, targetKey) => {
-    if (!text) return;
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedTarget(targetKey);
-      showToast(`已复制: ${text}`, 'success');
-      setTimeout(() => {
-        setCopiedTarget((prev) => (prev === targetKey ? null : prev));
-      }, 2000);
-    } else {
-      showToast('复制失败，请长按文本复制', 'error');
-    }
-  };
 
   // 修改游戏别名 (支持在线与离线模式，离线时排入待推送队列)
   const handleSaveAlias = async () => {
@@ -160,53 +143,70 @@ export default function GameDetailModal({
     }
   };
 
-  // 导入手机相册中的图片作为游戏封面
+  // 导入手机相册中的图片作为游戏封面 (支持在线与离线模式)
   const handleImportCoverFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!connected) {
-      showToast('当前处于离线缓存模式，导入封面需先连接 PC 端', 'warning');
-      return;
-    }
     setUploadingCover(true);
     try {
-      showToast('正在上传并设置封面...', 'info');
+      showToast('正在压缩并设置封面...', 'info', 1500);
+
+      // 本地 Canvas 极速缩放压缩到海报标准尺寸 (600x900, 质量 0.85 WebP)，体积从 5~15MB 骤降至数十 KB 瞬时秒传
+      const compressedBlob = await compressImageBlob(file, 600, 900, 0.85);
+
       const reader = new FileReader();
       const base64Promise = new Promise((resolve, reject) => {
         reader.onload = () => resolve(reader.result);
         reader.onerror = (err) => reject(err);
       });
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(compressedBlob);
       const dataUrl = await base64Promise;
 
-      const res = await api.uploadGameCover(detail.id, dataUrl);
-      if (res) {
-        let freshDetail = null;
-        try {
-          freshDetail = await api.getGameDetail(detail.id);
-        } catch {}
+      const nowIso = new Date().toISOString();
+      const nowTs = Date.now();
 
-        const nowIso = new Date().toISOString();
-        const updated = freshDetail || {
-          ...detail,
-          hasCover: true,
-          cover_path: res.coverPath || detail.cover_path,
-          updatedAt: nowIso,
-          coverUrl: `${cleanServerUrl}/api/covers/${detail.id}?v=${Date.now()}`
-        };
-
-        setDetail(updated);
-        onUpdateGame(updated);
-
-        // 异步更新 IndexedDB 封面缓存
-        if (serverUrl) {
-          saveCoverBlob(serverUrl, detail.id, file, Date.now()).catch(() => {});
-        }
-
-        showToast('自定义封面导入成功！', 'success');
-      } else {
-        showToast('导入封面失败', 'error');
+      // 1. 本地 IndexedDB 立即保存轻量封面
+      if (serverUrl) {
+        await saveCoverBlob(serverUrl, detail.id, compressedBlob, nowTs, token);
+        await updateGameInCache(serverUrl, detail.id, { hasCover: true, updatedAt: nowIso }, token);
       }
+
+      // 2. 在线直接推送到 PC，离线排入待同步队列
+      if (connected) {
+        try {
+          await api.uploadGameCover(detail.id, dataUrl);
+          removePendingChangeForField(serverUrl, detail.id, 'cover');
+        } catch (uploadErr) {
+          enqueueOfflineChange(serverUrl, {
+            gameId: detail.id,
+            gameName: detail.name,
+            type: 'cover',
+            value: true,
+            token
+          });
+        }
+      } else {
+        enqueueOfflineChange(serverUrl, {
+          gameId: detail.id,
+          gameName: detail.name,
+          type: 'cover',
+          value: true,
+          token
+        });
+      }
+
+      const updated = {
+        ...detail,
+        hasCover: true,
+        updatedAt: nowIso,
+        coverUrl: cleanServerUrl ? `${cleanServerUrl}/api/covers/${detail.id}?v=${nowTs}` : null
+      };
+
+      setDetail(updated);
+      onUpdateGame(updated);
+
+      const notice = connected ? '自定义封面设置成功！' : '自定义封面已保存在本地，重连电脑后自动同步';
+      showToast(notice, 'success');
     } catch (err) {
       showToast('导入封面出错: ' + (err?.message || String(err)), 'error');
     } finally {
@@ -302,43 +302,84 @@ export default function GameDetailModal({
     }
   };
 
-  // 刮削封面
+  // 刮削封面 (100% 走移动端本地自主刮削，不依赖 PC 端)
   const handleScrapeCover = async () => {
-    if (!connected) {
-      showToast('当前处于离线缓存模式，刮削封面需先连接 PC 端', 'warning');
+    // 无公网环境即时阻断
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      showToast('当前无网络连接，无法进行刮削', 'warning');
       return;
     }
     if (scraping) return;
     setScraping(true);
     try {
-      const res = await api.scrapeCover(detail.id);
-      if (res?.success) {
-        // 刮削成功后，立即拉取服务端最新的完整详情（包含新 coverUrl、updatedAt 与厂商标签）
-        let freshDetail = null;
-        try {
-          freshDetail = await api.getGameDetail(detail.id);
-        } catch {}
-
+      showToast('正在通过手机网络检索封面...', 'info', 2000);
+      const res = await scrapeGameCoverLocally(detail);
+      if (res?.success && res.blob) {
         const nowIso = new Date().toISOString();
-        const updated = freshDetail || {
+        const nowTs = Date.now();
+
+        // 1. 保存到手机本地 IndexedDB
+        if (serverUrl) {
+          await saveCoverBlob(serverUrl, detail.id, res.blob, nowTs, token);
+          await updateGameInCache(serverUrl, detail.id, {
+            hasCover: true,
+            updatedAt: nowIso
+          }, token);
+        }
+
+        // 2. 双端数据同步闭环：在线直传，离线入队
+        if (connected) {
+          try {
+            const reader = new FileReader();
+            const dataUrlPromise = new Promise((resolve, reject) => {
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+            });
+            reader.readAsDataURL(res.blob);
+            const dataUrl = await dataUrlPromise;
+            await api.uploadGameCover(detail.id, dataUrl);
+            removePendingChangeForField(serverUrl, detail.id, 'cover');
+          } catch (uploadErr) {
+            console.warn('[GameDetailModal] Upload cover to PC failed, queuing offline:', uploadErr);
+            enqueueOfflineChange(serverUrl, {
+              gameId: detail.id,
+              gameName: detail.name,
+              type: 'cover',
+              value: true,
+              token
+            });
+          }
+        } else {
+          enqueueOfflineChange(serverUrl, {
+            gameId: detail.id,
+            gameName: detail.name,
+            type: 'cover',
+            value: true,
+            token
+          });
+        }
+
+        // 3. 立即刷新详情界面
+        const updated = {
           ...detail,
           hasCover: true,
-          cover_path: res.coverPath,
           updatedAt: nowIso,
-          coverUrl: `${cleanServerUrl}/api/covers/${detail.id}?v=${Date.now()}`,
-          tags: res.vendorTags && res.vendorTags.length > 0
-            ? Array.from(new Set([...(detail.tags || []), ...res.vendorTags]))
-            : detail.tags
+          coverUrl: cleanServerUrl ? `${cleanServerUrl}/api/covers/${detail.id}?v=${nowTs}` : null
         };
-
         setDetail(updated);
         onUpdateGame(updated);
-        showToast(`封面刮削成功！(来源: ${res.provider})`, 'success');
+
+        const syncNotice = connected ? '' : ' (已保存在手机，连线电脑后自动同步)';
+        showToast(`封面刮削成功！[来源: ${res.provider}]${syncNotice}`, 'success');
       } else {
         showToast('刮削失败：' + (res?.error || '未匹配到封面'), 'error');
       }
     } catch (err) {
-      showToast('刮削出错: ' + err.message, 'error');
+      if (err?.message === 'NO_NETWORK' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+        showToast('当前无网络连接，无法进行刮削', 'warning');
+      } else {
+        showToast('刮削出错: ' + (err?.message || String(err)), 'error');
+      }
     } finally {
       setScraping(false);
     }
@@ -427,26 +468,8 @@ export default function GameDetailModal({
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                  <div className="text-[10px] text-gray-400 font-mono flex items-center justify-between gap-1 pt-0.5">
-                    <span className="truncate select-text">原名: {detail.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyText(detail.name, 'editing-original')}
-                      className="text-[10px] text-gray-400 hover:text-white shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-800 border border-white/5 active-press transition-colors"
-                      title="复制原名"
-                    >
-                      {copiedTarget === 'editing-original' ? (
-                        <>
-                          <Check className="w-2.5 h-2.5 text-emerald-400" />
-                          <span className="text-emerald-400">已复制</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-2.5 h-2.5" />
-                          <span>复制</span>
-                        </>
-                      )}
-                    </button>
+                  <div className="text-[10px] text-gray-400 font-mono truncate select-text pt-0.5">
+                    {detail.name}
                   </div>
                 </div>
               ) : (
@@ -455,77 +478,34 @@ export default function GameDetailModal({
                     const pendingInfo = getPendingChangesForGame(serverUrl, detail.id);
                     return (
                       <>
-                        <div className="flex items-center justify-between gap-1 mb-1">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="text-[11px] text-gray-500 font-medium">
-                              {detail.alias ? '游戏别名 / 译名' : '游戏名称'}
-                            </span>
+                        <div className="flex items-start justify-between gap-1.5 mb-1">
+                          <h2 className="text-base font-bold text-white leading-snug break-words select-text cursor-text flex-1 min-w-0">
+                            {detail.alias || detail.name}
+                          </h2>
+                          <div className="flex items-center gap-1 shrink-0 pt-0.5">
                             {pendingInfo.hasPendingAlias && (
-                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-medium border border-amber-500/30">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium border border-amber-500/30">
                                 待推送
                               </span>
                             )}
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => handleCopyText(detail.alias || detail.name, 'main')}
-                              className="text-[10px] text-gray-300 hover:text-white bg-gray-850 hover:bg-gray-800 px-2 py-0.5 rounded-md border border-white/10 flex items-center gap-1 transition-all active-press"
-                              title="一键复制游戏名称"
-                            >
-                              {copiedTarget === 'main' ? (
-                                <>
-                                  <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-                                  <span className="text-emerald-400 font-medium">已复制</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3 h-3 text-gray-400 shrink-0" />
-                                  <span>复制</span>
-                                </>
-                              )}
-                            </button>
                             <button
                               onClick={() => {
                                 setAliasInput(detail.alias || '');
                                 setEditingAlias(true);
                               }}
-                              className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md hover:bg-indigo-500/10 transition-colors"
+                              className="p-1 rounded-lg text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 active-press transition-colors"
+                              title="修改别名"
                             >
-                              <Pencil className="w-2.5 h-2.5" />
-                              <span>{detail.alias ? '修改别名' : '设置别名'}</span>
+                              <Pencil className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
 
-                        <h2 className="text-base font-bold text-white leading-snug break-words select-text cursor-text">
-                          {detail.alias || detail.name}
-                        </h2>
-
                         {detail.alias && (
-                          <div className="mt-1.5 p-2 rounded-xl bg-gray-900/80 border border-white/5 flex items-center justify-between gap-2 shadow-sm">
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[10px] text-gray-500 font-mono">原名:</div>
-                              <div className="text-[11px] text-gray-300 font-mono break-words select-text cursor-text leading-tight mt-0.5">
-                                {detail.name}
-                              </div>
+                          <div className="mt-1.5 p-2 rounded-xl bg-gray-900/80 border border-white/5 shadow-sm">
+                            <div className="text-[11px] text-gray-400 font-mono break-words select-text cursor-text leading-tight">
+                              {detail.name}
                             </div>
-                            <button
-                              onClick={() => handleCopyText(detail.name, 'original')}
-                              className="shrink-0 text-[10px] text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-750 px-2 py-1 rounded-lg border border-white/10 flex items-center gap-1 transition-colors active-press"
-                              title="复制游戏原名"
-                            >
-                              {copiedTarget === 'original' ? (
-                                <>
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                  <span className="text-emerald-400 font-medium">已复制</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3 h-3 text-gray-400" />
-                                  <span>复制原名</span>
-                                </>
-                              )}
-                            </button>
                           </div>
                         )}
                       </>
@@ -589,16 +569,12 @@ export default function GameDetailModal({
               <span className="text-xs font-bold text-white">
                 {scraping ? '刮削中...' : '重新刮削'}
               </span>
-              <span className="text-[10px] text-gray-400">云端匹配封面</span>
+              <span className="text-[10px] text-gray-400">手机本地检索</span>
             </button>
 
             {/* Import Custom Cover from Phone */}
             <button
               onClick={() => {
-                if (!connected) {
-                  showToast('当前处于离线缓存模式，导入封面需先连接 PC 端', 'warning');
-                  return;
-                }
                 coverFileInputRef.current?.click();
               }}
               disabled={uploadingCover}

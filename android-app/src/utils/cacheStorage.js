@@ -112,14 +112,27 @@ export async function saveServerCache(serverUrl, data = {}, token = '') {
       });
     }
 
+    // 安全防空覆写合并保护：若传入空数组，绝不抹除已有缓存数据
+    const safeGames = ('games' in data && Array.isArray(data.games) && data.games.length > 0)
+      ? data.games
+      : (existing?.games || []);
+
+    const safeTags = ('tags' in data && Array.isArray(data.tags) && data.tags.length > 0)
+      ? data.tags
+      : (existing?.tags || []);
+
+    const safeRootPaths = ('rootPaths' in data && Array.isArray(data.rootPaths) && data.rootPaths.length > 0)
+      ? data.rootPaths
+      : (existing?.rootPaths || []);
+
     const payload = {
       serverUrl: targetKey,
       realServerUrl: rawKey,
-      games: 'games' in data ? (Array.isArray(data.games) ? data.games : []) : (existing?.games || []),
-      total: 'total' in data ? Number(data.total) || 0 : ('games' in data && Array.isArray(data.games) ? data.games.length : (existing?.total || 0)),
-      tags: 'tags' in data ? (Array.isArray(data.tags) ? data.tags : []) : (existing?.tags || []),
-      rootPaths: 'rootPaths' in data ? (Array.isArray(data.rootPaths) ? data.rootPaths : []) : (existing?.rootPaths || []),
-      stats: 'stats' in data ? data.stats : (existing?.stats || null),
+      games: safeGames,
+      total: ('total' in data && Number(data.total) > 0) ? Number(data.total) : (safeGames.length || existing?.total || 0),
+      tags: safeTags,
+      rootPaths: safeRootPaths,
+      stats: ('stats' in data && data.stats) ? data.stats : (existing?.stats || null),
       updatedAt: Date.now()
     };
 
@@ -215,6 +228,18 @@ export async function updateGameInServerCache(serverUrl, updatedGame, token = ''
   } catch (err) {
     console.warn('Failed to update game in server cache:', err);
   }
+}
+
+/**
+ * 局部更新指定服务器离线缓存中的单款游戏 (支持 (serverUrl, gameId, partial, token) 或 (serverUrl, updatedGame, token))
+ */
+export async function updateGameInCache(serverUrl, gameIdOrGame, partialOrToken = {}, token = '') {
+  if (typeof gameIdOrGame === 'object' && gameIdOrGame !== null) {
+    return updateGameInServerCache(serverUrl, gameIdOrGame, typeof partialOrToken === 'string' ? partialOrToken : token);
+  }
+  const id = Number(gameIdOrGame);
+  const partial = typeof partialOrToken === 'object' && partialOrToken !== null ? partialOrToken : {};
+  return updateGameInServerCache(serverUrl, { id, ...partial }, token);
 }
 
 /**

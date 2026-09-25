@@ -21,6 +21,7 @@ import TagManagerModal from './components/TagManagerModal';
 import StatsModal from './components/StatsModal';
 import FileTransferModal from './components/FileTransferModal';
 import WallpaperModal, { PRESET_WALLPAPERS } from './components/WallpaperModal';
+import BulkScrapeModal from './components/BulkScrapeModal';
 import {
   getServerCache,
   saveServerCache,
@@ -84,6 +85,9 @@ function MainApp() {
   );
   const syncInProgressRef = useRef(false);
   const loadGamesRef = useRef(null);
+  const cachedGamesRef = useRef([]);
+  const prevConnectedRef = useRef(false);
+  const bottomSentinelRef = useRef(null);
 
   // 监听待同步离线修改队列变化
   useEffect(() => {
@@ -111,6 +115,7 @@ function MainApp() {
   const [connectOpen, setConnectOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
+  const [bulkScrapeOpen, setBulkScrapeOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
   const [fileTransferGame, setFileTransferGame] = useState(null);
 
@@ -129,7 +134,7 @@ function MainApp() {
     localStorage.setItem('mygal_view_mode', mode);
   };
 
-  // 离线状态下在内存中过滤与排序完整缓存数据
+  // 内存中高效过滤与排序完整缓存数据 (纯本地执行，零网络延迟)
   const filterOfflineGames = useCallback(
     (allCachedGames) => {
       if (!Array.isArray(allCachedGames)) return [];
@@ -151,10 +156,14 @@ function MainApp() {
         filtered = filtered.filter((g) => Array.isArray(g.tags) && g.tags.includes(activeTag));
       }
 
-      // 目录过滤
+      // 目录过滤 (兼容多路径、root_path_id 与 manual)
       if (activeRootPathId !== null) {
         filtered = filtered.filter(
-          (g) => Array.isArray(g.rootPathIds) && g.rootPathIds.includes(activeRootPathId)
+          (g) =>
+            (Array.isArray(g.rootPathIds) && g.rootPathIds.includes(activeRootPathId)) ||
+            g.root_path_id === activeRootPathId ||
+            g.rootPathId === activeRootPathId ||
+            (activeRootPathId === 'others' && (g.isManual || g.is_manual))
         );
       }
 
@@ -164,8 +173,8 @@ function MainApp() {
           return a.pinned ? -1 : 1;
         }
         if (sortField === 'imported_at') {
-          const tA = Number(a.importedAt) || 0;
-          const tB = Number(b.importedAt) || 0;
+          const tA = Number(a.importedAt || a.imported_at) || 0;
+          const tB = Number(b.importedAt || b.imported_at) || 0;
           return sortOrder === 'asc' ? tA - tB : tB - tA;
         } else {
           const nA = String(a.alias || a.name || '');
@@ -179,220 +188,204 @@ function MainApp() {
     [debouncedQuery, activeTag, activeRootPathId, sortField, sortOrder]
   );
 
-  // 后台全量同步离线缓存与全库封面预热 (采用 20KB 轻量化 WebP，平滑且不爆内存)
-  const syncOfflineCache = useCallback(async () => {
-    if (!connected || !serverUrl || syncInProgressRef.current) return;
-    syncInProgressRef.current = true;
-    setCacheProgress(2);
-
-    try {
-      // 1. 优先推送离线期间在移动端积累的修改到 PC 端 (严格保证先推后拉，绝不推错或被旧数据覆盖)
-      const pushResult = await pushPendingChangesToPc(serverUrl, api, showToast);
-      if (pushResult.successCount > 0) {
-        // 如果有成功推送的项目，静默重新拉取当前分页以展示最新 PC 确认状态
-        loadGamesRef.current?.(1, false);
-      }
-
-      const [tagList, pathList, allGamesRes] = await Promise.all([
-        api.getTags().catch(() => []),
-        api.getRootPaths().catch(() => []),
-        api.getAllGames().catch((err) => {
-          console.warn('getAllGames failed during sync:', err);
-          return null;
-        })
-      ]);
-
-      const safeTags = Array.isArray(tagList) ? tagList : [];
-      const safePaths = Array.isArray(pathList) ? pathList : [];
-      setTags(safeTags);
-      setRootPaths(safePaths);
-
-      if (allGamesRes?.items && Array.isArray(allGamesRes.items)) {
-        // 若仍有个别离线项尚未推送成功，在本地缓存保存前叠加保护
-        const allItems = applyPendingChangesToGames(allGamesRes.items, serverUrl);
-        const realTotal = typeof allGamesRes.total === 'number' ? allGamesRes.total : allItems.length;
-
-        // 保存完整游戏列表与分类元数据到 IndexedDB
-        await saveServerCache(serverUrl, {
-          games: allItems,
-          total: realTotal,
-          tags: safeTags,
-          rootPaths: safePaths
-        });
-
-        updateProfileGameCount?.(serverUrl, realTotal);
-        setCachedTotal(allItems.length);
-        setCacheProgress(5);
-
-        // 全量并发预热所有游戏封面 (轻量化 20KB WebP，已缓存的瞬间跳过，新封面平滑推进)
-        await preloadCovers(
-          serverUrl,
-          allItems,
-          token,
-          (coverPct) => {
-            setCacheProgress(Math.min(99, Math.round(5 + coverPct * 0.94)));
-          }
-        );
-      } else {
-        await saveServerCache(serverUrl, { tags: safeTags, rootPaths: safePaths });
-      }
-
-      setCacheProgress(100);
-      setTimeout(() => {
-        setCacheProgress(null);
-      }, 500);
-    } catch (err) {
-      console.warn('Sync offline cache error:', err);
-      setCacheProgress(null);
-    } finally {
-      syncInProgressRef.current = false;
-    }
-  }, [connected, serverUrl, token, showToast, updateProfileGameCount]);
-
-  // 加载元数据
+  // 加载元数据 (带自愈提取与防丢失保护)
   const loadMetadata = useCallback(async () => {
     if (!serverUrl) {
       setTags([]);
       setRootPaths([]);
+      cachedGamesRef.current = [];
       return;
     }
-    if (connected) {
-      try {
-        const [tagList, pathList] = await Promise.all([
-          api.getTags().catch(() => []),
-          api.getRootPaths().catch(() => [])
-        ]);
-        const safeTags = Array.isArray(tagList) ? tagList : [];
-        const safePaths = Array.isArray(pathList) ? pathList : [];
-        setTags(safeTags);
-        setRootPaths(safePaths);
-      } catch {}
-    } else if (serverUrl) {
-      // 离线时从缓存读取元数据
-      const cache = await getServerCache(serverUrl);
-      if (cache) {
-        if (Array.isArray(cache.tags)) setTags(cache.tags);
-        if (Array.isArray(cache.rootPaths)) setRootPaths(cache.rootPaths);
-        if (typeof cache.total === 'number' || (Array.isArray(cache.games) && cache.games.length > 0)) {
-          setCachedTotal(Array.isArray(cache.games) ? cache.games.length : cache.total);
+
+    const cache = await getServerCache(serverUrl);
+    let resolvedTags = Array.isArray(cache?.tags) ? cache.tags : [];
+    let resolvedPaths = Array.isArray(cache?.rootPaths) ? cache.rootPaths : [];
+    const cachedGames = Array.isArray(cache?.games) ? cache.games : [];
+
+    // 标签自愈提取机制：若缓存中的标签列表为空，从已有游戏列表中动态反推提取，保证离线不丢标签
+    if (resolvedTags.length === 0 && cachedGames.length > 0) {
+      const tagSet = new Set();
+      for (const g of cachedGames) {
+        if (Array.isArray(g.tags)) {
+          for (const t of g.tags) {
+            const name = typeof t === 'string' ? t.trim() : t?.name?.trim();
+            if (name) tagSet.add(name);
+          }
         }
       }
+      if (tagSet.size > 0) {
+        resolvedTags = Array.from(tagSet)
+          .sort()
+          .map((name) => ({ id: name, name, color: '#6366f1' }));
+      }
     }
-  }, [connected, serverUrl]);
 
-  // 加载游戏列表 (在线服务端分页 / 离线全量内存分页)
+    setTags(resolvedTags);
+    setRootPaths(resolvedPaths);
+
+    if (cachedGames.length > 0) {
+      cachedGamesRef.current = cachedGames;
+      setCachedTotal(cachedGames.length);
+      if (cache?.updatedAt) {
+        setCachedTime(new Date(cache.updatedAt).toLocaleString('zh-CN'));
+      }
+    }
+  }, [serverUrl]);
+
+  // 本地优先加载游戏列表 (统一走前端内存分页，彻底杜绝断网翻页报错)
   const loadGames = useCallback(
     async (targetPage = 1, isAppend = false) => {
       const PAGE_SIZE = 40;
 
-      if (connected) {
-        if (isAppend) {
-          setLoadingMore(true);
-        } else {
-          setLoading(true);
-        }
-
-        try {
-          const res = await api.getGames({
-            page: targetPage,
-            pageSize: PAGE_SIZE,
-            query: debouncedQuery,
-            tag: activeTag,
-            rootPathId: activeRootPathId,
-            sort: sortField,
-            order: sortOrder
-          });
-
-          if (res?.items) {
-            // 叠加应用本地待推送修改（避免网络延迟导致短暂闪回旧数据）
-            const safeItems = applyPendingChangesToGames(res.items, serverUrl);
-            if (isAppend) {
-              setGames((prev) => [...prev, ...safeItems]);
-            } else {
-              setGames(safeItems);
-            }
-            setTotal(res.total || 0);
-            setPage(targetPage);
-            setHasMore(targetPage * PAGE_SIZE < res.total);
-            setIsOfflineCache(false);
-          }
-        } catch (err) {
-          showToast('加载游戏列表失败: ' + err.message, 'error');
-        } finally {
-          setLoading(false);
-          setLoadingMore(false);
-        }
-      } else if (serverUrl) {
-        // 离线模式：从 IndexedDB 读取全量缓存并在前端分页
-        if (isAppend) {
-          setLoadingMore(true);
-        } else {
-          setLoading(true);
-        }
-
-        try {
-          const cache = await getServerCache(serverUrl);
-          if (cache && Array.isArray(cache.games) && cache.games.length > 0) {
-            const allFiltered = filterOfflineGames(cache.games);
-            const startIndex = (targetPage - 1) * PAGE_SIZE;
-            const pageSlice = allFiltered.slice(startIndex, startIndex + PAGE_SIZE);
-
-            if (isAppend) {
-              setGames((prev) => [...prev, ...pageSlice]);
-            } else {
-              setGames(pageSlice);
-            }
-            setTotal(allFiltered.length);
-            setPage(targetPage);
-            setHasMore(targetPage * PAGE_SIZE < allFiltered.length);
-            setIsOfflineCache(true);
-            setCachedTotal(cache.games.length);
-            setCachedTime(
-              cache.updatedAt ? new Date(cache.updatedAt).toLocaleString('zh-CN') : null
-            );
-            updateProfileGameCount?.(
-              serverUrl,
-              typeof cache.total === 'number' ? cache.total : cache.games.length
-            );
-          } else {
-            setGames([]);
-            setTotal(0);
-            setIsOfflineCache(false);
-            setHasMore(false);
-          }
-        } catch {
-          setGames([]);
-          setTotal(0);
-          setIsOfflineCache(false);
-          setHasMore(false);
-        } finally {
-          setLoading(false);
-          setLoadingMore(false);
-        }
-      } else {
+      if (!serverUrl) {
         setGames([]);
         setTotal(0);
-        setIsOfflineCache(false);
         setHasMore(false);
+        return;
+      }
+
+      if (isAppend) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
+
+      try {
+        let allItems = cachedGamesRef.current;
+        if (!Array.isArray(allItems) || allItems.length === 0) {
+          const cache = await getServerCache(serverUrl);
+          if (cache && Array.isArray(cache.games) && cache.games.length > 0) {
+            allItems = cache.games;
+            cachedGamesRef.current = cache.games;
+          } else {
+            allItems = [];
+          }
+        }
+
+        // 叠加应用本地待推送修改（避免网络延迟导致短暂闪回旧数据）
+        const safeItems = applyPendingChangesToGames(allItems, serverUrl);
+        const allFiltered = filterOfflineGames(safeItems);
+        const startIndex = (targetPage - 1) * PAGE_SIZE;
+        const pageSlice = allFiltered.slice(startIndex, startIndex + PAGE_SIZE);
+
+        if (isAppend) {
+          setGames((prev) => [...prev, ...pageSlice]);
+        } else {
+          setGames(pageSlice);
+        }
+
+        setTotal(allFiltered.length);
+        setPage(targetPage);
+        setHasMore(targetPage * PAGE_SIZE < allFiltered.length);
+        setCachedTotal(allItems.length);
+        setIsOfflineCache(!connected);
+      } catch (err) {
+        console.warn('Failed to load local games:', err);
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
       }
     },
-    [
-      connected,
-      serverUrl,
-      debouncedQuery,
-      activeTag,
-      activeRootPathId,
-      sortField,
-      sortOrder,
-      showToast,
-      filterOfflineGames,
-      updateProfileGameCount
-    ]
+    [serverUrl, connected, filterOfflineGames]
   );
 
   loadGamesRef.current = loadGames;
 
-  // 依赖变化触发重新加载
+  // 后台全量同步离线缓存与全库封面预热
+  const syncOfflineCache = useCallback(
+    async (isManual = false) => {
+      if (!connected || !serverUrl || syncInProgressRef.current) return;
+      syncInProgressRef.current = true;
+      setCacheProgress(2);
+
+      try {
+        // 1. 优先推送离线期间在移动端积累的修改到 PC 端 (严格保证先推后拉)
+        await pushPendingChangesToPc(serverUrl, api, isManual ? showToast : null);
+
+        // 2. 并行拉取 PC 端最新元数据与完整游戏列表
+        const [tagList, pathList, allGamesRes] = await Promise.all([
+          api.getTags().catch(() => null),
+          api.getRootPaths().catch(() => null),
+          api.getAllGames().catch((err) => {
+            console.warn('getAllGames failed during sync:', err);
+            return null;
+          })
+        ]);
+
+        const safeTags = Array.isArray(tagList) && tagList.length > 0 ? tagList : null;
+        const safePaths = Array.isArray(pathList) && pathList.length > 0 ? pathList : null;
+
+        if (allGamesRes?.items && Array.isArray(allGamesRes.items)) {
+          const allItems = applyPendingChangesToGames(allGamesRes.items, serverUrl);
+          const realTotal = typeof allGamesRes.total === 'number' ? allGamesRes.total : allItems.length;
+
+          // 保存完整游戏列表与分类元数据到 IndexedDB (带安全防覆写保护)
+          await saveServerCache(serverUrl, {
+            games: allItems,
+            total: realTotal,
+            ...(safeTags ? { tags: safeTags } : {}),
+            ...(safePaths ? { rootPaths: safePaths } : {})
+          });
+
+          cachedGamesRef.current = allItems;
+          if (safeTags) setTags(safeTags);
+          if (safePaths) setRootPaths(safePaths);
+          setCachedTotal(allItems.length);
+          setCachedTime(new Date().toLocaleString('zh-CN'));
+          updateProfileGameCount?.(serverUrl, realTotal);
+
+          // 静默刷新本地视图
+          loadGamesRef.current?.(1, false);
+
+          if (isManual) {
+            showToast(`已从 PC 同步最新数据 (共 ${allItems.length} 款游戏)`, 'success', 2000);
+          }
+
+          // 全量并发预热所有游戏封面 (轻量化 20KB WebP)
+          setCacheProgress(5);
+          await preloadCovers(
+            serverUrl,
+            allItems,
+            token,
+            (coverPct) => {
+              setCacheProgress(Math.min(99, Math.round(5 + coverPct * 0.94)));
+            }
+          );
+        } else if (safeTags || safePaths) {
+          await saveServerCache(serverUrl, {
+            ...(safeTags ? { tags: safeTags } : {}),
+            ...(safePaths ? { rootPaths: safePaths } : {})
+          });
+          if (safeTags) setTags(safeTags);
+          if (safePaths) setRootPaths(safePaths);
+        }
+
+        setCacheProgress(100);
+        setTimeout(() => {
+          setCacheProgress(null);
+        }, 500);
+      } catch (err) {
+        console.warn('Sync offline cache error:', err);
+        setCacheProgress(null);
+        if (isManual) {
+          showToast('从 PC 同步失败: ' + err.message, 'error');
+        }
+      } finally {
+        syncInProgressRef.current = false;
+      }
+    },
+    [connected, serverUrl, token, showToast, updateProfileGameCount]
+  );
+
+  // 感知时机 ①：连接建立的瞬间（首次连上 PC 或断线重连恢复），自动触发后台静默同步
+  useEffect(() => {
+    if (!prevConnectedRef.current && connected) {
+      syncOfflineCache(false);
+    }
+    prevConnectedRef.current = connected;
+  }, [connected, syncOfflineCache]);
+
+  // 依赖变化触发本地过滤刷新 (不再依赖网络状态，纯本地毫秒级过滤)
   useEffect(() => {
     if (!serverUrl) {
       setGames([]);
@@ -405,12 +398,7 @@ function MainApp() {
     }
     loadMetadata();
     loadGames(1, false);
-
-    if (connected) {
-      syncOfflineCache();
-    }
   }, [
-    connected,
     serverUrl,
     debouncedQuery,
     activeTag,
@@ -418,16 +406,39 @@ function MainApp() {
     sortField,
     sortOrder,
     loadMetadata,
-    loadGames,
-    syncOfflineCache
+    loadGames
   ]);
+
+  // 底部无限滚动自动触底加载 (距底 300px 自动无感预加载下一页)
+  useEffect(() => {
+    if (!hasMore || loadingMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadGames(page + 1, true);
+        }
+      },
+      { rootMargin: '300px' }
+    );
+    const el = bottomSentinelRef.current;
+    if (el) observer.observe(el);
+    return () => {
+      if (el) observer.unobserve(el);
+    };
+  }, [hasMore, loadingMore, page, loadGames]);
 
   // 更新局部游戏状态并同步到 IndexedDB 缓存
   const handleUpdateGame = (updatedGame) => {
+    // 1. 同步更新内存中的全量列表缓存
+    if (Array.isArray(cachedGamesRef.current)) {
+      cachedGamesRef.current = cachedGamesRef.current.map((g) =>
+        g.id === updatedGame.id ? { ...g, ...updatedGame } : g
+      );
+    }
+    // 2. 更新当前渲染列表
     setGames((prev) => {
       const next = prev.map((g) => (g.id === updatedGame.id ? { ...g, ...updatedGame } : g));
       if ('pinned' in updatedGame) {
-        // 置顶切换后，在当前列表视图中即时将置顶项置于最前端
         return [...next].sort((a, b) => {
           if (Boolean(a.pinned) !== Boolean(b.pinned)) {
             return a.pinned ? -1 : 1;
@@ -501,6 +512,7 @@ function MainApp() {
         onOpenStats={() => setStatsOpen(true)}
         onOpenTags={() => setTagsOpen(true)}
         onOpenWallpaper={() => setWallpaperOpen(true)}
+        onOpenBulkScrape={() => setBulkScrapeOpen(true)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
@@ -521,11 +533,19 @@ function MainApp() {
         rootPaths={rootPaths}
         onRefreshList={async () => {
           if (serverUrl) {
-            await testConnection(serverUrl, token, false, true);
+            const pingRes = await testConnection(serverUrl, token, false, true);
+            if (pingRes?.success) {
+              showToast('正在从 PC 端同步数据...', 'info', 1500);
+              await syncOfflineCache(true);
+            } else {
+              showToast('未连通 PC 端，已刷新本地离线数据', 'warning', 2500);
+              await loadMetadata();
+              loadGames(1, false);
+            }
+          } else {
+            await loadMetadata();
+            loadGames(1, false);
           }
-          loadMetadata();
-          loadGames(1, false);
-          syncOfflineCache();
         }}
         loading={loading}
         cacheProgress={cacheProgress}
@@ -653,7 +673,7 @@ function MainApp() {
                   ))}
                 </div>
 
-                {/* Load More Button */}
+                {/* Load More Button & Infinite Scroll Sentinel */}
                 {hasMore && (
                   <div className="pt-5 pb-3 text-center">
                     <button
@@ -675,6 +695,7 @@ function MainApp() {
                     </button>
                   </div>
                 )}
+                {hasMore && <div ref={bottomSentinelRef} className="h-4 w-full pointer-events-none" />}
               </>
             )}
           </>
@@ -736,6 +757,18 @@ function MainApp() {
         wallpaperConfig={wallpaperConfig}
         onUpdateWallpaper={handleUpdateWallpaper}
         showToast={showToast}
+      />
+
+      {/* Bulk Scrape Modal */}
+      <BulkScrapeModal
+        isOpen={bulkScrapeOpen}
+        onClose={() => setBulkScrapeOpen(false)}
+        allGames={cachedGamesRef.current && cachedGamesRef.current.length > 0 ? cachedGamesRef.current : games}
+        rootPaths={rootPaths}
+        onBulkComplete={() => {
+          loadMetadata();
+          loadGames(1, false);
+        }}
       />
     </div>
   );

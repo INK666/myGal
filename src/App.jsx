@@ -207,6 +207,7 @@ function App() {
   const [totalGames, setTotalGames] = useState(0);
   const [bulkScrapeLoading, setBulkScrapeLoading] = useState(false);
   const [bulkScrapeProgress, setBulkScrapeProgress] = useState({ current: 0, total: 0 });
+  const [mainPageRefreshing, setMainPageRefreshing] = useState(false);
   const [status, setStatus] = useState({ type: '', message: '' });
   const [appVersion, setAppVersion] = useState('');
   const [showRunHistory, setShowRunHistory] = useState(false);
@@ -661,6 +662,43 @@ function App() {
       maybeAutoScrapeImported(result);
     }
     return result;
+  };
+
+  const handleMainPageRefresh = async () => {
+    if (mainPageRefreshing || loading || bulkScrapeLoading) return;
+    setMainPageRefreshing(true);
+    try {
+      if (selectedRootPathId === null) {
+        // 刷新全部有效根目录
+        const result = await handleRefreshAll();
+        if (result?.success) {
+          const imported = Number(result?.imported ?? 0);
+          const deleted = Number(result?.deleted ?? 0);
+          showStatus('success', `全部刷新完成：新增 ${imported} 款，清理 ${deleted} 款`);
+        } else {
+          showStatus('error', '刷新失败：' + (result?.error || '未知错误'));
+        }
+      } else if (selectedRootPathId === 'others') {
+        // 非根目录单独加入的游戏，重新拉取列表
+        await handleGameUpdate();
+        showStatus('success', '已重新加载游戏列表');
+      } else {
+        // 仅刷新当前选中的特定根目录
+        const rId = Number(selectedRootPathId);
+        const result = await handleRefreshRoot(rId);
+        if (result?.success) {
+          const imported = Number(result?.imported ?? 0);
+          const deleted = Number(result?.deleted ?? 0);
+          showStatus('success', `目录刷新完成：新增 ${imported} 款，清理 ${deleted} 款`);
+        } else {
+          showStatus('error', '刷新失败：' + (result?.error || '未知错误'));
+        }
+      }
+    } catch (err) {
+      showStatus('error', '刷新失败：' + (err?.message || String(err)));
+    } finally {
+      setMainPageRefreshing(false);
+    }
   };
 
   const handleSettingsSave = async () => {
@@ -2111,82 +2149,6 @@ function App() {
                       全部
                     </button>
 
-                    {tags.length > 0 && (
-                      <div ref={tagFilterPopoverRef} className="relative min-w-0">
-                        <button
-                          type="button"
-                          ref={tagFilterButtonRef}
-                          onClick={() => {
-                            const next = !tagFilterOpen;
-                            if (next) {
-                              setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
-                              setRootFilterOpen(false);
-                            }
-                            setTagFilterOpen(next);
-                          }}
-                          className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${selectedTag && !searchQuery
-                            ? 'text-white shadow-sm'
-                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                            }`}
-                          style={{
-                            backgroundColor: selectedTag && !searchQuery ? (selectedTagInfo?.color ? `color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined) : undefined,
-                            border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined
-                          }}
-                          aria-expanded={tagFilterOpen ? 'true' : 'false'}
-                          aria-label="展开标签筛选"
-                        >
-                          <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
-                          <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </button>
-
-                        {tagFilterOpen && (
-                          <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
-                            <div className="flex items-center justify-between gap-3 mb-3">
-                              <div className="text-sm font-medium text-gray-200">标签</div>
-                              <button
-                                type="button"
-                                onClick={() => setTagFilterOpen(false)}
-                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
-                                aria-label="收起标签筛选"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                              </button>
-                            </div>
-
-                            <div className="max-h-[50vh] overflow-auto pr-1">
-                              <div className="flex flex-wrap gap-2">
-                                {tags.map(tag => (
-                                  <button
-                                    key={tag.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedTag(tag.name);
-                                      setSearchQuery('');
-                                      setTagFilterOpen(false);
-                                    }}
-                                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${selectedTag === tag.name && !searchQuery
-                                      ? 'text-white shadow-sm'
-                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
-                                      }`}
-                                    style={{
-                                      backgroundColor: selectedTag === tag.name && !searchQuery ? `color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined,
-                                      border: selectedTag === tag.name && !searchQuery ? `1px solid color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined
-                                    }}
-                                  >
-                                    {tag.name}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
                     {rootPaths.length > 0 && (
                       <div ref={rootFilterPopoverRef} className="relative min-w-0">
                         <button
@@ -2272,6 +2234,82 @@ function App() {
                         )}
                       </div>
                     )}
+
+                    {tags.length > 0 && (
+                      <div ref={tagFilterPopoverRef} className="relative min-w-0">
+                        <button
+                          type="button"
+                          ref={tagFilterButtonRef}
+                          onClick={() => {
+                            const next = !tagFilterOpen;
+                            if (next) {
+                              setTagFilterPopoverStyle(computeFilterPopoverStyle(tagFilterButtonRef.current));
+                              setRootFilterOpen(false);
+                            }
+                            setTagFilterOpen(next);
+                          }}
+                          className={`tag inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors max-w-[240px] ${selectedTag && !searchQuery
+                            ? 'text-white shadow-sm'
+                            : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                            }`}
+                          style={{
+                            backgroundColor: selectedTag && !searchQuery ? (selectedTagInfo?.color ? `color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined) : undefined,
+                            border: selectedTag && !searchQuery && selectedTagInfo?.color ? `1px solid color-mix(in srgb, ${selectedTagInfo.color}, transparent 60%)` : undefined
+                          }}
+                          aria-expanded={tagFilterOpen ? 'true' : 'false'}
+                          aria-label="展开标签筛选"
+                        >
+                          <span className="truncate">{selectedTag && !searchQuery ? selectedTag : '标签'}</span>
+                          <svg className={`w-4 h-4 transition-transform ${tagFilterOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+
+                        {tagFilterOpen && (
+                          <div style={tagFilterPopoverStyle || undefined} className="z-50 rounded-xl bg-gray-950/75 backdrop-blur-md border border-white/10 shadow-xl shadow-black/25 p-4">
+                            <div className="flex items-center justify-between gap-3 mb-3">
+                              <div className="text-sm font-medium text-gray-200">标签</div>
+                              <button
+                                type="button"
+                                onClick={() => setTagFilterOpen(false)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition-colors"
+                                aria-label="收起标签筛选"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+
+                            <div className="max-h-[50vh] overflow-auto pr-1">
+                              <div className="flex flex-wrap gap-2">
+                                {tags.map(tag => (
+                                  <button
+                                    key={tag.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedTag(tag.name);
+                                      setSearchQuery('');
+                                      setTagFilterOpen(false);
+                                    }}
+                                    className={`tag px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${selectedTag === tag.name && !searchQuery
+                                      ? 'text-white shadow-sm'
+                                      : 'bg-white/5 text-gray-200 hover:bg-white/10 border border-white/10'
+                                      }`}
+                                    style={{
+                                      backgroundColor: selectedTag === tag.name && !searchQuery ? `color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined,
+                                      border: selectedTag === tag.name && !searchQuery ? `1px solid color-mix(in srgb, ${tag.color}, transparent 60%)` : undefined
+                                    }}
+                                  >
+                                    {tag.name}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2293,6 +2331,35 @@ function App() {
                     </button>
                   </div>
                 )}
+                {/* 主页面刷新按钮 (仅图标，动态跟随当前根目录或全部) */}
+                <button
+                  type="button"
+                  onClick={handleMainPageRefresh}
+                  disabled={loading || mainPageRefreshing || bulkScrapeLoading}
+                  className="px-2.5 py-2 flex items-center justify-center text-gray-200 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg shadow-sm backdrop-blur-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={
+                    selectedRootPathId === null
+                      ? '刷新全部有效根目录游戏库'
+                      : selectedRootPathId === 'others'
+                      ? '重新加载游戏列表'
+                      : `刷新当前根目录：${rootPaths.find((rp) => rp.id === selectedRootPathId)?.name || (rootPaths.find((rp) => rp.id === selectedRootPathId)?.path ? formatRootPathLabel(rootPaths.find((rp) => rp.id === selectedRootPathId).path) : '当前目录')}`
+                  }
+                >
+                  <svg
+                    className={`w-4 h-4 text-gray-300 ${mainPageRefreshing ? 'animate-spin text-indigo-400' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                </button>
+
                 <div className="flex items-stretch rounded-lg overflow-hidden bg-white/5 border border-white/10 backdrop-blur-sm shadow-sm transition-colors">
                   <button
                     onClick={handleBulkScrape}
