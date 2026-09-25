@@ -4317,13 +4317,168 @@ const readRequestBody = (req) => new Promise((resolve, reject) => {
   req.on('error', reject);
 });
 
+// --- 下载票据与大文件 Range 断点续传支持 ---
+const downloadTickets = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of downloadTickets.entries()) {
+    if (val.expiresAt <= now) {
+      downloadTickets.delete(key);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+const runCommandAsync = (cmd, options = {}) => new Promise((resolve, reject) => {
+  const { exec } = require('child_process');
+  exec(cmd, options, (err, stdout, stderr) => {
+    if (err) reject(err);
+    else resolve({ stdout, stderr });
+  });
+});
+
+const serveFileWithRange = (req, res, filePath, customFilename = null, customContentType = null, cleanupCallback = null) => {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    if (cleanupCallback) try { cleanupCallback(); } catch {}
+    sendApiError(res, 404, '文件不存在或无法读取: ' + (err?.message || String(err)));
+    return;
+  }
+  const totalSize = stat.size;
+  const filename = customFilename || path.basename(filePath);
+  const ext = path.extname(filename).toLowerCase();
+
+  let contentType = customContentType || 'application/octet-stream';
+  if (!customContentType) {
+    if (ext === '.zip') contentType = 'application/zip';
+    else if (ext === '.rar') contentType = 'application/x-rar-compressed';
+    else if (ext === '.7z') contentType = 'application/x-7z-compressed';
+    else if (ext === '.tar' || ext === '.gz') contentType = 'application/x-tar';
+    else if (ext === '.iso') contentType = 'application/x-iso9660-image';
+    else if (['.mp4', '.mkv', '.webm'].includes(ext)) contentType = 'video/' + ext.slice(1);
+    else if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) contentType = 'image/' + (ext === '.jpg' ? 'jpeg' : ext.slice(1));
+  }
+
+  const encodedFilename = encodeURIComponent(filename);
+  const etag = `"${stat.mtimeMs.toString(36)}-${totalSize.toString(36)}"`;
+
+  // HEAD 请求支持 (用于探活与获取文件大小)
+  if (req.method === 'HEAD') {
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': totalSize,
+      'Accept-Ranges': 'bytes',
+      'ETag': etag,
+      'Last-Modified': stat.mtime.toUTCString(),
+      'Content-Disposition': `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+    });
+    res.end();
+    if (cleanupCallback) try { cleanupCallback(); } catch {}
+    return;
+  }
+
+  const range = req.headers.range;
+  if (!range) {
+    // 完整文件返回 200
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': totalSize,
+      'Accept-Ranges': 'bytes',
+      'ETag': etag,
+      'Last-Modified': stat.mtime.toUTCString(),
+      'Content-Disposition': `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+    });
+    const stream = fs.createReadStream(filePath);
+    let cleaned = false;
+    const doCleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      try { stream.destroy(); } catch {}
+      if (cleanupCallback) try { cleanupCallback(); } catch {}
+    };
+    req.on('close', doCleanup);
+    stream.on('error', (err) => {
+      doCleanup();
+      if (!res.headersSent) sendApiError(res, 500, '读取文件流失败');
+      else res.end();
+    });
+    stream.on('end', doCleanup);
+    stream.pipe(res);
+    return;
+  }
+
+  // 处理 HTTP Range: bytes=start-end
+  const matches = range.match(/bytes=(\d*)-(\d*)/);
+  if (!matches) {
+    res.writeHead(416, { 'Content-Range': `bytes */${totalSize}` });
+    res.end();
+    if (cleanupCallback) try { cleanupCallback(); } catch {}
+    return;
+  }
+
+  let start = matches[1] ? parseInt(matches[1], 10) : NaN;
+  let end = matches[2] ? parseInt(matches[2], 10) : NaN;
+
+  if (isNaN(start)) {
+    // bytes=-500 (后 500 字节)
+    if (isNaN(end) || end <= 0) {
+      res.writeHead(416, { 'Content-Range': `bytes */${totalSize}` });
+      res.end();
+      if (cleanupCallback) try { cleanupCallback(); } catch {}
+      return;
+    }
+    start = Math.max(0, totalSize - end);
+    end = totalSize - 1;
+  } else if (isNaN(end) || end >= totalSize) {
+    end = totalSize - 1;
+  }
+
+  if (start >= totalSize || start > end || start < 0) {
+    res.writeHead(416, { 'Content-Range': `bytes */${totalSize}` });
+    res.end();
+    if (cleanupCallback) try { cleanupCallback(); } catch {}
+    return;
+  }
+
+  const chunkSize = end - start + 1;
+  res.writeHead(206, {
+    'Content-Type': contentType,
+    'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': chunkSize,
+    'ETag': etag,
+    'Last-Modified': stat.mtime.toUTCString(),
+    'Content-Disposition': `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+  });
+
+  const stream = fs.createReadStream(filePath, { start, end });
+  let cleaned = false;
+  const doCleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { stream.destroy(); } catch {}
+    if (cleanupCallback) try { cleanupCallback(); } catch {}
+  };
+  req.on('close', doCleanup);
+  stream.on('error', (err) => {
+    doCleanup();
+    if (!res.headersSent) sendApiError(res, 500, '读取文件分片流失败');
+    else res.end();
+  });
+  stream.on('end', doCleanup);
+  stream.pipe(res);
+};
+
 const handleApiRequest = async (req, res) => {
   const settings = getApiSettingsFromDb();
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition, ETag');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -4349,6 +4504,20 @@ const handleApiRequest = async (req, res) => {
 
     if (!url.pathname.startsWith('/api/')) {
       sendApiError(res, 404, 'Not found');
+      return;
+    }
+
+    // --- /api/downloads/:ticket (基于短时票据的免 Token 安全下载，支持断点续传) ---
+    const ticketDownloadMatch = url.pathname.match(/^\/api\/downloads\/([a-zA-Z0-9_-]+)$/);
+    if (ticketDownloadMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+      const ticketId = ticketDownloadMatch[1];
+      const ticketData = downloadTickets.get(ticketId);
+      if (!ticketData || ticketData.expiresAt <= Date.now()) {
+        downloadTickets.delete(ticketId);
+        sendApiError(res, 403, '下载票据已失效或不存在，请重新在客户端申请下载');
+        return;
+      }
+      serveFileWithRange(req, res, ticketData.filePath, ticketData.filename);
       return;
     }
 
@@ -4657,9 +4826,76 @@ const handleApiRequest = async (req, res) => {
       return;
     }
 
-    // --- /api/games/:id/download ---
+    // --- /api/games/:id/download-ticket (申请单文件短时下载票据) ---
+    const ticketCreateMatch = url.pathname.match(/^\/api\/games\/(\d+)\/download-ticket$/);
+    if (ticketCreateMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(ticketCreateMatch[1], 10);
+      const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
+      if (!game || !game.path || !fs.existsSync(game.path)) {
+        sendApiError(res, 404, '游戏不存在或未找到文件路径');
+        return;
+      }
+      const body = await readRequestBody(req);
+      const requestedFile = String(body.file || url.searchParams.get('file') || '').trim();
+      const rootPath = path.resolve(game.path);
+      let rootStat;
+      try {
+        rootStat = fs.statSync(rootPath);
+      } catch (err) {
+        sendApiError(res, 500, '读取游戏路径信息失败: ' + (err?.message || String(err)));
+        return;
+      }
+
+      let targetFilePath = rootPath;
+      let filename = path.basename(rootPath);
+
+      if (rootStat.isDirectory()) {
+        if (!requestedFile || requestedFile === '.' || requestedFile === '/') {
+          sendApiError(res, 400, '暂不支持直接为散装文件夹申请单文件票据，请选择具体文件或先打包');
+          return;
+        }
+        targetFilePath = path.resolve(rootPath, requestedFile);
+        const rel = path.relative(rootPath, targetFilePath);
+        if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(targetFilePath)) {
+          sendApiError(res, 403, '文件不存在或超出安全访问范围');
+          return;
+        }
+        filename = path.basename(targetFilePath);
+      }
+
+      const targetStat = fs.statSync(targetFilePath);
+      if (targetStat.isDirectory()) {
+        sendApiError(res, 400, '所选目标为文件夹，请选择单文件申请下载');
+        return;
+      }
+
+      const ticketId = crypto.randomBytes(18).toString('hex');
+      const expiresAt = Date.now() + 60 * 60 * 1000; // 1 小时有效期
+      downloadTickets.set(ticketId, {
+        gameId,
+        filePath: targetFilePath,
+        filename,
+        size: targetStat.size,
+        expiresAt
+      });
+
+      sendApiJson(res, 200, {
+        success: true,
+        data: {
+          ticket: ticketId,
+          filename,
+          size: targetStat.size,
+          expiresAt,
+          downloadUrl: `${baseUrl}/api/downloads/${ticketId}`
+        },
+        error: null
+      });
+      return;
+    }
+
+    // --- /api/games/:id/download (支持 Range 断点续传与 HEAD 请求) ---
     const downloadMatch = url.pathname.match(/^\/api\/games\/(\d+)\/download$/);
-    if (downloadMatch && req.method === 'GET') {
+    if (downloadMatch && (req.method === 'GET' || req.method === 'HEAD')) {
       const gameId = Number.parseInt(downloadMatch[1], 10);
       const game = db.prepare('SELECT id, name, path FROM games WHERE id = ?').get(gameId);
       if (!game || !game.path || !fs.existsSync(game.path)) {
@@ -4680,53 +4916,32 @@ const handleApiRequest = async (req, res) => {
       // 情况 1：游戏路径本身就是单文件（压缩包 .zip/.7z/.rar/.iso 或可执行程序等）
       if (!rootStat.isDirectory()) {
         const filename = path.basename(rootPath);
-        const ext = path.extname(filename).toLowerCase();
-        let contentType = 'application/octet-stream';
-        if (ext === '.zip') contentType = 'application/zip';
-        else if (ext === '.rar') contentType = 'application/x-rar-compressed';
-        else if (ext === '.7z') contentType = 'application/x-7z-compressed';
-        else if (ext === '.tar' || ext === '.gz') contentType = 'application/x-tar';
-
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'Content-Length': rootStat.size,
-          'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}"`
-        });
-        fs.createReadStream(rootPath).pipe(res);
+        serveFileWithRange(req, res, rootPath, filename);
         return;
       }
 
       // 情况 2：游戏路径为文件夹
-      // 2.1 用户请求整个游戏（file 为空、'.'、'/' 或未传） -> 向上一个级别直接打包下载整个游戏文件夹！
+      // 2.1 用户请求整个游戏（file 为空、'.'、'/' 或未传） -> 异步打包整个游戏文件夹！
       if (!requestedFile || requestedFile === '.' || requestedFile === '/' || requestedFile === '*') {
         const folderName = game.name || path.basename(rootPath) || 'game';
         const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        const cleanup = () => {
+          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+        };
         try {
-          const { execSync } = require('child_process');
           const safePath = rootPath.replace(/'/g, "''");
           const safeZip = tempZip.replace(/'/g, "''");
           const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
-          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 300000 });
+          // 使用异步 child_process.exec，彻底避免阻塞 Electron 主线程与 API 事件循环
+          await runCommandAsync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 3600000 });
           if (fs.existsSync(tempZip)) {
-            const zipStat = fs.statSync(tempZip);
-            res.writeHead(200, {
-              'Content-Type': 'application/zip',
-              'Content-Length': zipStat.size,
-              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"; filename*=UTF-8''${encodeURIComponent(folderName + '.zip')}"`
-            });
-            const stream = fs.createReadStream(tempZip);
-            const cleanup = () => {
-              try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
-            };
-            stream.on('close', cleanup);
-            stream.on('error', cleanup);
-            stream.pipe(res);
+            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip', cleanup);
             return;
           } else {
             throw new Error('生成的临时压缩文件不存在');
           }
         } catch (zipErr) {
-          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+          cleanup();
           sendApiError(res, 500, '打包下载游戏文件夹失败: ' + (zipErr?.message || String(zipErr)));
           return;
         }
@@ -4734,7 +4949,8 @@ const handleApiRequest = async (req, res) => {
 
       // 2.2 用户请求文件夹内的某个具体子文件或子目录
       const targetFilePath = path.resolve(rootPath, requestedFile);
-      if (!targetFilePath.startsWith(rootPath) || !fs.existsSync(targetFilePath)) {
+      const rel = path.relative(rootPath, targetFilePath);
+      if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(targetFilePath)) {
         sendApiError(res, 403, '文件不存在或超出安全访问范围');
         return;
       }
@@ -4742,44 +4958,29 @@ const handleApiRequest = async (req, res) => {
       if (st.isDirectory()) {
         const folderName = path.basename(targetFilePath) || game.name || 'archive';
         const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        const cleanup = () => {
+          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+        };
         try {
-          const { execSync } = require('child_process');
           const safePath = targetFilePath.replace(/'/g, "''");
           const safeZip = tempZip.replace(/'/g, "''");
           const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
-          execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 180000 });
+          await runCommandAsync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 1800000 });
           if (fs.existsSync(tempZip)) {
-            const zipStat = fs.statSync(tempZip);
-            res.writeHead(200, {
-              'Content-Type': 'application/zip',
-              'Content-Length': zipStat.size,
-              'Content-Disposition': `attachment; filename="${encodeURIComponent(folderName + '.zip')}"; filename*=UTF-8''${encodeURIComponent(folderName + '.zip')}"`
-            });
-            const stream = fs.createReadStream(tempZip);
-            const cleanup = () => {
-              try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
-            };
-            stream.on('close', cleanup);
-            stream.on('error', cleanup);
-            stream.pipe(res);
+            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip', cleanup);
             return;
           } else {
             throw new Error('生成的临时压缩文件不存在');
           }
         } catch (zipErr) {
-          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+          cleanup();
           sendApiError(res, 500, '打包下载子文件夹失败: ' + (zipErr?.message || String(zipErr)));
           return;
         }
       }
 
       const filename = path.basename(targetFilePath);
-      res.writeHead(200, {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': st.size,
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}"`
-      });
-      fs.createReadStream(targetFilePath).pipe(res);
+      serveFileWithRange(req, res, targetFilePath, filename);
       return;
     }
 

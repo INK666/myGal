@@ -7,6 +7,12 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(NativeDownloaderPlugin.class);
+        super.onCreate(savedInstanceState);
+    }
+
+    @Override
     public void onResume() {
         super.onResume();
         if (getBridge() != null && getBridge().getWebView() != null) {

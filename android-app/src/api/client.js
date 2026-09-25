@@ -335,6 +335,15 @@ export class ApiClient {
     return res.data;
   }
 
+  // 申请短时下载票据（防止管理 Token 暴露在 URL 中）
+  async createDownloadTicket(gameId, relativeFilePath = '') {
+    const res = await this.request(`/api/games/${gameId}/download-ticket`, {
+      method: 'POST',
+      body: JSON.stringify({ file: relativeFilePath })
+    });
+    return res.data;
+  }
+
   getDownloadFileUrl(gameId, relativeFilePath = '') {
     const params = new URLSearchParams();
     if (relativeFilePath) {

@@ -1,0 +1,253 @@
+不能承诺“绝不会失败”——断网、手机存储满、PC 关机都可能发生。但按下面方案做，4GB 下载失败后能从断点恢复、能校验完整性，体验会从“偶尔下不来”变成“可恢复的任务下载”。
+
+这份可以直接交给其他 agent。
+
+# myGal 大文件下载改造计划
+
+## 目标
+
+支持安卓从 PC 下载 4GB 及以上游戏文件，满足：
+
+- 下载可暂停、恢复、取消、重试
+- App 切后台、Wi-Fi/移动网络切换后可继续
+- 网络中断不从零开始
+- 整包游戏的压缩不阻塞 PC 主程序
+- 下载完成后验证文件未损坏
+- 局域网和 HTTPS 内网穿透都可用
+- 下载鉴权不泄露长期 Token
+
+## 现状与必须替换的部分
+
+当前安卓端用 `<a>` 标签直接打开下载 URL；PC 端目录下载通过同步 `Compress-Archive` 生成 ZIP。
+
+必须替换：
+
+- 安卓 WebView `<a>` 下载为 Android 原生下载任务
+- PC 同步压缩为后台任务队列
+- 单纯 `200 + 全文件流` 为支持 `Range` 的文件服务
+- URL Token 为短时下载票据
+- “点击即成功”提示为真实任务状态
+
+## 第一阶段：可靠单文件下载
+
+### PC API
+
+新增文件元信息接口：
+
+```http
+GET /api/games/:gameId/files/:fileId/meta
+Authorization: Bearer <api-token>
+```
+
+返回：
+
+```json
+{
+  "success": true,
+  "data": {
+    "fileId": "signed-or-stable-id",
+    "name": "game.7z",
+    "size": 4294967296,
+    "mimeType": "application/x-7z-compressed",
+    "modifiedAt": "2026-09-25T10:00:00Z",
+    "etag": "\"sha256-prefix-or-version\"",
+    "sha256": "full-file-sha256",
+    "downloadable": true
+  }
+}
+```
+
+下载接口：
+
+```http
+GET /api/downloads/:downloadTicket
+Range: bytes=1073741824-
+If-Range: "etag-value"
+```
+
+响应要求：
+
+```http
+Accept-Ranges: bytes
+ETag: "etag-value"
+Content-Length: <本次传输长度>
+Content-Range: bytes 1073741824-4294967295/4294967296
+HTTP/1.1 206 Partial Content
+```
+
+服务端行为：
+
+- 没有 `Range`：返回完整文件，状态 `200`
+- 有合法 `Range`：返回对应片段，状态 `206`
+- 文件在续传期间被修改：ETag 不匹配，返回完整新文件或明确的“资源已变更”
+- 无效 Range：返回 `416`
+- 客户端断开：立即销毁 `createReadStream`，不继续读盘
+- 不允许路径穿越、符号链接/联接越界
+- 不计算 SHA-256 于每次下载请求；首次请求或文件变化后在后台生成并缓存
+
+HTTP Range 是标准的断点续传机制；客户端据此可以从已完成字节继续请求。[MDN Range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Range_requests)
+
+### 下载票据
+
+新增：
+
+```http
+POST /api/games/:gameId/download-ticket
+Authorization: Bearer <api-token>
+Content-Type: application/json
+
+{
+  "fileId": "..."
+}
+```
+
+返回：
+
+```json
+{
+  "ticket": "random-opaque-value",
+  "expiresAt": "2026-09-25T10:15:00Z",
+  "url": "https://host/api/downloads/random-opaque-value"
+}
+```
+
+规则：
+
+- 票据只允许下载指定文件
+- 有效期 10–30 分钟
+- 可绑定设备 ID 或下载任务 ID
+- 不把长期 API Token 放在 URL
+- 续传时票据过期，客户端自动重新申请票据
+
+### 安卓实现
+
+新增原生 Capacitor 插件，例如 `GameDownloadPlugin`：
+
+- 创建下载任务
+- 保存到 App 专属 Downloads 目录
+- 保存任务记录到 SQLite/Preferences
+- 记录 `url`、`ticket`、目标文件、已下载字节、总大小、ETag、SHA-256、状态
+- 支持开始、暂停、恢复、取消、删除、重试
+- 监听网络变化与系统下载状态
+- 将进度事件传给 React 页面
+
+优先使用 Android `DownloadManager`；若其无法满足自定义鉴权、续传和校验需求，则使用原生 OkHttp + WorkManager 前台任务。Android 的 `DownloadManager` 本身支持后台传输和失败后的重试；实现选择应以“能传递票据、准确记录任务、可续传”为准。[Android DownloadManager](https://developer.android.com/reference/android/app/DownloadManager)
+
+## 第二阶段：目录和整包游戏下载
+
+### 后台打包 API
+
+目录不能在下载请求里同步压缩。新增：
+
+```http
+POST /api/games/:gameId/archive-jobs
+Authorization: Bearer <api-token>
+
+{
+  "relativePath": ""
+}
+```
+
+返回：
+
+```json
+{
+  "jobId": "archive-job-id",
+  "status": "queued"
+}
+```
+
+查询：
+
+```http
+GET /api/archive-jobs/:jobId
+```
+
+返回状态：
+
+```json
+{
+  "status": "queued | packaging | ready | failed | cancelled",
+  "progress": 38,
+  "archiveSize": 3210000000,
+  "error": null
+}
+```
+
+`ready` 后返回归档文件的下载票据，再走第一阶段的可续传下载接口。
+
+### PC 打包任务队列
+
+- 同时最多一个大型打包任务
+- 同一目录相同版本可复用已完成 ZIP
+- 创建前检查临时盘剩余空间
+- ZIP 放在专用缓存目录，不使用不可控系统临时目录
+- 每个任务有取消标记、日志、超时和清理时间
+- PC 重启后扫描任务状态，删除未完成或过期 ZIP
+- 压缩放到独立子进程或 Worker，不阻塞 Electron 主进程
+- 不使用 `execSync`
+- ZIP 创建完成后生成大小、ETag、SHA-256
+
+建议初始策略：
+
+- 小于 500MB：允许立即准备
+- 500MB–4GB：排队后台打包
+- 超过 4GB：提示预估空间和时间，允许用户确认
+- 游戏本身已经是 `.zip`、`.7z`、`.rar`、`.iso`：直接按单文件下载，不重复压缩
+
+## 第三阶段：安卓下载中心
+
+页面状态：
+
+- `排队中`
+- `请求下载授权`
+- `下载中：1.2GB / 4.0GB，32%`
+- `暂停`
+- `等待 Wi-Fi`
+- `网络恢复中`
+- `校验中`
+- `已完成`
+- `失败：可重试`
+- `已取消`
+
+行为要求：
+
+- 不在创建任务时显示“下载成功”
+- 只在 SHA-256、大小、ETag 校验通过后显示完成
+- 默认单并发下载；可配置最多两个
+- 默认 Wi-Fi 下载大于 1GB 的文件
+- App 打开时恢复未完成任务
+- 失败使用指数退避重试，最多 3–5 次
+- 存储空间不足时阻止任务创建，并明确显示所需空间
+- 支持打开文件、分享文件、删除文件
+
+## 安全要求
+
+- 外网仅支持 HTTPS
+- API Token 仅用于申请短时下载票据
+- 下载票据不可枚举、会过期、最小权限
+- 服务端用 `path.relative(root, target)` 检查文件边界，不使用字符串 `startsWith`
+- 拒绝访问目录外文件、符号链接目标和系统敏感文件
+- 限制单设备并发数与带宽，避免 PC 被拖垮
+- 记录下载审计日志，但不记录长期 Token
+
+## 验收测试
+
+- 4GB 文件下载到 30% 后断网，恢复后继续下载，不重新传前 30%
+- 下载中切换 Wi‑Fi 与移动网络，任务恢复
+- App 切后台 10 分钟，再打开仍能看到准确状态
+- PC 重启、安卓重启后，未完成任务可恢复或给出可重试状态
+- PC 临时盘不足时，整包任务在创建前失败，不产生半截 ZIP
+- 同时请求两个整包游戏，第二个排队，PC UI 不冻结
+- 下载完成后故意篡改文件，校验必须失败
+- 使用 HTTPS 穿透地址完成一次 4GB 下载与断点恢复测试
+
+## Agent 拆分建议
+
+1. `PC 文件服务 agent`：Range、ETag、SHA-256、下载票据、路径安全。
+2. `PC 打包队列 agent`：异步 ZIP、任务状态、空间预检、缓存清理。
+3. `Android 原生下载 agent`：Capacitor 插件、后台任务、续传、持久化。
+4. `Android UI agent`：下载中心、进度、暂停恢复、失败处理。
+5. `测试 agent`：构造 4GB 测试文件，断网/重启/磁盘不足/校验测试。
+
+实施顺序必须是：先完成第一阶段的 PC Range API 和安卓原生下载，再做目录后台打包。这样即使整包 ZIP 还没做，已经能稳定下载现成的 `.zip`、`.7z`、`.iso` 和单文件游戏。

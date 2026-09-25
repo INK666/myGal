@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
+import { downloadManager } from '../utils/downloadManager';
 
 export default function FileTransferModal({ game, isOpen, onClose }) {
   const { showToast } = useServer();
@@ -42,6 +43,14 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [sortField, setSortField] = useState('name'); // 'name' | 'size' | 'mtime'
   const [sortOrder, setSortOrder] = useState('asc'); // 'asc' | 'desc'
+  const [downloadTasks, setDownloadTasks] = useState([]);
+
+  useEffect(() => {
+    if (!isOpen || !game?.id) return;
+    return downloadManager.subscribe((tasks) => {
+      setDownloadTasks(tasks.filter((t) => t.gameId === game.id));
+    });
+  }, [isOpen, game?.id]);
 
   useEffect(() => {
     if (!isOpen || !game?.id) return;
@@ -122,14 +131,20 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
   };
 
   // 触发单项下载
-  const triggerSingleDownload = (relPath, fileName) => {
-    const downloadUrl = api.getDownloadFileUrl(game.id, relPath);
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = fileName || relPath.split('/').pop() || (game.alias || game.name || 'download');
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const triggerSingleDownload = async (relPath, fileName) => {
+    const isDirectory = !fileName ? false : fileName.endsWith('.zip');
+    const targetName = fileName || relPath.split('/').pop() || (game.alias || game.name || 'download');
+    try {
+      await downloadManager.startDownload({
+        gameId: game.id,
+        relPath,
+        fileName: targetName,
+        title: `${game.alias || game.name}: ${targetName}`
+      });
+      showToast(isDirectory ? `已提交打包下载任务: ${targetName}` : `已加入系统下载队列: ${targetName}`, 'success');
+    } catch (err) {
+      showToast('启动下载失败: ' + (err?.message || String(err)), 'error');
+    }
   };
 
   // 执行下载 (支持单项或批量)
@@ -138,7 +153,6 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       const isDirectory = item.isDir;
       const downloadName = isDirectory ? `${item.name}.zip` : item.name;
       triggerSingleDownload(item.path, downloadName);
-      showToast(isDirectory ? `正在打包下载文件夹: ${item.name}` : `开始下载: ${item.name}`, 'success');
     } catch (err) {
       showToast('下载出错: ' + err.message, 'error');
     }
@@ -150,11 +164,9 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       if (isSingleFile && allFiles.length > 0) {
         const fileObj = allFiles[0];
         triggerSingleDownload(fileObj.path, fileObj.name);
-        showToast(`开始下载压缩包: ${fileObj.name}`, 'success');
       } else {
         const zipName = `${game.alias || game.name}.zip`;
         triggerSingleDownload('', zipName);
-        showToast(`已向 PC 端请求打包下载完整游戏: ${zipName}`, 'info');
       }
     } catch (err) {
       showToast('下载出错: ' + err.message, 'error');
@@ -172,17 +184,15 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       const relPath = pathsToDownload[i];
       const fileObj = allFiles.find((f) => f.path === relPath);
       const name = fileObj ? (fileObj.isDir ? `${fileObj.name}.zip` : fileObj.name) : relPath.split('/').pop();
-      triggerSingleDownload(relPath, name);
-      // 间隔 400ms 防止浏览器并发触发限流
+      await triggerSingleDownload(relPath, name);
+      // 间隔 600ms 防止瞬时迸发
       if (i < pathsToDownload.length - 1) {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, 600));
       }
     }
 
-    setTimeout(() => {
-      setIsDownloading(false);
-      showToast(`已成功发起 ${pathsToDownload.length} 个下载任务`, 'success');
-    }, 800);
+    setIsDownloading(false);
+    showToast(`已成功发起 ${pathsToDownload.length} 个下载任务`, 'success');
   };
 
   // 构建面包屑导航路径数组
@@ -580,6 +590,42 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
           </div>
         </div>
 
+        {/* --- 当前游戏正在下载的即时小进度条 --- */}
+        {(() => {
+          const activeGameDownload = downloadTasks.find(
+            (t) => t.status === 'RUNNING' || t.status === 'PENDING'
+          );
+          if (!activeGameDownload) return null;
+          return (
+            <div className="mx-4 mt-2 p-2.5 rounded-xl bg-indigo-950/70 border border-indigo-500/40 flex items-center justify-between text-xs animate-slide-up shadow-md">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <Download className="w-4 h-4 text-emerald-400 animate-bounce shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-gray-200 font-medium text-[11px]">
+                      {activeGameDownload.fileName}
+                    </span>
+                    <span className="font-mono text-indigo-300 font-bold text-[11px] shrink-0">
+                      {activeGameDownload.progress}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-800 rounded-full h-1 mt-1 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.max(2, activeGameDownload.progress)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+              {activeGameDownload.speed && (
+                <span className="font-mono text-emerald-400 text-[10px] shrink-0 ml-3">
+                  {activeGameDownload.speed}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+
         {/* --- 列表顶栏：全选与列名 --- */}
         <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between text-[11px] text-gray-400 bg-gray-950/30">
           <div
@@ -683,21 +729,52 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
                       <div className="text-[11px] font-mono text-gray-300">{formatSize(item.size)}</div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDownload(item);
-                      }}
-                      className={`p-2 rounded-xl active-press transition-all ${
-                        isDir
-                          ? 'bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white'
-                          : 'bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white'
-                      }`}
-                      title={isDir ? '打包下载此文件夹 (.zip)' : '直接下载此文件'}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                    </button>
+                    {(() => {
+                      const itemTask = downloadTasks.find(
+                        (t) =>
+                          t.relPath === item.path ||
+                          t.fileName === item.name ||
+                          t.fileName === `${item.name}.zip`
+                      );
+                      const isItemRunning =
+                        itemTask &&
+                        (itemTask.status === 'RUNNING' || itemTask.status === 'PENDING');
+
+                      if (isItemRunning) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadManager.cancelDownload(itemTask.id);
+                            }}
+                            className="p-1.5 px-2 rounded-xl bg-indigo-600/30 hover:bg-rose-500/20 text-indigo-300 hover:text-rose-300 border border-indigo-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
+                            title="正在下载，点击可取消"
+                          >
+                            <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                            <span>{itemTask.progress}%</span>
+                          </button>
+                        );
+                      }
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownload(item);
+                          }}
+                          className={`p-2 rounded-xl active-press transition-all ${
+                            isDir
+                              ? 'bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white'
+                              : 'bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white'
+                          }`}
+                          title={isDir ? '打包下载此文件夹 (.zip)' : '直接下载此文件'}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
               );

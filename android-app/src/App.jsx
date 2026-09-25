@@ -20,6 +20,7 @@ import ServerConnectModal from './components/ServerConnectModal';
 import TagManagerModal from './components/TagManagerModal';
 import StatsModal from './components/StatsModal';
 import FileTransferModal from './components/FileTransferModal';
+import DownloadProgressBar from './components/DownloadProgressBar';
 import WallpaperModal, { PRESET_WALLPAPERS } from './components/WallpaperModal';
 import BulkScrapeModal from './components/BulkScrapeModal';
 import {
@@ -770,6 +771,9 @@ function MainApp() {
           loadGames(1, false);
         }}
       />
+
+      {/* Global Floating Download Progress Bar */}
+      <DownloadProgressBar />
     </div>
   );
 }
