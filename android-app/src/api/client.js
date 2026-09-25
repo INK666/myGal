@@ -7,6 +7,10 @@ export class ApiClient {
   constructor(serverUrl = 'http://127.0.0.1:37689', token = '') {
     this.serverUrl = this.normalizeUrl(serverUrl);
     this.token = token;
+    this.primaryUrl = this.serverUrl;
+    this.backupUrl = '';
+    this.onFailover = null;
+    this.isFailingOver = false;
   }
 
   normalizeUrl(url) {
@@ -15,12 +19,43 @@ export class ApiClient {
     if (!/^https?:\/\//i.test(clean)) {
       clean = 'http://' + clean;
     }
-    return clean.replace(/\/+$/, '');
+    clean = clean.replace(/\/+$/, '');
+    try {
+      const u = new URL(clean);
+      // 纯 IP 且没有显式指定端口，自动补充默认端口 37689
+      if (!u.port && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(u.hostname)) {
+        u.port = '37689';
+        return u.origin;
+      }
+      return u.origin + (u.pathname === '/' ? '' : u.pathname);
+    } catch {
+      return clean;
+    }
   }
 
   setCredentials(serverUrl, token) {
     this.serverUrl = this.normalizeUrl(serverUrl);
     this.token = token;
+  }
+
+  setFailoverConfig({ primaryUrl, backupUrl, onFailover }) {
+    this.primaryUrl = primaryUrl ? this.normalizeUrl(primaryUrl) : '';
+    this.backupUrl = backupUrl ? this.normalizeUrl(backupUrl) : '';
+    if (typeof onFailover === 'function') {
+      this.onFailover = onFailover;
+    }
+  }
+
+  getAlternateUrl() {
+    const cur = this.normalizeUrl(this.serverUrl);
+    const pri = this.normalizeUrl(this.primaryUrl);
+    const bkp = this.normalizeUrl(this.backupUrl);
+
+    if (bkp && cur === pri) return bkp;
+    if (pri && cur === bkp) return pri;
+    if (bkp && cur !== bkp) return bkp;
+    if (pri && cur !== pri) return pri;
+    return '';
   }
 
   async request(endpoint, options = {}) {
@@ -32,7 +67,8 @@ export class ApiClient {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), options.timeout || 15000);
+    const timeoutMs = options.timeout || 8000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -62,6 +98,55 @@ export class ApiClient {
       return data;
     } catch (error) {
       clearTimeout(timeoutId);
+
+      // 检查是否可以静默容灾切换到备用 IP（仅在网络超时/不可达且未在容灾递归时触发）
+      const isNetworkError =
+        error.name === 'AbortError' ||
+        error.message?.includes('Failed to fetch') ||
+        error.message?.includes('NetworkError') ||
+        error.message?.includes('Network request failed');
+
+      if (isNetworkError && !this.isFailingOver && !options._skipFailover) {
+        const altUrl = this.getAlternateUrl();
+        if (altUrl) {
+          console.warn(`[ApiClient] Request to ${this.serverUrl}${endpoint} failed (${error.message}), trying backup: ${altUrl}...`);
+          this.isFailingOver = true;
+          try {
+            const backupUrlFull = `${altUrl}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
+            const backupController = new AbortController();
+            const backupTimeoutId = setTimeout(() => backupController.abort(), options.timeout || 8000);
+
+            const backupRes = await fetch(backupUrlFull, {
+              ...options,
+              headers,
+              signal: backupController.signal
+            });
+            clearTimeout(backupTimeoutId);
+
+            if (backupRes.ok || backupRes.status === 204) {
+              const previousUrl = this.serverUrl;
+              this.serverUrl = altUrl;
+              this.isFailingOver = false;
+
+              if (typeof this.onFailover === 'function') {
+                this.onFailover(altUrl, previousUrl);
+              }
+
+              if (backupRes.status === 204) {
+                return { success: true };
+              }
+              const isJson = backupRes.headers.get('content-type')?.includes('application/json');
+              if (!isJson) return backupRes;
+              return await backupRes.json();
+            }
+          } catch (backupErr) {
+            console.warn(`[ApiClient] Backup URL ${altUrl} also failed:`, backupErr);
+          } finally {
+            this.isFailingOver = false;
+          }
+        }
+      }
+
       if (error.name === 'AbortError') {
         throw new Error('请求超时，请检查 PC 端 myGal 是否在线并允许局域网连接');
       }

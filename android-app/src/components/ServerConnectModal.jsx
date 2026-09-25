@@ -15,12 +15,17 @@ import {
   Eye,
   EyeOff,
   Image as ImageIcon,
-  Loader2
+  Loader2,
+  Plus,
+  Pencil,
+  Check,
+  Link2
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { useServer } from '../contexts/ServerContext';
+import { useServer, isLanUrl, normalizeUrl } from '../contexts/ServerContext';
 import { decodeQrFromImage } from '../utils/qrDecoder';
 import { getServerCache } from '../utils/cacheStorage';
+import { api } from '../api/client';
 
 export default function ServerConnectModal({ isOpen, onClose }) {
   const {
@@ -35,19 +40,37 @@ export default function ServerConnectModal({ isOpen, onClose }) {
     connectWithQrPayload,
     removeProfile,
     clearProfiles,
+    updateProfileBackupUrl,
+    updateProfilePrimaryUrl,
+    switchProfileActiveUrl,
     showToast
   } = useServer();
 
-  const [activeTab, setActiveTab] = useState('scan'); // 'scan' | 'manual' | 'profiles'
+  const [activeTab, setActiveTab] = useState(() => (profiles.length > 0 ? 'profiles' : 'scan')); // 'scan' | 'manual' | 'profiles'
   const [inputUrl, setInputUrl] = useState(serverUrl);
+  const [inputBackupUrl, setInputBackupUrl] = useState('');
   const [inputToken, setInputToken] = useState(token);
   const [showToken, setShowToken] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
   const [scannerError, setScannerError] = useState(null);
   const [decodingFile, setDecodingFile] = useState(false);
   const [profileStats, setProfileStats] = useState({});
+  const [editingBackupProfileId, setEditingBackupProfileId] = useState(null);
+  const [backupInputVal, setBackupInputVal] = useState('');
+  const [testingBackup, setTestingBackup] = useState(false);
+  const [editingPrimaryProfileId, setEditingPrimaryProfileId] = useState(null);
+  const [primaryInputVal, setPrimaryInputVal] = useState('');
+  const [testingPrimary, setTestingPrimary] = useState(false);
   const scannerRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (profiles.length > 0 && activeTab === 'scan') {
+        setActiveTab('profiles');
+      }
+    }
+  }, [isOpen, profiles.length]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'profiles') return;
@@ -171,8 +194,13 @@ export default function ServerConnectModal({ isOpen, onClose }) {
       showToast('请输入 PC 服务地址', 'error');
       return;
     }
-    const res = await testConnection(inputUrl.trim(), inputToken.trim(), true);
+    const cleanPrimary = normalizeUrl(inputUrl.trim());
+    const cleanToken = inputToken.trim();
+    const res = await testConnection(cleanPrimary, cleanToken, true);
     if (res.success) {
+      if (inputBackupUrl.trim()) {
+        updateProfileBackupUrl(cleanToken || cleanPrimary, inputBackupUrl.trim());
+      }
       showToast('连接成功！', 'success');
       onClose();
     } else {
@@ -314,17 +342,34 @@ export default function ServerConnectModal({ isOpen, onClose }) {
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-1.5 flex items-center gap-1.5">
                   <Globe className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>PC 端服务地址 (URL)</span>
+                  <span>主连接地址 (局域网 IP 或常用地址)</span>
                 </label>
                 <input
                   type="text"
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
-                  placeholder="http://192.168.1.100:37689 或穿透域名"
+                  placeholder="http://192.168.1.100:37689"
                   className="w-full bg-gray-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                 />
                 <p className="text-[11px] text-gray-500 mt-1">
-                  局域网示例：http://192.168.x.x:37689 或外网 HTTPS 穿透地址
+                  在家里通过 WiFi 直连时使用，响应极快、无需穿透流量
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-300 mb-1.5 flex items-center gap-1.5">
+                  <Link2 className="w-3.5 h-3.5 text-purple-400" />
+                  <span>备用 / 内网穿透地址 (可选)</span>
+                </label>
+                <input
+                  type="text"
+                  value={inputBackupUrl}
+                  onChange={(e) => setInputBackupUrl(e.target.value)}
+                  placeholder="http://frp.mygal.com:12345 或备用 IP"
+                  className="w-full bg-gray-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  当主地址无法连接（如离开家）时，系统将静默尝试此地址自动连接同一个游戏库
                 </p>
               </div>
 
@@ -396,9 +441,12 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                 </div>
               ) : (
                 profiles.map((p, idx) => {
+                  const normActive = normalizeUrl(serverUrl);
                   const isCurrent =
-                    (serverUrl || '').trim().replace(/\/+$/, '').toLowerCase() ===
-                    (p.url || '').trim().replace(/\/+$/, '').toLowerCase();
+                    normActive === normalizeUrl(p.url) ||
+                    normActive === normalizeUrl(p.primaryUrl) ||
+                    normActive === normalizeUrl(p.backupUrl);
+
                   const count =
                     typeof profileStats[p.url] === 'number'
                       ? profileStats[p.url]
@@ -406,46 +454,274 @@ export default function ServerConnectModal({ isOpen, onClose }) {
                       ? p.gameCount
                       : null;
 
+                  const primary = p.primaryUrl || p.url;
+                  const backup = p.backupUrl || '';
+                  const isPrimaryActive = normActive === normalizeUrl(primary);
+                  const isBackupActive = Boolean(backup && normActive === normalizeUrl(backup));
+                  const isEditingBackup = editingBackupProfileId === (p.id || p.token || p.url);
+                  const isEditingPrimary = editingPrimaryProfileId === (p.id || p.token || p.url);
+
                   return (
                     <div
-                      key={idx}
-                      onClick={() => {
-                        testConnection(p.url, p.token, true);
-                        onClose();
-                      }}
-                      className={`glass-panel hover:bg-gray-850 p-3.5 rounded-2xl flex items-center justify-between cursor-pointer active-press border transition-all group ${
+                      key={p.id || idx}
+                      className={`glass-panel p-3.5 rounded-2xl flex flex-col gap-2.5 border transition-all ${
                         isCurrent ? 'border-indigo-500/40 bg-indigo-950/20' : 'border-white/5'
                       }`}
                     >
-                      <div className="min-w-0 flex-1 mr-2">
+                      {/* Library Card Header */}
+                      <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-xs text-white">
-                            {count !== null ? `${count} 款游戏` : '已连接游戏库'}
+                            {count !== null ? `${count} 款游戏` : 'PC端游戏库'}
                           </span>
                           {isCurrent && (
                             <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-medium font-mono">
-                              当前连接
+                              当前使用中
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] font-mono text-gray-400 truncate mt-0.5">{p.url}</div>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeProfile(p.url);
-                          }}
-                          className="p-2 rounded-xl text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                          onClick={() => removeProfile(p.url)}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
                           title="删除此PC端游戏库及缓存"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                        <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                          <ArrowRight className="w-4 h-4" />
+                      </div>
+
+                      {/* Primary Address Row */}
+                      <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-gray-900/80 border border-white/5 text-xs">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-300 font-medium">
+                              主地址 {isLanUrl(primary) ? '(局域网)' : ''}
+                            </span>
+                            {isPrimaryActive && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            )}
+                          </div>
+                          <div className="font-mono text-[11px] text-gray-300 truncate">
+                            {primary}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isPrimaryActive && connected}
+                            onClick={() => switchProfileActiveUrl(p.id, primary)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                              isPrimaryActive && connected
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : 'bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white'
+                            }`}
+                          >
+                            {isPrimaryActive && connected ? '连接中' : '连接/切换'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingPrimaryProfileId(p.id || p.token || p.url);
+                              setPrimaryInputVal(primary);
+                            }}
+                            className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                            title="修改主地址"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
                         </div>
                       </div>
+
+                      {/* Inline Primary Address Editor */}
+                      {isEditingPrimary && (
+                        <div className="p-2.5 rounded-xl bg-gray-950 border border-blue-500/40 space-y-2 animate-fade-in">
+                          <div className="flex items-center justify-between text-[11px] font-medium text-blue-300">
+                            <span>修改主地址 (局域网)</span>
+                            <span className="text-[10px] text-gray-400">优先使用此地址直连</span>
+                          </div>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={primaryInputVal}
+                            onChange={(e) => setPrimaryInputVal(e.target.value)}
+                            placeholder="如: http://192.168.1.100:37689"
+                            className="w-full bg-gray-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                          />
+                          <div className="flex items-center justify-end gap-1.5 pt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingPrimaryProfileId(null)}
+                              className="px-2.5 py-1 rounded-lg text-[11px] text-gray-400 hover:text-white bg-gray-850"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              disabled={testingPrimary}
+                              onClick={async () => {
+                                const clean = primaryInputVal.trim();
+                                if (!clean) {
+                                  showToast('主地址不能为空', 'error');
+                                  return;
+                                }
+                                setTestingPrimary(true);
+                                try {
+                                  const normalized = normalizeUrl(clean);
+                                  api.setCredentials(normalized, p.token);
+                                  const checkRes = await api.checkHealth({ timeout: 2500 });
+                                  if (checkRes?.success) {
+                                    showToast('主地址连通成功！已更新保存', 'success');
+                                  } else {
+                                    showToast('主地址当前未连通，已更新保存（网络畅通时生效）', 'info');
+                                  }
+                                } catch {
+                                  showToast('主地址当前未连通，已更新保存', 'info');
+                                } finally {
+                                  updateProfilePrimaryUrl(p.id, clean);
+                                  setEditingPrimaryProfileId(null);
+                                  setTestingPrimary(false);
+                                }
+                              }}
+                              className="px-3 py-1 rounded-lg text-[11px] font-medium text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1 disabled:opacity-50"
+                            >
+                              {testingPrimary ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="w-3 h-3" />
+                              )}
+                              <span>{testingPrimary ? '测试连通中...' : '测试并保存'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Backup Address Row */}
+                      {backup ? (
+                        <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-gray-900/80 border border-purple-500/20 text-xs">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-medium">
+                                备用地址 {isLanUrl(backup) ? '' : '(内网穿透)'}
+                              </span>
+                              {isBackupActive && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              )}
+                            </div>
+                            <div className="font-mono text-[11px] text-gray-300 truncate">
+                              {backup}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              disabled={isBackupActive && connected}
+                              onClick={() => switchProfileActiveUrl(p.id, backup)}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                                isBackupActive && connected
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : 'bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white'
+                              }`}
+                            >
+                              {isBackupActive && connected ? '连接中' : '连接/切换'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingBackupProfileId(p.id || p.token || p.url);
+                                setBackupInputVal(backup);
+                              }}
+                              className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                              title="修改备用地址"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateProfileBackupUrl(p.id, '')}
+                              className="p-1 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition-colors"
+                              title="移除备用地址"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : !isEditingBackup ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBackupProfileId(p.id || p.token || p.url);
+                            setBackupInputVal('');
+                          }}
+                          className="w-full py-1.5 px-3 rounded-xl border border-dashed border-purple-500/30 hover:border-purple-500/60 bg-purple-950/10 hover:bg-purple-950/20 text-purple-300 hover:text-purple-200 text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>添加备用 IP / 内网穿透域名</span>
+                        </button>
+                      ) : null}
+
+                      {/* Inline Backup Address Editor */}
+                      {isEditingBackup && (
+                        <div className="p-2.5 rounded-xl bg-gray-950 border border-purple-500/40 space-y-2 animate-fade-in">
+                          <div className="flex items-center justify-between text-[11px] font-medium text-purple-300">
+                            <span>配置备用 IP / 穿透地址</span>
+                            <span className="text-[10px] text-gray-400">主地址不通时将静默尝试</span>
+                          </div>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={backupInputVal}
+                            onChange={(e) => setBackupInputVal(e.target.value)}
+                            placeholder="如: http://frp.mygal.com:12345 或备用 IP"
+                            className="w-full bg-gray-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"
+                          />
+                          <div className="flex items-center justify-end gap-1.5 pt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingBackupProfileId(null)}
+                              className="px-2.5 py-1 rounded-lg text-[11px] text-gray-400 hover:text-white bg-gray-850"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              disabled={testingBackup}
+                              onClick={async () => {
+                                const clean = backupInputVal.trim();
+                                if (!clean) {
+                                  updateProfileBackupUrl(p.id, '');
+                                  setEditingBackupProfileId(null);
+                                  return;
+                                }
+                                setTestingBackup(true);
+                                try {
+                                  const normalized = normalizeUrl(clean);
+                                  api.setCredentials(normalized, p.token);
+                                  const checkRes = await api.checkHealth({ timeout: 2500 });
+                                  if (checkRes?.success) {
+                                    showToast('备用地址连通成功！已保存', 'success');
+                                  } else {
+                                    showToast('备用地址当前未能连通，但已保存（网络畅通时自动启用）', 'info');
+                                  }
+                                } catch {
+                                  showToast('备用地址当前未能连通，但已保存', 'info');
+                                } finally {
+                                  updateProfileBackupUrl(p.id, clean);
+                                  setEditingBackupProfileId(null);
+                                  setTestingBackup(false);
+                                }
+                              }}
+                              className="px-3 py-1 rounded-lg text-[11px] font-medium text-white bg-purple-600 hover:bg-purple-500 flex items-center gap-1 disabled:opacity-50"
+                            >
+                              {testingBackup ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="w-3 h-3" />
+                              )}
+                              <span>{testingBackup ? '测试连通中...' : '测试并保存'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })

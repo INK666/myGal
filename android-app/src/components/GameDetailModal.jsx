@@ -14,12 +14,19 @@ import {
   Loader2,
   Pencil,
   Check,
+  Copy,
   FileArchive
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
 import CoverImage from './CoverImage';
 import { saveCoverBlob } from '../utils/cacheStorage';
+import { copyToClipboard } from '../utils/clipboard';
+import {
+  enqueueOfflineChange,
+  removePendingChangeForField,
+  getPendingChangesForGame
+} from '../utils/syncQueue';
 
 export default function GameDetailModal({
   game,
@@ -42,6 +49,7 @@ export default function GameDetailModal({
   const [newTagColor, setNewTagColor] = useState('#6366f1');
   const [creatingTag, setCreatingTag] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState(null); // 'main' | 'original' | 'editing-original' | null
   const coverFileInputRef = useRef(null);
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
@@ -65,37 +73,88 @@ export default function GameDetailModal({
     setDetail(game);
     setEditingAlias(false);
     setAliasInput(game.alias || '');
-    // 联网时拉取最新详情
+    // 联网时拉取最新详情 (若本地有未推送的修改，优先保留未推送的最新修改)
     if (connected) {
       api.getGameDetail(game.id)
         .then((res) => {
           if (res) {
-            setDetail(res);
-            setAliasInput(res.alias || '');
-            onUpdateGame(res);
+            const pendingInfo = getPendingChangesForGame(serverUrl, game.id);
+            const merged = { ...res };
+            if (pendingInfo.hasPendingAlias) {
+              merged.alias = pendingInfo.pendingAlias;
+            }
+            if (pendingInfo.hasPendingPinned) {
+              merged.pinned = pendingInfo.pendingPinned;
+            }
+            setDetail(merged);
+            setAliasInput(merged.alias || '');
+            onUpdateGame(merged);
           }
         })
         .catch(() => {});
     }
-  }, [game.id, connected]);
+  }, [game.id, connected, serverUrl]);
 
-  // 修改游戏别名
-  const handleSaveAlias = async () => {
-    if (!connected) {
-      showToast('当前处于离线模式，修改别名需先连接 PC 端', 'warning');
-      return;
+  // 复制文本到剪贴板
+  const handleCopyText = async (text, targetKey) => {
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedTarget(targetKey);
+      showToast(`已复制: ${text}`, 'success');
+      setTimeout(() => {
+        setCopiedTarget((prev) => (prev === targetKey ? null : prev));
+      }, 2000);
+    } else {
+      showToast('复制失败，请长按文本复制', 'error');
     }
-    const cleanAlias = aliasInput.trim();
+  };
+
+  // 修改游戏别名 (支持在线与离线模式，离线时排入待推送队列)
+  const handleSaveAlias = async () => {
+    const cleanAlias = aliasInput.trim() || null;
     setSavingAlias(true);
     try {
-      await api.updateGameAlias(detail.id, cleanAlias);
-      const updated = { ...detail, alias: cleanAlias || null };
+      if (connected) {
+        await api.updateGameAlias(detail.id, cleanAlias);
+        removePendingChangeForField(serverUrl, detail.id, 'alias');
+        showToast(cleanAlias ? '别名修改成功' : '已清除别名', 'success');
+      } else {
+        // 离线模式：加入待同步队列
+        enqueueOfflineChange(serverUrl, {
+          gameId: detail.id,
+          gameName: detail.name,
+          type: 'alias',
+          value: cleanAlias
+        });
+        showToast(
+          cleanAlias
+            ? '已在本地设置别名 (待连接 PC 后自动推送)'
+            : '已在本地清除别名 (待连接 PC 后自动推送)',
+          'info'
+        );
+      }
+      const updated = { ...detail, alias: cleanAlias };
       setDetail(updated);
       onUpdateGame(updated);
       setEditingAlias(false);
-      showToast(cleanAlias ? '别名修改成功' : '已清除别名', 'success');
     } catch (err) {
-      showToast('修改别名失败: ' + err.message, 'error');
+      if (connected) {
+        // 网络中断时降级存入离线待同步队列
+        enqueueOfflineChange(serverUrl, {
+          gameId: detail.id,
+          gameName: detail.name,
+          type: 'alias',
+          value: cleanAlias
+        });
+        const updated = { ...detail, alias: cleanAlias };
+        setDetail(updated);
+        onUpdateGame(updated);
+        setEditingAlias(false);
+        showToast('网络断开，别名已保存在本地，恢复连接后将自动推送', 'warning');
+      } else {
+        showToast('修改别名失败: ' + err.message, 'error');
+      }
     } finally {
       setSavingAlias(false);
     }
@@ -156,21 +215,48 @@ export default function GameDetailModal({
     }
   };
 
-  // 切换置顶
+  // 切换置顶 (支持在线与离线模式，离线时排入待推送队列)
   const handleTogglePinned = async () => {
-    if (!connected) {
-      showToast('当前处于离线缓存模式，置顶操作需先连接 PC 端', 'warning');
-      return;
-    }
+    const nextPinned = !detail.pinned;
     try {
-      const nextPinned = !detail.pinned;
-      await api.updateGamePinned(detail.id, nextPinned);
+      if (connected) {
+        await api.updateGamePinned(detail.id, nextPinned);
+        removePendingChangeForField(serverUrl, detail.id, 'pinned');
+        showToast(nextPinned ? '已置顶' : '已取消置顶', 'success');
+      } else {
+        // 离线模式：加入待同步队列
+        enqueueOfflineChange(serverUrl, {
+          gameId: detail.id,
+          gameName: detail.name,
+          type: 'pinned',
+          value: nextPinned
+        });
+        showToast(
+          nextPinned
+            ? '已在本地置顶 (待连接 PC 后自动推送)'
+            : '已在本地取消置顶 (待连接 PC 后自动推送)',
+          'info'
+        );
+      }
       const updated = { ...detail, pinned: nextPinned };
       setDetail(updated);
       onUpdateGame(updated);
-      showToast(nextPinned ? '已置顶' : '已取消置顶', 'success');
     } catch (err) {
-      showToast('操作失败: ' + err.message, 'error');
+      if (connected) {
+        // 网络中断时降级存入离线待同步队列
+        enqueueOfflineChange(serverUrl, {
+          gameId: detail.id,
+          gameName: detail.name,
+          type: 'pinned',
+          value: nextPinned
+        });
+        const updated = { ...detail, pinned: nextPinned };
+        setDetail(updated);
+        onUpdateGame(updated);
+        showToast('网络断开，置顶状态已保存在本地，恢复连接后将自动推送', 'warning');
+      } else {
+        showToast('操作失败: ' + err.message, 'error');
+      }
     }
   };
 
@@ -341,51 +427,136 @@ export default function GameDetailModal({
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                  <div className="text-[10px] text-gray-500 truncate font-mono">
-                    原名: {detail.name}
+                  <div className="text-[10px] text-gray-400 font-mono flex items-center justify-between gap-1 pt-0.5">
+                    <span className="truncate select-text">原名: {detail.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(detail.name, 'editing-original')}
+                      className="text-[10px] text-gray-400 hover:text-white shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-800 border border-white/5 active-press transition-colors"
+                      title="复制原名"
+                    >
+                      {copiedTarget === 'editing-original' ? (
+                        <>
+                          <Check className="w-2.5 h-2.5 text-emerald-400" />
+                          <span className="text-emerald-400">已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-2.5 h-2.5" />
+                          <span>复制</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 </div>
               ) : (
                 <div>
-                  <div className="flex items-center justify-between gap-1 mb-0.5">
-                    <span className="text-[11px] text-gray-500 font-medium">
-                      {detail.alias ? '游戏别名 / 译名' : '游戏名称'}
-                    </span>
-                    <button
-                      onClick={() => {
-                        setAliasInput(detail.alias || '');
-                        setEditingAlias(true);
-                      }}
-                      className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md hover:bg-indigo-500/10 transition-colors"
-                    >
-                      <Pencil className="w-2.5 h-2.5" />
-                      <span>{detail.alias ? '修改别名' : '设置别名'}</span>
-                    </button>
-                  </div>
-                  <h2 className="text-base font-bold text-white leading-snug break-words">
-                    {detail.alias || detail.name}
-                  </h2>
-                  {detail.alias && (
-                    <div className="text-[11px] text-gray-400 truncate mt-0.5 font-mono">
-                      原名: {detail.name}
-                    </div>
-                  )}
+                  {(() => {
+                    const pendingInfo = getPendingChangesForGame(serverUrl, detail.id);
+                    return (
+                      <>
+                        <div className="flex items-center justify-between gap-1 mb-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-[11px] text-gray-500 font-medium">
+                              {detail.alias ? '游戏别名 / 译名' : '游戏名称'}
+                            </span>
+                            {pendingInfo.hasPendingAlias && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-medium border border-amber-500/30">
+                                待推送
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleCopyText(detail.alias || detail.name, 'main')}
+                              className="text-[10px] text-gray-300 hover:text-white bg-gray-850 hover:bg-gray-800 px-2 py-0.5 rounded-md border border-white/10 flex items-center gap-1 transition-all active-press"
+                              title="一键复制游戏名称"
+                            >
+                              {copiedTarget === 'main' ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  <span className="text-emerald-400 font-medium">已复制</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3 text-gray-400 shrink-0" />
+                                  <span>复制</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setAliasInput(detail.alias || '');
+                                setEditingAlias(true);
+                              }}
+                              className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md hover:bg-indigo-500/10 transition-colors"
+                            >
+                              <Pencil className="w-2.5 h-2.5" />
+                              <span>{detail.alias ? '修改别名' : '设置别名'}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <h2 className="text-base font-bold text-white leading-snug break-words select-text cursor-text">
+                          {detail.alias || detail.name}
+                        </h2>
+
+                        {detail.alias && (
+                          <div className="mt-1.5 p-2 rounded-xl bg-gray-900/80 border border-white/5 flex items-center justify-between gap-2 shadow-sm">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[10px] text-gray-500 font-mono">原名:</div>
+                              <div className="text-[11px] text-gray-300 font-mono break-words select-text cursor-text leading-tight mt-0.5">
+                                {detail.name}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleCopyText(detail.name, 'original')}
+                              className="shrink-0 text-[10px] text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-750 px-2 py-1 rounded-lg border border-white/10 flex items-center gap-1 transition-colors active-press"
+                              title="复制游戏原名"
+                            >
+                              {copiedTarget === 'original' ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <span className="text-emerald-400 font-medium">已复制</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3 text-gray-400" />
+                                  <span>复制原名</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
               {/* Pinned & Imported Info */}
               <div className="flex items-center gap-2 pt-0.5">
-                <button
-                  onClick={handleTogglePinned}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                    detail.pinned
-                      ? 'bg-amber-500 text-black shadow-md shadow-amber-500/30'
-                      : 'bg-gray-850 hover:bg-gray-800 text-gray-300 border border-white/5'
-                  }`}
-                >
-                  <Pin className={`w-3 h-3 ${detail.pinned ? 'fill-black' : ''}`} />
-                  <span>{detail.pinned ? '已置顶' : '置顶'}</span>
-                </button>
+                {(() => {
+                  const pendingInfo = getPendingChangesForGame(serverUrl, detail.id);
+                  return (
+                    <button
+                      onClick={handleTogglePinned}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                        detail.pinned
+                          ? 'bg-amber-500 text-black shadow-md shadow-amber-500/30'
+                          : 'bg-gray-850 hover:bg-gray-800 text-gray-300 border border-white/5'
+                      }`}
+                    >
+                      <Pin className={`w-3 h-3 ${detail.pinned ? 'fill-black' : ''}`} />
+                      <span>{detail.pinned ? '已置顶' : '置顶'}</span>
+                      {pendingInfo.hasPendingPinned && (
+                        <span className="text-[9px] px-1 rounded bg-black/20 text-black font-normal">
+                          待推送
+                        </span>
+                      )}
+                    </button>
+                  );
+                })()}
 
                 <div className="text-[11px] text-gray-500 flex items-center gap-1 font-mono">
                   <Calendar className="w-3 h-3" />

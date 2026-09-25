@@ -46,26 +46,75 @@ export const normalizeServerKey = (url) => {
 };
 
 /**
- * 保存指定服务器的游戏列表与元数据
+ * 获取全局统一的游戏库存储标识 (优先基于 Token，确保同一 PC 无论是局域网 IP 还是穿透域名均共享同一份缓存)
  */
-export async function saveServerCache(serverUrl, data = {}) {
-  const key = normalizeServerKey(serverUrl);
-  if (!key) return;
+export const getLibraryStorageKey = (serverUrl, token = '') => {
+  const norm = normalizeServerKey(serverUrl);
+  // 1. 如果传入了非空 token，优先以 token 作为全局唯一游戏库命名空间
+  if (token && typeof token === 'string' && token.trim().length >= 8) {
+    return 'lib_' + token.trim().toLowerCase();
+  }
+  // 2. 尝试从 localStorage 中反查 token
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const activeToken = localStorage.getItem('mygal_server_token');
+      const activeUrl = normalizeServerKey(localStorage.getItem('mygal_server_url'));
+      if (activeToken && activeToken.trim().length >= 8 && activeUrl === norm) {
+        return 'lib_' + activeToken.trim().toLowerCase();
+      }
+      const rawProfiles = localStorage.getItem('mygal_server_profiles');
+      if (rawProfiles) {
+        const profiles = JSON.parse(rawProfiles);
+        if (Array.isArray(profiles)) {
+          const matched = profiles.find((p) => {
+            const pUrl = normalizeServerKey(p.url);
+            const pPri = normalizeServerKey(p.primaryUrl);
+            const pBak = normalizeServerKey(p.backupUrl);
+            const pUrls = Array.isArray(p.urls) ? p.urls.map(normalizeServerKey) : [];
+            return pUrl === norm || pPri === norm || pBak === norm || pUrls.includes(norm);
+          });
+          if (matched?.token && matched.token.trim().length >= 8) {
+            return 'lib_' + matched.token.trim().toLowerCase();
+          }
+        }
+      }
+    } catch {}
+  }
+  return norm;
+};
+
+/**
+ * 保存指定服务器的游戏列表与元数据 (自动使用统一 Library 命名空间)
+ */
+export async function saveServerCache(serverUrl, data = {}, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if (!libKey && !rawKey) return;
+  const targetKey = libKey || rawKey;
 
   try {
     const db = await getDb();
     const tx = db.transaction('servers', 'readwrite');
     const store = tx.objectStore('servers');
 
-    // 保留现有元数据
-    const existing = await new Promise((res) => {
-      const req = store.get(key);
+    // 优先读取以 targetKey 存储的数据；若不存在且 targetKey !== rawKey，尝试继承原有 rawKey 的数据
+    let existing = await new Promise((res) => {
+      const req = store.get(targetKey);
       req.onsuccess = () => res(req.result);
       req.onerror = () => res(null);
     });
 
+    if (!existing && targetKey !== rawKey) {
+      existing = await new Promise((res) => {
+        const req = store.get(rawKey);
+        req.onsuccess = () => res(req.result);
+        req.onerror = () => res(null);
+      });
+    }
+
     const payload = {
-      serverUrl: key,
+      serverUrl: targetKey,
+      realServerUrl: rawKey,
       games: 'games' in data ? (Array.isArray(data.games) ? data.games : []) : (existing?.games || []),
       total: 'total' in data ? Number(data.total) || 0 : ('games' in data && Array.isArray(data.games) ? data.games.length : (existing?.total || 0)),
       tags: 'tags' in data ? (Array.isArray(data.tags) ? data.tags : []) : (existing?.tags || []),
@@ -85,22 +134,35 @@ export async function saveServerCache(serverUrl, data = {}) {
 }
 
 /**
- * 获取指定服务器的离线缓存
+ * 获取指定服务器的离线缓存 (自动支持局域网与内网穿透地址共享)
  */
-export async function getServerCache(serverUrl) {
-  const key = normalizeServerKey(serverUrl);
-  if (!key) return null;
+export async function getServerCache(serverUrl, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if (!libKey && !rawKey) return null;
 
   try {
     const db = await getDb();
     const tx = db.transaction('servers', 'readonly');
     const store = tx.objectStore('servers');
 
-    return await new Promise((resolve) => {
-      const req = store.get(key);
+    // 1. 尝试以 libKey 获取
+    let res = await new Promise((resolve) => {
+      const req = store.get(libKey);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
     });
+
+    // 2. 若未找到且 libKey !== rawKey，回退查找 rawKey（旧版数据无缝兼容）
+    if (!res && libKey !== rawKey) {
+      res = await new Promise((resolve) => {
+        const req = store.get(rawKey);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    return res;
   } catch {
     return null;
   }
@@ -109,20 +171,30 @@ export async function getServerCache(serverUrl) {
 /**
  * 局部更新指定服务器离线缓存中的单款游戏信息 (如修改别名、标签、置顶状态等)
  */
-export async function updateGameInServerCache(serverUrl, updatedGame) {
-  const key = normalizeServerKey(serverUrl);
-  if (!key || !updatedGame?.id) return;
+export async function updateGameInServerCache(serverUrl, updatedGame, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if ((!libKey && !rawKey) || !updatedGame?.id) return;
+  const targetKey = libKey || rawKey;
 
   try {
     const db = await getDb();
     const tx = db.transaction('servers', 'readwrite');
     const store = tx.objectStore('servers');
 
-    const existing = await new Promise((res) => {
-      const req = store.get(key);
+    let existing = await new Promise((res) => {
+      const req = store.get(targetKey);
       req.onsuccess = () => res(req.result);
       req.onerror = () => res(null);
     });
+
+    if (!existing && targetKey !== rawKey) {
+      existing = await new Promise((res) => {
+        const req = store.get(rawKey);
+        req.onsuccess = () => res(req.result);
+        req.onerror = () => res(null);
+      });
+    }
 
     if (existing && Array.isArray(existing.games)) {
       const index = existing.games.findIndex((g) => g.id === updatedGame.id);
@@ -133,6 +205,7 @@ export async function updateGameInServerCache(serverUrl, updatedGame) {
         existing.total = Math.max(existing.total || 0, existing.games.length);
       }
       existing.updatedAt = Date.now();
+      existing.serverUrl = targetKey;
       store.put(existing);
       await new Promise((res, rej) => {
         tx.oncomplete = res;
@@ -205,10 +278,10 @@ export async function compressImageBlob(blob, maxWidth = 360, maxHeight = 540, q
 }
 
 /**
- * 保存单张封面 Blob (自动经过 WebP 移动端轻量化压缩)
+ * 保存单张封面 Blob (自动经过 WebP 移动端轻量化压缩，统一使用 Library 命名空间)
  */
-export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
-  const sKey = normalizeServerKey(serverUrl);
+export async function saveCoverBlob(serverUrl, gameId, blob, version = null, token = '') {
+  const sKey = getLibraryStorageKey(serverUrl, token);
   if (!sKey || !gameId || !blob) return;
 
   const key = `${sKey}::${gameId}`;
@@ -231,26 +304,35 @@ export async function saveCoverBlob(serverUrl, gameId, blob, version = null) {
 }
 
 /**
- * 获取单张封面 Blob 及元数据 (含版本信息)
+ * 获取单张封面 Blob 及元数据 (含版本信息，自动跨局域网与穿透网络共享复用)
  */
-export async function getCoverBlobWithMeta(serverUrl, gameId) {
-  const sKey = normalizeServerKey(serverUrl);
-  if (!sKey || !gameId) return null;
+export async function getCoverBlobWithMeta(serverUrl, gameId, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if (!libKey && !rawKey) return null;
 
-  const key = `${sKey}::${gameId}`;
   try {
     const db = await getDb();
     const tx = db.transaction('covers', 'readonly');
     const store = tx.objectStore('covers');
 
-    return await new Promise((resolve) => {
-      const req = store.get(key);
-      req.onsuccess = () => {
-        if (req.result?.blob) resolve(req.result);
-        else resolve(null);
-      };
+    // 1. 优先在统一 Library 命名空间下查找
+    let res = await new Promise((resolve) => {
+      const req = store.get(`${libKey}::${gameId}`);
+      req.onsuccess = () => resolve(req.result?.blob ? req.result : null);
       req.onerror = () => resolve(null);
     });
+
+    // 2. 回退查找旧版 rawKey 命名空间 (兼容历史已缓存封面)
+    if (!res && libKey !== rawKey) {
+      res = await new Promise((resolve) => {
+        const req = store.get(`${rawKey}::${gameId}`);
+        req.onsuccess = () => resolve(req.result?.blob ? req.result : null);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    return res;
   } catch {
     return null;
   }
@@ -259,24 +341,27 @@ export async function getCoverBlobWithMeta(serverUrl, gameId) {
 /**
  * 获取单张封面 Blob
  */
-export async function getCoverBlob(serverUrl, gameId) {
-  const meta = await getCoverBlobWithMeta(serverUrl, gameId);
+export async function getCoverBlob(serverUrl, gameId, token = '') {
+  const meta = await getCoverBlobWithMeta(serverUrl, gameId, token);
   return meta?.blob || null;
 }
 
 /**
  * 删除单张封面 Blob
  */
-export async function deleteCoverBlob(serverUrl, gameId) {
-  const sKey = normalizeServerKey(serverUrl);
-  if (!sKey || !gameId) return;
+export async function deleteCoverBlob(serverUrl, gameId, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if (!libKey && !rawKey) return;
 
-  const key = `${sKey}::${gameId}`;
   try {
     const db = await getDb();
     const tx = db.transaction('covers', 'readwrite');
     const store = tx.objectStore('covers');
-    store.delete(key);
+    store.delete(`${libKey}::${gameId}`);
+    if (libKey !== rawKey) {
+      store.delete(`${rawKey}::${gameId}`);
+    }
     await new Promise((res) => {
       tx.oncomplete = res;
       tx.onerror = res;
@@ -289,16 +374,22 @@ export async function deleteCoverBlob(serverUrl, gameId) {
 /**
  * 删除某个服务器的所有缓存（包括游戏数据、元数据与所有封面图片）
  */
-export async function deleteServerCache(serverUrl) {
-  const sKey = normalizeServerKey(serverUrl);
-  if (!sKey) return;
+export async function deleteServerCache(serverUrl, token = '') {
+  const libKey = getLibraryStorageKey(serverUrl, token);
+  const rawKey = normalizeServerKey(serverUrl);
+  if (!libKey && !rawKey) return;
+
+  const keysToDelete = Array.from(new Set([libKey, rawKey].filter(Boolean)));
 
   try {
     const db = await getDb();
 
     // 1. 删除 servers 记录
     const tx1 = db.transaction('servers', 'readwrite');
-    tx1.objectStore('servers').delete(sKey);
+    const store1 = tx1.objectStore('servers');
+    for (const k of keysToDelete) {
+      store1.delete(k);
+    }
     await new Promise((res, rej) => {
       tx1.oncomplete = res;
       tx1.onerror = () => rej(tx1.error);
@@ -308,15 +399,17 @@ export async function deleteServerCache(serverUrl) {
     const tx2 = db.transaction('covers', 'readwrite');
     const store2 = tx2.objectStore('covers');
     const index = store2.index('serverUrl');
-    const req = index.openCursor(IDBKeyRange.only(sKey));
 
-    req.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      }
-    };
+    for (const k of keysToDelete) {
+      const req = index.openCursor(IDBKeyRange.only(k));
+      req.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+    }
     await new Promise((res, rej) => {
       tx2.oncomplete = res;
       tx2.onerror = () => rej(tx2.error);
@@ -356,7 +449,7 @@ export async function clearAllCache() {
 }
 
 /**
- * 批量并发全量预热封面图片缓存（带并发控制与进度回调，默认无上限全量预热）
+ * 批量并发全量预热封面图片缓存（带并发控制与进度回调，默认无上限全量预热，统一保存到 Library 命名空间）
  * @param {string} serverUrl 服务器地址
  * @param {Array} games 游戏对象列表
  * @param {string} [token] 认证 token
@@ -399,7 +492,7 @@ export async function preloadCovers(serverUrl, games, token = '', onProgress = n
               : g.coverUrl)
           : `${rawServerUrl}/api/covers/${g.id}?thumb=1&token=${encodeURIComponent(token || '')}${vParam}`;
 
-        const existing = await getCoverBlobWithMeta(cleanServerUrl, g.id);
+        const existing = await getCoverBlobWithMeta(cleanServerUrl, g.id, token);
         const versionStr = version ? String(version) : '';
 
         // 若本地不存在或版本过旧，则请求 20KB 轻量化缩略图并缓存
@@ -408,7 +501,7 @@ export async function preloadCovers(serverUrl, games, token = '', onProgress = n
           if (resp.ok) {
             const blob = await resp.blob();
             if (blob && blob.size > 0) {
-              await saveCoverBlob(cleanServerUrl, g.id, blob, versionStr);
+              await saveCoverBlob(cleanServerUrl, g.id, blob, versionStr, token);
             }
           }
         }

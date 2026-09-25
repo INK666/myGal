@@ -2,6 +2,41 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { api } from '../api/client';
 import { deleteServerCache, clearAllCache } from '../utils/cacheStorage';
 import { clearBlobCache } from '../components/CoverImage';
+import { clearPendingChanges } from '../utils/syncQueue';
+
+export const normalizeUrl = (urlStr) => {
+  if (!urlStr) return '';
+  let s = String(urlStr).trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) {
+    s = `http://${s}`;
+  }
+  try {
+    const u = new URL(s);
+    // 纯 IP 且没有显式指定端口，自动补充默认端口 37689
+    if (!u.port && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(u.hostname)) {
+      u.port = '37689';
+      return u.origin;
+    }
+    return u.origin + (u.pathname === '/' ? '' : u.pathname);
+  } catch {
+    return s;
+  }
+};
+
+export const isLanUrl = (urlStr) => {
+  if (!urlStr) return false;
+  try {
+    const u = new URL(normalizeUrl(urlStr));
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+    if (host.startsWith('192.168.')) return true;
+    if (host.startsWith('10.')) return true;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+};
 
 const ServerContext = createContext(null);
 
@@ -36,65 +71,203 @@ export function ServerProvider({ children }) {
     }, duration);
   }, []);
 
-  // 刷新当前连接
-  const testConnection = useCallback(async (targetUrl = serverUrl, targetToken = token, saveOnSuccess = true) => {
-    if (!targetUrl) {
-      setConnected(false);
-      setServerInfo(null);
-      setLastPing(null);
-      return { success: false, error: '未配置服务地址' };
-    }
-    setChecking(true);
-    setError(null);
-    const start = performance.now();
-    try {
-      api.setCredentials(targetUrl, targetToken);
-      const res = await api.checkHealth();
-      const latency = Math.round(performance.now() - start);
+  // 同步配置 ApiClient 底层容灾与备用地址
+  useEffect(() => {
+    const currentProfile = profiles.find(
+      (p) =>
+        (token && p.token === token) ||
+        normalizeUrl(p.url) === normalizeUrl(serverUrl) ||
+        normalizeUrl(p.primaryUrl) === normalizeUrl(serverUrl) ||
+        normalizeUrl(p.backupUrl) === normalizeUrl(serverUrl)
+    );
 
-      if (res?.success) {
+    const primary = currentProfile?.primaryUrl || serverUrl;
+    const backup = currentProfile?.backupUrl || '';
+
+    api.setFailoverConfig({
+      primaryUrl: primary,
+      backupUrl: backup,
+      onFailover: (newActiveUrl) => {
+        const clean = normalizeUrl(newActiveUrl);
+        setServerUrl(clean);
         setConnected(true);
-        setServerInfo(res.data);
-        setLastPing(latency);
-        setError(null);
-
-        if (saveOnSuccess) {
-          setServerUrl(targetUrl);
-          setToken(targetToken);
-          localStorage.setItem(STORAGE_KEYS.SERVER_URL, targetUrl);
-          localStorage.setItem(STORAGE_KEYS.TOKEN, targetToken);
-
-          // 更新配置列表
-          setProfiles((prev) => {
-            const cleanUrl = targetUrl.trim().replace(/\/+$/, '');
-            const existing = prev.find((p) => p.url === cleanUrl);
-            const filtered = prev.filter((p) => p.url !== cleanUrl);
-            const next = [
-              {
-                url: cleanUrl,
-                token: targetToken,
-                gameCount: typeof existing?.gameCount === 'number' ? existing.gameCount : null,
-                lastConnected: Date.now()
-              },
-              ...filtered
-            ].slice(0, 10);
-            localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
-            return next;
-          });
-        }
-        return { success: true, latency, data: res.data };
-      } else {
-        throw new Error(res?.error || '连接响应异常');
+        localStorage.setItem(STORAGE_KEYS.SERVER_URL, clean);
+        showToast(`主地址连接超时，已静默切换至备用地址 (${clean})`, 'info', 3000);
       }
-    } catch (err) {
-      setConnected(false);
-      setServerInfo(null);
-      setError(err.message || '无法连接到 PC 端服务');
-      return { success: false, error: err.message };
-    } finally {
-      setChecking(false);
-    }
-  }, [serverUrl, token]);
+    });
+  }, [serverUrl, token, profiles, showToast]);
+
+  // 保存连接成功的游戏库配置（自动支持多地址智能合并，同 Token 自动融合为同一游戏库）
+  const saveConnectedProfile = useCallback((targetUrl, targetToken) => {
+    const cleanUrl = normalizeUrl(targetUrl);
+    setServerUrl(cleanUrl);
+    setToken(targetToken);
+    localStorage.setItem(STORAGE_KEYS.SERVER_URL, cleanUrl);
+    localStorage.setItem(STORAGE_KEYS.TOKEN, targetToken);
+
+    setProfiles((prev) => {
+      // 1. 如果存在相同 Token 的游戏库，直接融合为该游戏库的多地址配置
+      const existing = targetToken
+        ? prev.find((p) => p.token === targetToken)
+        : prev.find((p) => normalizeUrl(p.url) === cleanUrl);
+
+      const filtered = prev.filter((p) => p !== existing);
+      const isLan = isLanUrl(cleanUrl);
+
+      let primaryUrl = existing?.primaryUrl || '';
+      let backupUrl = existing?.backupUrl || '';
+
+      if (isLan) {
+        if (!primaryUrl) primaryUrl = cleanUrl;
+      } else {
+        if (!backupUrl) backupUrl = cleanUrl;
+      }
+      if (!primaryUrl && !backupUrl) {
+        primaryUrl = cleanUrl;
+      }
+
+      const allUrls = Array.from(
+        new Set([cleanUrl, primaryUrl, backupUrl, ...(existing?.urls || [])].filter(Boolean).map(normalizeUrl))
+      );
+
+      const updatedProfile = {
+        id: existing?.id || `lib_${targetToken ? targetToken.slice(0, 16) : Date.now()}`,
+        name: existing?.name || '',
+        token: targetToken,
+        url: cleanUrl,
+        primaryUrl: primaryUrl || cleanUrl,
+        backupUrl: backupUrl || '',
+        urls: allUrls,
+        gameCount: typeof existing?.gameCount === 'number' ? existing.gameCount : null,
+        lastConnected: Date.now()
+      };
+
+      const next = [updatedProfile, ...filtered].slice(0, 10);
+      localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // 刷新当前连接（支持主地址失败时静默尝试备用地址，并支持回到家自动切回主地址）
+  const testConnection = useCallback(
+    async (
+      targetUrl = serverUrl,
+      targetToken = token,
+      saveOnSuccess = true,
+      silentFailover = true
+    ) => {
+      if (!targetUrl && !serverUrl) {
+        setConnected(false);
+        setServerInfo(null);
+        setLastPing(null);
+        return { success: false, error: '未配置服务地址' };
+      }
+      setChecking(true);
+      setError(null);
+
+      const matchedProfile = profiles.find(
+        (p) =>
+          (targetToken && p.token === targetToken) ||
+          (p.token && p.token === token) ||
+          normalizeUrl(p.url) === normalizeUrl(targetUrl) ||
+          normalizeUrl(p.primaryUrl) === normalizeUrl(targetUrl) ||
+          normalizeUrl(p.backupUrl) === normalizeUrl(targetUrl)
+      );
+
+      // 如果未指定特定 targetUrl 且开启静默容灾，优先尝试主地址（以便回到家后自动切回高速局域网）
+      let cleanTargetUrl = normalizeUrl(targetUrl || serverUrl);
+      if (
+        silentFailover &&
+        matchedProfile?.primaryUrl &&
+        (!targetUrl || normalizeUrl(targetUrl) === normalizeUrl(serverUrl))
+      ) {
+        cleanTargetUrl = normalizeUrl(matchedProfile.primaryUrl);
+      }
+
+      const effectiveToken = targetToken || matchedProfile?.token || token;
+      const start = performance.now();
+
+      try {
+        api.setCredentials(cleanTargetUrl, effectiveToken);
+        const res = await api.checkHealth({ timeout: 2500 });
+        const latency = Math.round(performance.now() - start);
+
+        if (res?.success) {
+          const wasDifferentUrl = normalizeUrl(serverUrl) !== cleanTargetUrl;
+          setConnected(true);
+          setServerInfo(res.data);
+          setLastPing(latency);
+          setError(null);
+
+          if (saveOnSuccess) {
+            saveConnectedProfile(cleanTargetUrl, effectiveToken);
+          } else {
+            setServerUrl(cleanTargetUrl);
+            setToken(effectiveToken);
+          }
+
+          if (wasDifferentUrl && serverUrl) {
+            showToast(`已自动连接至主地址 (${cleanTargetUrl})`, 'success', 2500);
+          }
+          return { success: true, latency, data: res.data };
+        } else {
+          throw new Error(res?.error || '连接响应异常');
+        }
+      } catch (err) {
+        // 主地址连接失败且开启静默容灾：自动尝试备用地址连接同一个游戏库
+        if (silentFailover && effectiveToken) {
+          const candidates = [];
+          if (matchedProfile) {
+            const bUrl = normalizeUrl(matchedProfile.backupUrl);
+            const pUrl = normalizeUrl(matchedProfile.primaryUrl);
+            if (bUrl && bUrl !== cleanTargetUrl) candidates.push(bUrl);
+            if (pUrl && pUrl !== cleanTargetUrl && !candidates.includes(pUrl)) candidates.push(pUrl);
+            if (Array.isArray(matchedProfile.urls)) {
+              for (const u of matchedProfile.urls) {
+                const normU = normalizeUrl(u);
+                if (normU && normU !== cleanTargetUrl && !candidates.includes(normU)) {
+                  candidates.push(normU);
+                }
+              }
+            }
+          }
+
+          for (const altUrl of candidates) {
+            try {
+              console.log(`[ServerContext] Target ${cleanTargetUrl} failed, silently trying backup: ${altUrl}...`);
+              const altStart = performance.now();
+              api.setCredentials(altUrl, effectiveToken);
+              const altRes = await api.checkHealth({ timeout: 2500 });
+              if (altRes?.success) {
+                const altLatency = Math.round(performance.now() - altStart);
+                setConnected(true);
+                setServerInfo(altRes.data);
+                setLastPing(altLatency);
+                setError(null);
+
+                if (saveOnSuccess) {
+                  saveConnectedProfile(altUrl, effectiveToken);
+                } else {
+                  setServerUrl(altUrl);
+                  setToken(effectiveToken);
+                }
+                showToast(`主地址连接超时，已静默切换至备用地址 (${altUrl})`, 'info', 3000);
+                return { success: true, latency: altLatency, data: altRes.data, switchedTo: altUrl };
+              }
+            } catch {}
+          }
+        }
+
+        setConnected(false);
+        setServerInfo(null);
+        setError(err.message || '无法连接到 PC 端服务');
+        return { success: false, error: err.message };
+      } finally {
+        setChecking(false);
+      }
+    },
+    [serverUrl, token, profiles, saveConnectedProfile, showToast]
+  );
 
   // 从二维码内容解析并连接
   const connectWithQrPayload = useCallback(async (rawText) => {
@@ -189,9 +362,10 @@ export function ServerProvider({ children }) {
       return nextProfiles;
     });
 
-    // 同步彻底删除该服务器在 IndexedDB 中的全部离线游戏数据与封面图片
+    // 同步彻底删除该服务器在 IndexedDB 中的全部离线游戏数据与封面图片及待同步队列
     deleteServerCache(cleanUrl);
     clearBlobCache();
+    clearPendingChanges(cleanUrl);
 
     // 检查是否删除的是当前连接/活动的服务器
     const currentClean = String(serverUrl || '').trim().replace(/\/+$/, '');
@@ -244,7 +418,9 @@ export function ServerProvider({ children }) {
     localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
     localStorage.removeItem(STORAGE_KEYS.TOKEN);
     api.setCredentials('', '');
-    // 清空本地全部 IndexedDB 缓存与内存 Blob
+    // 清空本地全部 IndexedDB 缓存、内存 Blob 与待同步队列
+    profiles.forEach((p) => p?.url && clearPendingChanges(p.url));
+    if (serverUrl) clearPendingChanges(serverUrl);
     clearAllCache();
     clearBlobCache();
     showToast('已清空全部PC端游戏库与离线缓存', 'info');
@@ -253,9 +429,121 @@ export function ServerProvider({ children }) {
   // 初始加载自动尝试连接一次
   useEffect(() => {
     if (serverUrl && token) {
-      testConnection(serverUrl, token, false);
+      testConnection(serverUrl, token, false, true);
     }
   }, []);
+
+  // 当网络恢复或应用切回前台时，自动探测连接（若回到家WiFi会自动静默切回高速主地址）
+  useEffect(() => {
+    const handleRecheck = () => {
+      if (serverUrl && token) {
+        testConnection(serverUrl, token, false, true);
+      }
+    };
+    window.addEventListener('online', handleRecheck);
+    window.addEventListener('focus', handleRecheck);
+    return () => {
+      window.removeEventListener('online', handleRecheck);
+      window.removeEventListener('focus', handleRecheck);
+    };
+  }, [serverUrl, token, testConnection]);
+
+  // 修改指定游戏库的备用 IP / 穿透域名
+  const updateProfileBackupUrl = useCallback(
+    (identifier, newBackupUrl) => {
+      const cleanBackup = newBackupUrl ? normalizeUrl(newBackupUrl) : '';
+      setProfiles((prev) => {
+        const next = prev.map((p) => {
+          const match =
+            p.id === identifier ||
+            p.token === identifier ||
+            normalizeUrl(p.url) === normalizeUrl(identifier) ||
+            normalizeUrl(p.primaryUrl) === normalizeUrl(identifier);
+          if (!match) return p;
+
+          const urls = Array.from(
+            new Set([p.primaryUrl, cleanBackup, ...(p.urls || [])].filter(Boolean).map(normalizeUrl))
+          );
+          return {
+            ...p,
+            backupUrl: cleanBackup,
+            urls
+          };
+        });
+        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
+        return next;
+      });
+      showToast(cleanBackup ? `已配置备用地址: ${cleanBackup}` : '已清除备用地址', 'success');
+    },
+    [showToast]
+  );
+
+  // 修改指定游戏库的主地址
+  const updateProfilePrimaryUrl = useCallback(
+    (identifier, newPrimaryUrl) => {
+      const cleanPrimary = newPrimaryUrl ? normalizeUrl(newPrimaryUrl) : '';
+      let isCurrent = false;
+      let tokenToUse = '';
+
+      setProfiles((prev) => {
+        const next = prev.map((p) => {
+          const match =
+            p.id === identifier ||
+            p.token === identifier ||
+            normalizeUrl(p.url) === normalizeUrl(identifier) ||
+            normalizeUrl(p.primaryUrl) === normalizeUrl(identifier);
+          if (!match) return p;
+
+          tokenToUse = p.token;
+          if (
+            normalizeUrl(serverUrl) === normalizeUrl(p.url) ||
+            normalizeUrl(serverUrl) === normalizeUrl(p.primaryUrl)
+          ) {
+            isCurrent = true;
+          }
+
+          const urls = Array.from(
+            new Set([cleanPrimary, p.backupUrl, ...(p.urls || [])].filter(Boolean).map(normalizeUrl))
+          );
+          return {
+            ...p,
+            primaryUrl: cleanPrimary,
+            url: isCurrent ? cleanPrimary : p.url,
+            urls
+          };
+        });
+        localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(next));
+        return next;
+      });
+
+      if (isCurrent && cleanPrimary) {
+        setServerUrl(cleanPrimary);
+        localStorage.setItem(STORAGE_KEYS.SERVER_URL, cleanPrimary);
+        api.setCredentials(cleanPrimary, tokenToUse || token);
+        testConnection(cleanPrimary, tokenToUse || token, true);
+      }
+      showToast(cleanPrimary ? `已更新主连接地址: ${cleanPrimary}` : '已清除主地址', 'success');
+    },
+    [serverUrl, token, testConnection, showToast]
+  );
+
+  // 在游戏库的主地址与备用地址之间一键切换
+  const switchProfileActiveUrl = useCallback(
+    async (identifier, targetUrl) => {
+      const clean = normalizeUrl(targetUrl);
+      const targetProfile = profiles.find(
+        (p) =>
+          p.id === identifier ||
+          p.token === identifier ||
+          normalizeUrl(p.url) === normalizeUrl(identifier) ||
+          normalizeUrl(p.primaryUrl) === normalizeUrl(identifier)
+      );
+      if (!targetProfile) return { success: false, error: '未找到对应游戏库' };
+
+      return await testConnection(clean, targetProfile.token, true, false);
+    },
+    [profiles, testConnection]
+  );
 
   return (
     <ServerContext.Provider
@@ -271,16 +559,20 @@ export function ServerProvider({ children }) {
         toast,
         showToast,
         setServerCredentials: (url, tk) => {
-          setServerUrl(url);
+          const clean = normalizeUrl(url);
+          setServerUrl(clean);
           setToken(tk);
-          api.setCredentials(url, tk);
-          testConnection(url, tk, true);
+          api.setCredentials(clean, tk);
+          testConnection(clean, tk, true);
         },
         testConnection,
         connectWithQrPayload,
         removeProfile,
         clearProfiles,
-        updateProfileGameCount
+        updateProfileGameCount,
+        updateProfileBackupUrl,
+        updateProfilePrimaryUrl,
+        switchProfileActiveUrl
       }}
     >
       {children}

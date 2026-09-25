@@ -27,9 +27,22 @@ import {
   updateGameInServerCache,
   preloadCovers
 } from './utils/cacheStorage';
+import {
+  pushPendingChangesToPc,
+  applyPendingChangesToGames,
+  getPendingChangeCount
+} from './utils/syncQueue';
 
 function MainApp() {
-  const { serverUrl, token, connected, checking, showToast, updateProfileGameCount } = useServer();
+  const {
+    serverUrl,
+    token,
+    connected,
+    checking,
+    testConnection,
+    showToast,
+    updateProfileGameCount
+  } = useServer();
 
   // 壁纸与个性化配置
   const [wallpaperConfig, setWallpaperConfig] = useState(() => {
@@ -66,7 +79,23 @@ function MainApp() {
   const [isOfflineCache, setIsOfflineCache] = useState(false);
   const [cachedTime, setCachedTime] = useState(null);
   const [cachedTotal, setCachedTotal] = useState(0);
+  const [pendingSyncCount, setPendingSyncCount] = useState(() =>
+    serverUrl ? getPendingChangeCount(serverUrl) : 0
+  );
   const syncInProgressRef = useRef(false);
+  const loadGamesRef = useRef(null);
+
+  // 监听待同步离线修改队列变化
+  useEffect(() => {
+    setPendingSyncCount(serverUrl ? getPendingChangeCount(serverUrl) : 0);
+    const handleQueueChange = () => {
+      setPendingSyncCount(serverUrl ? getPendingChangeCount(serverUrl) : 0);
+    };
+    window.addEventListener('mygal:pending-changes-updated', handleQueueChange);
+    return () => {
+      window.removeEventListener('mygal:pending-changes-updated', handleQueueChange);
+    };
+  }, [serverUrl]);
 
   // 视图与检索配置
   const [searchQuery, setSearchQuery] = useState('');
@@ -157,6 +186,13 @@ function MainApp() {
     setCacheProgress(2);
 
     try {
+      // 1. 优先推送离线期间在移动端积累的修改到 PC 端 (严格保证先推后拉，绝不推错或被旧数据覆盖)
+      const pushResult = await pushPendingChangesToPc(serverUrl, api, showToast);
+      if (pushResult.successCount > 0) {
+        // 如果有成功推送的项目，静默重新拉取当前分页以展示最新 PC 确认状态
+        loadGamesRef.current?.(1, false);
+      }
+
       const [tagList, pathList, allGamesRes] = await Promise.all([
         api.getTags().catch(() => []),
         api.getRootPaths().catch(() => []),
@@ -172,7 +208,8 @@ function MainApp() {
       setRootPaths(safePaths);
 
       if (allGamesRes?.items && Array.isArray(allGamesRes.items)) {
-        const allItems = allGamesRes.items;
+        // 若仍有个别离线项尚未推送成功，在本地缓存保存前叠加保护
+        const allItems = applyPendingChangesToGames(allGamesRes.items, serverUrl);
         const realTotal = typeof allGamesRes.total === 'number' ? allGamesRes.total : allItems.length;
 
         // 保存完整游戏列表与分类元数据到 IndexedDB
@@ -210,7 +247,7 @@ function MainApp() {
     } finally {
       syncInProgressRef.current = false;
     }
-  }, [connected, serverUrl, token, updateProfileGameCount]);
+  }, [connected, serverUrl, token, showToast, updateProfileGameCount]);
 
   // 加载元数据
   const loadMetadata = useCallback(async () => {
@@ -267,10 +304,12 @@ function MainApp() {
           });
 
           if (res?.items) {
+            // 叠加应用本地待推送修改（避免网络延迟导致短暂闪回旧数据）
+            const safeItems = applyPendingChangesToGames(res.items, serverUrl);
             if (isAppend) {
-              setGames((prev) => [...prev, ...res.items]);
+              setGames((prev) => [...prev, ...safeItems]);
             } else {
-              setGames(res.items);
+              setGames(safeItems);
             }
             setTotal(res.total || 0);
             setPage(targetPage);
@@ -351,6 +390,8 @@ function MainApp() {
     ]
   );
 
+  loadGamesRef.current = loadGames;
+
   // 依赖变化触发重新加载
   useEffect(() => {
     if (!serverUrl) {
@@ -383,9 +424,19 @@ function MainApp() {
 
   // 更新局部游戏状态并同步到 IndexedDB 缓存
   const handleUpdateGame = (updatedGame) => {
-    setGames((prev) =>
-      prev.map((g) => (g.id === updatedGame.id ? { ...g, ...updatedGame } : g))
-    );
+    setGames((prev) => {
+      const next = prev.map((g) => (g.id === updatedGame.id ? { ...g, ...updatedGame } : g));
+      if ('pinned' in updatedGame) {
+        // 置顶切换后，在当前列表视图中即时将置顶项置于最前端
+        return [...next].sort((a, b) => {
+          if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+            return a.pinned ? -1 : 1;
+          }
+          return 0;
+        });
+      }
+      return next;
+    });
     if (selectedGame?.id === updatedGame.id) {
       setSelectedGame((prev) => ({ ...prev, ...updatedGame }));
     }
@@ -468,13 +519,17 @@ function MainApp() {
           setPage(1);
         }}
         rootPaths={rootPaths}
-        onRefreshList={() => {
+        onRefreshList={async () => {
+          if (serverUrl) {
+            await testConnection(serverUrl, token, false, true);
+          }
           loadMetadata();
           loadGames(1, false);
           syncOfflineCache();
         }}
         loading={loading}
         cacheProgress={cacheProgress}
+        pendingSyncCount={pendingSyncCount}
       />
 
       {/* Main Content Area */}

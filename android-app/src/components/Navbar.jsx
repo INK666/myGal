@@ -12,7 +12,8 @@ import {
   List,
   Search,
   X,
-  Palette
+  Palette,
+  CloudUpload
 } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 
@@ -35,7 +36,8 @@ export default function Navbar({
   rootPaths = [],
   onRefreshList,
   loading,
-  cacheProgress = null // 0 ~ 100 缓存微进度条 (null 时隐藏)
+  cacheProgress = null, // 0 ~ 100 缓存微进度条 (null 时隐藏)
+  pendingSyncCount = 0
 }) {
   const { connected, checking, serverUrl } = useServer();
 
@@ -84,6 +86,15 @@ export default function Navbar({
                   : '未连接'}
               </span>
             </button>
+            {pendingSyncCount > 0 && (
+              <div
+                className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-medium"
+                title={`${pendingSyncCount} 项离线修改待推送到 PC 端`}
+              >
+                <CloudUpload className="w-3 h-3 text-amber-400 animate-pulse shrink-0" />
+                <span className="whitespace-nowrap">{pendingSyncCount} 待同步</span>
+              </div>
+            )}
           </div>
         </div>
 
