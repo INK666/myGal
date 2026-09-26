@@ -39,15 +39,56 @@ const getBackgroundsDir = () => path.join(app.getPath('userData'), 'backgrounds'
 
 const isPathUnderDirectory = (filePath, dirPath) => {
   try {
-    const normalizedFile = path.normalize(filePath);
-    const normalizedDir = path.normalize(dirPath);
-    const relative = path.relative(normalizedDir, normalizedFile);
+    const resolvedFile = path.resolve(filePath).toLowerCase();
+    const resolvedDir = path.resolve(dirPath).toLowerCase();
+    if (resolvedFile === resolvedDir) return false;
+    const relative = path.relative(resolvedDir, resolvedFile);
     return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
   } catch {
     return false;
   }
 };
 
+const getArchiveCacheDir = () => path.join(app.getPath('userData'), 'archive_cache');
+
+const safeUnlinkArchive = (archivePath) => {
+  if (!archivePath || typeof archivePath !== 'string') return;
+  const cacheDir = getArchiveCacheDir();
+  // 严格安全四重防御机制：绝对不触碰任何用户游戏原文件
+  // 1. 目标必须严格位于 App 的 archive_cache 专属目录下，绝不可在游戏目录或其它任何外部路径
+  if (!isPathUnderDirectory(archivePath, cacheDir)) return;
+  // 2. 文件名必须以专属临时打包命名前缀 mygal_archive_ 开头并以 .zip 结尾
+  const fileName = path.basename(archivePath);
+  if (!fileName.startsWith('mygal_archive_') || !fileName.endsWith('.zip')) return;
+  // 3. 严格必须为单文件实体，绝不允许删除任何目录结构
+  try {
+    if (!fs.existsSync(archivePath)) return;
+    const st = fs.statSync(archivePath);
+    if (!st.isFile()) return;
+    // 4. 执行单文件物理删除
+    fs.unlinkSync(archivePath);
+  } catch {}
+};
+
+const cleanArchiveCache = (maxAgeMs = 12 * 60 * 60 * 1000) => {
+  try {
+    const dir = getArchiveCacheDir();
+    if (!fs.existsSync(dir)) return;
+    const now = Date.now();
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.startsWith('mygal_archive_') && entry.name.endsWith('.zip')) {
+        const fullPath = path.join(dir, entry.name);
+        try {
+          const st = fs.statSync(fullPath);
+          if (now - st.mtimeMs >= maxAgeMs) {
+            safeUnlinkArchive(fullPath);
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+};
 const safeUnlinkCover = (coverPath, excludeGameId = null) => {
   if (!coverPath) return;
   if (typeof coverPath !== 'string') return;
@@ -4319,15 +4360,48 @@ const readRequestBody = (req) => new Promise((resolve, reject) => {
 
 // --- 下载票据与大文件 Range 断点续传支持 ---
 const downloadTickets = new Map();
+const packagingJobs = new Map(); // key: `${gameId}:${requestedFile}` -> job
 
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of downloadTickets.entries()) {
     if (val.expiresAt <= now) {
+      if (val.isTempArchive && val.filePath) {
+        safeUnlinkArchive(val.filePath);
+      }
       downloadTickets.delete(key);
     }
   }
+  // 顺便做一次过期临时打包缓存安全清理 (超过 12 小时的缓存自动清理)
+  cleanArchiveCache(12 * 60 * 60 * 1000);
 }, 5 * 60 * 1000).unref();
+
+const createArchiveWithTar = (sourceDir, targetZipPath) => new Promise((resolve, reject) => {
+  const dir = path.dirname(targetZipPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // 使用 Windows 10/11 原生 C 语言底层 bsdtar，速度提升 10 倍以上且支持 4GB+ 大文件 Zip64
+  const tarProc = spawn('tar.exe', ['--options', 'zip:compression=store', '-a', '-cf', targetZipPath, '-C', sourceDir, '.']);
+
+  let stderr = '';
+  tarProc.stderr?.on('data', (d) => { stderr += d.toString(); });
+
+  tarProc.on('close', (code) => {
+    if (code === 0 && fs.existsSync(targetZipPath)) {
+      resolve();
+    } else {
+      safeUnlinkArchive(targetZipPath);
+      reject(new Error(stderr || `tar 压缩失败，退出码: ${code}`));
+    }
+  });
+
+  tarProc.on('error', (err) => {
+    safeUnlinkArchive(targetZipPath);
+    reject(err);
+  });
+});
 
 const runCommandAsync = (cmd, options = {}) => new Promise((resolve, reject) => {
   const { exec } = require('child_process');
@@ -4375,7 +4449,6 @@ const serveFileWithRange = (req, res, filePath, customFilename = null, customCon
       'Content-Disposition': `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
     });
     res.end();
-    if (cleanupCallback) try { cleanupCallback(); } catch {}
     return;
   }
 
@@ -4893,6 +4966,201 @@ const handleApiRequest = async (req, res) => {
       return;
     }
 
+    // --- /api/games/:id/prepare-archive (触发后台打包准备) ---
+    const prepareArchiveMatch = url.pathname.match(/^\/api\/games\/(\d+)\/prepare-archive$/);
+    if (prepareArchiveMatch && req.method === 'POST') {
+      const gameId = Number.parseInt(prepareArchiveMatch[1], 10);
+      const game = db.prepare('SELECT id, name, alias, path FROM games WHERE id = ?').get(gameId);
+      if (!game || !game.path || !fs.existsSync(game.path)) {
+        sendApiError(res, 404, '游戏不存在或未找到文件路径');
+        return;
+      }
+      const rootPath = path.resolve(game.path);
+      let rootStat;
+      try { rootStat = fs.statSync(rootPath); } catch (err) {
+        sendApiError(res, 500, '读取游戏路径失败: ' + (err?.message || String(err)));
+        return;
+      }
+
+      const body = await readRequestBody(req);
+      const requestedFile = String(body.file || url.searchParams.get('file') || '').trim();
+
+      // 如果游戏本身是单文件（.zip/.7z/.rar 等）
+      if (!rootStat.isDirectory()) {
+        const filename = path.basename(rootPath);
+        sendApiJson(res, 200, {
+          success: true,
+          status: 'ready',
+          isDirect: true,
+          filename,
+          size: rootStat.size,
+          downloadUrl: `${baseUrl}/api/games/${gameId}/download`
+        });
+        return;
+      }
+
+      // 如果是单文件子文件
+      let targetPath = rootPath;
+      let targetName = game.alias || game.name || 'game';
+      if (requestedFile && requestedFile !== '.' && requestedFile !== '/') {
+        targetPath = path.resolve(rootPath, requestedFile);
+        const rel = path.relative(rootPath, targetPath);
+        if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(targetPath)) {
+          sendApiError(res, 403, '文件不存在或超出安全访问范围');
+          return;
+        }
+        targetName = path.basename(targetPath);
+        const st = fs.statSync(targetPath);
+        if (!st.isDirectory()) {
+          sendApiJson(res, 200, {
+            success: true,
+            status: 'ready',
+            isDirect: true,
+            filename: targetName,
+            size: st.size,
+            downloadUrl: `${baseUrl}/api/games/${gameId}/download?file=${encodeURIComponent(requestedFile)}`
+          });
+          return;
+        }
+      }
+
+      // 目标是散装文件夹：异步后台压缩打包
+      const sanitizedName = targetName.replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').trim() || 'game';
+      const jobKey = `${gameId}:${requestedFile}`;
+      const existingJob = packagingJobs.get(jobKey);
+
+      if (existingJob) {
+        if (existingJob.status === 'packaging') {
+          sendApiJson(res, 200, {
+            success: true,
+            status: 'packaging',
+            message: 'PC 端预压缩中...',
+            filename: `${sanitizedName}.zip`,
+            elapsedMs: Date.now() - existingJob.startedAt
+          });
+          return;
+        }
+        if (existingJob.status === 'ready' && fs.existsSync(existingJob.zipPath)) {
+          sendApiJson(res, 200, {
+            success: true,
+            status: 'ready',
+            filename: existingJob.filename,
+            size: existingJob.zipSize,
+            ticket: existingJob.ticket,
+            downloadUrl: existingJob.downloadUrl
+          });
+          return;
+        }
+        packagingJobs.delete(jobKey);
+      }
+
+      const cacheDir = getArchiveCacheDir();
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      const zipFileName = `mygal_archive_${gameId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.zip`;
+      const zipPath = path.join(cacheDir, zipFileName);
+
+      const job = {
+        key: jobKey,
+        gameId,
+        requestedFile,
+        status: 'packaging',
+        startedAt: Date.now(),
+        zipPath,
+        filename: `${sanitizedName}.zip`,
+        zipSize: 0,
+        error: null,
+        ticket: null,
+        downloadUrl: ''
+      };
+      packagingJobs.set(jobKey, job);
+
+      (async () => {
+        try {
+          await createArchiveWithTar(targetPath, zipPath);
+          const st = fs.statSync(zipPath);
+          job.zipSize = st.size;
+
+          const ticketId = crypto.randomBytes(18).toString('hex');
+          downloadTickets.set(ticketId, {
+            gameId,
+            filePath: zipPath,
+            filename: `${sanitizedName}.zip`,
+            size: st.size,
+            isTempArchive: true,
+            expiresAt: Date.now() + 2 * 60 * 60 * 1000
+          });
+
+          job.ticket = ticketId;
+          job.downloadUrl = `${baseUrl}/api/downloads/${ticketId}`;
+          job.status = 'ready';
+        } catch (err) {
+          job.status = 'error';
+          job.error = err?.message || String(err);
+          safeUnlinkArchive(zipPath);
+        }
+      })();
+
+      sendApiJson(res, 200, {
+        success: true,
+        status: 'packaging',
+        message: 'PC 端预压缩中，请稍候...',
+        filename: `${sanitizedName}.zip`,
+        elapsedMs: 0
+      });
+      return;
+    }
+
+    // --- /api/games/:id/archive-status (查询后台打包状态) ---
+    const archiveStatusMatch = url.pathname.match(/^\/api\/games\/(\d+)\/archive-status$/);
+    if (archiveStatusMatch && req.method === 'GET') {
+      const gameId = Number.parseInt(archiveStatusMatch[1], 10);
+      const requestedFile = String(url.searchParams.get('file') || '').trim();
+      const jobKey = `${gameId}:${requestedFile}`;
+      const job = packagingJobs.get(jobKey);
+
+      if (!job) {
+        sendApiJson(res, 200, { success: true, status: 'idle' });
+        return;
+      }
+
+      if (job.status === 'packaging') {
+        sendApiJson(res, 200, {
+          success: true,
+          status: 'packaging',
+          message: 'PC 端预压缩中...',
+          filename: job.filename,
+          elapsedMs: Date.now() - job.startedAt
+        });
+        return;
+      }
+
+      if (job.status === 'ready') {
+        if (!fs.existsSync(job.zipPath)) {
+          packagingJobs.delete(jobKey);
+          sendApiJson(res, 200, { success: true, status: 'idle' });
+          return;
+        }
+        sendApiJson(res, 200, {
+          success: true,
+          status: 'ready',
+          filename: job.filename,
+          size: job.zipSize,
+          ticket: job.ticket,
+          downloadUrl: job.downloadUrl
+        });
+        return;
+      }
+
+      sendApiJson(res, 200, {
+        success: false,
+        status: 'error',
+        error: job.error || '打包失败'
+      });
+      return;
+    }
+
     // --- /api/games/:id/download (支持 Range 断点续传与 HEAD 请求) ---
     const downloadMatch = url.pathname.match(/^\/api\/games\/(\d+)\/download$/);
     if (downloadMatch && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -4923,19 +5191,19 @@ const handleApiRequest = async (req, res) => {
       // 情况 2：游戏路径为文件夹
       // 2.1 用户请求整个游戏（file 为空、'.'、'/' 或未传） -> 异步打包整个游戏文件夹！
       if (!requestedFile || requestedFile === '.' || requestedFile === '/' || requestedFile === '*') {
-        const folderName = game.name || path.basename(rootPath) || 'game';
-        const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
-        const cleanup = () => {
-          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
-        };
+        const folderName = (game.alias || game.name || path.basename(rootPath) || 'game').replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').trim();
+        const cacheDir = getArchiveCacheDir();
+        if (!fs.existsSync(cacheDir)) {
+          fs.mkdirSync(cacheDir, { recursive: true });
+        }
+        const tempZip = path.join(cacheDir, `mygal_archive_${gameId}_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        // 1 小时后自动安全销毁临时压缩包，避免下载中被过早清除，亦不会永久遗留
+        setTimeout(() => safeUnlinkArchive(tempZip), 60 * 60 * 1000).unref();
         try {
-          const safePath = rootPath.replace(/'/g, "''");
-          const safeZip = tempZip.replace(/'/g, "''");
-          const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
-          // 使用异步 child_process.exec，彻底避免阻塞 Electron 主线程与 API 事件循环
-          await runCommandAsync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 3600000 });
+          // 使用原生 bsdtar，速度提升 10 倍以上，彻底避免阻塞 Electron 主线程与超时
+          await createArchiveWithTar(rootPath, tempZip);
           if (fs.existsSync(tempZip)) {
-            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip', cleanup);
+            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip');
             return;
           } else {
             throw new Error('生成的临时压缩文件不存在');
@@ -4956,18 +5224,19 @@ const handleApiRequest = async (req, res) => {
       }
       const st = fs.statSync(targetFilePath);
       if (st.isDirectory()) {
-        const folderName = path.basename(targetFilePath) || game.name || 'archive';
-        const tempZip = path.join(os.tmpdir(), `mygal_pack_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
+        const folderName = (path.basename(targetFilePath) || game.name || 'archive').replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').trim();
+        const cacheDir = getArchiveCacheDir();
+        if (!fs.existsSync(cacheDir)) {
+          fs.mkdirSync(cacheDir, { recursive: true });
+        }
+        const tempZip = path.join(cacheDir, `mygal_archive_${gameId}_${Date.now()}_${Math.random().toString(36).slice(2)}.zip`);
         const cleanup = () => {
-          try { if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip); } catch {}
+          safeUnlinkArchive(tempZip);
         };
         try {
-          const safePath = targetFilePath.replace(/'/g, "''");
-          const safeZip = tempZip.replace(/'/g, "''");
-          const psCommand = `$items = @(Get-ChildItem -LiteralPath '${safePath}' | ForEach-Object { $_.FullName }); if ($items.Count -gt 0) { Compress-Archive -LiteralPath $items -DestinationPath '${safeZip}' -Force } else { Compress-Archive -LiteralPath '${safePath}' -DestinationPath '${safeZip}' -Force }`;
-          await runCommandAsync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, { timeout: 1800000 });
+          await createArchiveWithTar(targetFilePath, tempZip);
           if (fs.existsSync(tempZip)) {
-            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip', cleanup);
+            serveFileWithRange(req, res, tempZip, `${folderName}.zip`, 'application/zip');
             return;
           } else {
             throw new Error('生成的临时压缩文件不存在');
@@ -5096,6 +5365,9 @@ const startApiServer = async () => {
   await stopApiServer();
   return new Promise((resolve) => {
     const server = http.createServer(handleApiRequest);
+    server.headersTimeout = 120000; // 120 秒网络请求头超时
+    server.requestTimeout = 180000; // 180 秒整体请求超时
+    server.keepAliveTimeout = 120000;
     server.on('error', (error) => {
       apiServer = null;
       apiServerState = {
@@ -5201,6 +5473,7 @@ ipcMain.handle('regenerate-api-token', async () => {
 });
 
 app.whenReady().then(() => {
+  cleanArchiveCache(60 * 60 * 1000); // 启动时清理 1 小时以前的遗留临时打包文件
   initDatabase();
   startApiServer();
   createWindow();
@@ -5213,6 +5486,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  cleanArchiveCache(0); // 退出时安全清理全部临时打包缓存
   stopApiServer();
 });
 

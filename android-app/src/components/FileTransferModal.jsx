@@ -593,31 +593,56 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
         {/* --- 当前游戏正在下载的即时小进度条 --- */}
         {(() => {
           const activeGameDownload = downloadTasks.find(
-            (t) => t.status === 'RUNNING' || t.status === 'PENDING'
+            (t) => (t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PACKAGING') && t.gameId === game.id
           );
           if (!activeGameDownload) return null;
+          const isPreCompressing =
+            activeGameDownload.status === 'PACKAGING' ||
+            ((activeGameDownload.status === 'RUNNING' || activeGameDownload.status === 'PENDING') &&
+              (activeGameDownload.progress === 0 || !activeGameDownload.bytesDownloaded));
+
           return (
             <div className="mx-4 mt-2 p-2.5 rounded-xl bg-indigo-950/70 border border-indigo-500/40 flex items-center justify-between text-xs animate-slide-up shadow-md">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                <Download className="w-4 h-4 text-emerald-400 animate-bounce shrink-0" />
+                {isPreCompressing ? (
+                  <RefreshCw className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                ) : (
+                  <Download className="w-4 h-4 text-emerald-400 animate-bounce shrink-0" />
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-gray-200 font-medium text-[11px]">
                       {activeGameDownload.fileName}
                     </span>
-                    <span className="font-mono text-indigo-300 font-bold text-[11px] shrink-0">
-                      {activeGameDownload.progress}%
-                    </span>
+                    {isPreCompressing ? (
+                      <span className="font-mono text-amber-300 font-bold text-[11px] shrink-0 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping inline-block" />
+                        预压缩中
+                      </span>
+                    ) : (
+                      <span className="font-mono text-indigo-300 font-bold text-[11px] shrink-0">
+                        {activeGameDownload.progress}%
+                      </span>
+                    )}
                   </div>
+                  {isPreCompressing ? (
+                    <div className="text-[10px] text-amber-300/90 mt-0.5 truncate font-medium">
+                      {activeGameDownload.statusMessage || 'PC 端预压缩中，请稍候...'}
+                    </div>
+                  ) : null}
                   <div className="w-full bg-gray-800 rounded-full h-1 mt-1 overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 rounded-full transition-all duration-300"
-                      style={{ width: `${Math.max(2, activeGameDownload.progress)}%` }}
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        isPreCompressing
+                          ? 'bg-gradient-to-r from-amber-500 to-yellow-300 animate-pulse w-full'
+                          : 'bg-gradient-to-r from-indigo-500 to-emerald-400'
+                      }`}
+                      style={isPreCompressing ? { width: '100%' } : { width: `${Math.max(2, activeGameDownload.progress)}%` }}
                     />
                   </div>
                 </div>
               </div>
-              {activeGameDownload.speed && (
+              {!isPreCompressing && activeGameDownload.speed && (
                 <span className="font-mono text-emerald-400 text-[10px] shrink-0 ml-3">
                   {activeGameDownload.speed}
                 </span>
@@ -736,9 +761,31 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
                           t.fileName === item.name ||
                           t.fileName === `${item.name}.zip`
                       );
+                      const isItemPreCompressing =
+                        itemTask &&
+                        (itemTask.status === 'PACKAGING' ||
+                          ((itemTask.status === 'RUNNING' || itemTask.status === 'PENDING') &&
+                            (itemTask.progress === 0 || !itemTask.bytesDownloaded)));
                       const isItemRunning =
                         itemTask &&
                         (itemTask.status === 'RUNNING' || itemTask.status === 'PENDING');
+
+                      if (isItemPreCompressing) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadManager.cancelDownload(itemTask.id);
+                            }}
+                            className="p-1.5 px-2 rounded-xl bg-amber-600/30 hover:bg-rose-500/20 text-amber-300 hover:text-rose-300 border border-amber-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
+                            title="PC 端预压缩中，点击可取消"
+                          >
+                            <div className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                            <span>预压缩中</span>
+                          </button>
+                        );
+                      }
 
                       if (isItemRunning) {
                         return (

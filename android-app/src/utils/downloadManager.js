@@ -46,8 +46,28 @@ class DownloadManager {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
+  sanitizeFileName(name) {
+    if (!name) return 'game_download';
+    let s = name.replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').trim();
+    s = s.replace(/^[. ]+|[. ]+$/g, '');
+    return s || 'download';
+  }
+
+  async openDownloadsFolder() {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await NativeDownloader.openDownloadsFolder();
+        return true;
+      } catch (err) {
+        console.warn('[DownloadManager] 打开系统下载目录失败:', err);
+      }
+    }
+    return false;
+  }
+
   async startDownload({ gameId, relPath = '', fileName = '', title = '' }) {
-    const finalFileName = fileName || relPath.split('/').pop() || 'game_download';
+    const rawFileName = fileName || relPath.split('/').pop() || 'game_download';
+    const finalFileName = this.sanitizeFileName(rawFileName);
     const finalTitle = title || finalFileName;
     const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
@@ -63,6 +83,7 @@ class DownloadManager {
       progress: 0,
       speed: '',
       status: 'PENDING',
+      statusMessage: '',
       error: null,
       startedAt: Date.now()
     };
@@ -71,32 +92,94 @@ class DownloadManager {
     this.notify();
 
     try {
-      // 1. 尝试获取短时下载凭据，避免管理 Token 泄露
+      // 1. 尝试触发或检测 PC 端后台异步打包状态
       let downloadUrl = '';
+      let archiveFilename = finalFileName;
+
+      task.status = 'PACKAGING';
+      task.statusMessage = '正在连接 PC 端并检测预压缩状态...';
+      this.notify();
+
+      let prepareRes = null;
       try {
-        const ticketRes = await api.createDownloadTicket(gameId, relPath);
-        if (ticketRes?.downloadUrl) {
-          downloadUrl = ticketRes.downloadUrl;
-          if (ticketRes.size) {
-            task.totalSize = ticketRes.size;
-          }
-        }
-      } catch (ticketErr) {
-        console.warn('[DownloadManager] 申请票据失败，回退至普通下载链接:', ticketErr);
+        const rawPrep = await api.prepareArchive(gameId, relPath);
+        prepareRes = rawPrep?.data || rawPrep;
+      } catch (prepErr) {
+        console.warn('[DownloadManager] prepareArchive 调用失败，尝试直接下载:', prepErr);
       }
 
-      // 若未申请到票据（如文件夹或旧版本后端），回退到普通下载地址
+      if (prepareRes && prepareRes.status === 'packaging') {
+        task.status = 'PACKAGING';
+        task.statusMessage = 'PC 端预压缩中，请稍候...';
+        this.notify();
+
+        // 轮询打包状态，最长等待 20 分钟 (800 次 * 1.5s)
+        let ready = false;
+        for (let i = 0; i < 800; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          // 如果用户中途取消了任务，退出
+          const current = this.tasks.get(taskId);
+          if (!current || current.status === 'CANCELLED') return current;
+
+          try {
+            const rawStatus = await api.getArchiveStatus(gameId, relPath);
+            const statusRes = rawStatus?.data || rawStatus;
+            if (statusRes && statusRes.status === 'ready') {
+              downloadUrl = statusRes.downloadUrl;
+              archiveFilename = statusRes.filename || finalFileName;
+              task.totalSize = statusRes.size || 0;
+              ready = true;
+              break;
+            } else if (statusRes && statusRes.status === 'error') {
+              throw new Error('PC 端预压缩失败: ' + (statusRes.error || '未知错误'));
+            } else if (statusRes && statusRes.status === 'packaging') {
+              const sec = Math.round((statusRes.elapsedMs || (i * 1500)) / 1000);
+              task.statusMessage = `PC 端预压缩中 (${sec}s)...`;
+              this.notify();
+            }
+          } catch (pollErr) {
+            console.warn('[DownloadManager] 轮询打包状态异常:', pollErr);
+          }
+        }
+
+        if (!ready) {
+          throw new Error('PC 端打包等待超时 (超过 20 分钟)');
+        }
+      } else if (prepareRes && prepareRes.status === 'ready') {
+        downloadUrl = prepareRes.downloadUrl;
+        archiveFilename = prepareRes.filename || finalFileName;
+        task.totalSize = prepareRes.size || 0;
+      }
+
+      // 如果未走 prepareArchive 或没有获得下载链接，回退到短时票据或普通下载
+      if (!downloadUrl) {
+        try {
+          const ticketRes = await api.createDownloadTicket(gameId, relPath);
+          if (ticketRes?.downloadUrl) {
+            downloadUrl = ticketRes.downloadUrl;
+            if (ticketRes.size) task.totalSize = ticketRes.size;
+          }
+        } catch (ticketErr) {
+          console.warn('[DownloadManager] 申请票据失败，回退至普通下载链接:', ticketErr);
+        }
+      }
+
       if (!downloadUrl) {
         downloadUrl = api.getDownloadFileUrl(gameId, relPath);
       }
+
+      task.status = 'RUNNING';
+      task.statusMessage = '';
+      task.fileName = archiveFilename;
+      this.notify();
 
       // 2. 原生 Android 环境：调用系统级 DownloadManager
       if (Capacitor.isNativePlatform()) {
         const res = await NativeDownloader.startDownload({
           url: downloadUrl,
-          fileName: finalFileName,
+          fileName: archiveFilename,
           title: finalTitle,
-          description: `正在通过局域网下载: ${finalFileName}`
+          description: `正在通过局域网高速下载: ${archiveFilename}`
         });
 
         task.nativeId = res.downloadId;
@@ -109,7 +192,7 @@ class DownloadManager {
       // 3. Web 浏览器回退：模拟下载
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = finalFileName;
+      a.download = archiveFilename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -121,6 +204,7 @@ class DownloadManager {
     } catch (err) {
       task.status = 'FAILED';
       task.error = err?.message || String(err);
+      task.statusMessage = '';
       this.notify();
       throw err;
     }
@@ -177,6 +261,21 @@ class DownloadManager {
           task.totalSize = total;
           task.progress = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
           task.status = res.status;
+
+          // 只要进度条为 0，标记为预压缩中状态提示
+          if (task.progress === 0 && bytes === 0 && (task.status === 'RUNNING' || task.status === 'PENDING')) {
+            task.statusMessage = '预压缩中...';
+          } else if (bytes > 0) {
+            task.statusMessage = '';
+          }
+
+          // 120 秒网络超时机制：若启动超过 120 秒仍处于 0 字节，判定为连接超时
+          if (task.status === 'RUNNING' && bytes === 0 && (now - task.startedAt) > 120000) {
+            task.status = 'FAILED';
+            task.error = '连接超时 (超过 120 秒无数据传输，请重试)';
+            task.speed = '';
+            hasChange = true;
+          }
 
           if (res.status === 'SUCCESSFUL') {
             task.progress = 100;

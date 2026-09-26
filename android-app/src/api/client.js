@@ -335,13 +335,31 @@ export class ApiClient {
     return res.data;
   }
 
-  // 申请短时下载票据（防止管理 Token 暴露在 URL 中）
+  // 申请短时下载票据（超时设为 120 秒）
   async createDownloadTicket(gameId, relativeFilePath = '') {
     const res = await this.request(`/api/games/${gameId}/download-ticket`, {
       method: 'POST',
-      body: JSON.stringify({ file: relativeFilePath })
+      body: JSON.stringify({ file: relativeFilePath }),
+      timeout: 120000
     });
-    return res.data;
+    return res?.data || res;
+  }
+
+  // 触发或检测 PC 端后台异步预压缩（超时设为 120 秒）
+  async prepareArchive(gameId, relativeFilePath = '') {
+    const res = await this.request(`/api/games/${gameId}/prepare-archive`, {
+      method: 'POST',
+      body: JSON.stringify({ file: relativeFilePath }),
+      timeout: 120000
+    });
+    return res?.data || res;
+  }
+
+  // 查询 PC 端后台打包状态
+  async getArchiveStatus(gameId, relativeFilePath = '') {
+    const query = relativeFilePath ? `?file=${encodeURIComponent(relativeFilePath)}` : '';
+    const res = await this.request(`/api/games/${gameId}/archive-status${query}`);
+    return res?.data || res;
   }
 
   getDownloadFileUrl(gameId, relativeFilePath = '') {

@@ -16,8 +16,11 @@ export default function DownloadProgressBar() {
   // 只要有任何任务存在，就显示悬浮条
   if (!tasks || tasks.length === 0) return null;
 
-  const activeTask = tasks.find((t) => t.status === 'RUNNING' || t.status === 'PENDING') || tasks[0];
-  const isRunning = activeTask?.status === 'RUNNING' || activeTask?.status === 'PENDING';
+  const activeTask = tasks.find((t) => t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PACKAGING') || tasks[0];
+  const isPreCompressing =
+    activeTask?.status === 'PACKAGING' ||
+    ((activeTask?.status === 'RUNNING' || activeTask?.status === 'PENDING') && (activeTask?.progress === 0 || !activeTask?.bytesDownloaded));
+  const isRunning = activeTask?.status === 'RUNNING' || activeTask?.status === 'PENDING' || activeTask?.status === 'PACKAGING';
   const isSuccess = activeTask?.status === 'SUCCESSFUL';
   const isFailed = activeTask?.status === 'FAILED';
 
@@ -36,6 +39,8 @@ export default function DownloadProgressBar() {
                     ? 'bg-emerald-500/20 text-emerald-400'
                     : isFailed
                     ? 'bg-rose-500/20 text-rose-400'
+                    : isPreCompressing
+                    ? 'bg-amber-500/20 text-amber-400'
                     : 'bg-indigo-500/20 text-indigo-400'
                 }`}
               >
@@ -43,6 +48,8 @@ export default function DownloadProgressBar() {
                   <CheckCircle className="w-4 h-4" />
                 ) : isFailed ? (
                   <AlertCircle className="w-4 h-4" />
+                ) : isPreCompressing ? (
+                  <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
                 ) : (
                   <Download className={`w-4 h-4 ${isRunning ? 'animate-bounce' : ''}`} />
                 )}
@@ -53,21 +60,44 @@ export default function DownloadProgressBar() {
                   <p className="text-xs font-semibold text-gray-100 truncate" title={activeTask.fileName}>
                     {activeTask.fileName}
                   </p>
-                  <span className="text-[11px] font-mono font-bold text-indigo-300 shrink-0">
-                    {activeTask.progress}%
-                  </span>
+                  {isPreCompressing ? (
+                    <span className="text-[11px] font-mono font-bold text-amber-300 shrink-0 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping inline-block" />
+                      预压缩中
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-mono font-bold text-indigo-300 shrink-0">
+                      {activeTask.progress}%
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-gray-400 mt-0.5">
-                  <span>
-                    {formatSize(activeTask.bytesDownloaded)} / {formatSize(activeTask.totalSize || 0)}
-                  </span>
-                  {activeTask.speed && (
-                    <span className="text-emerald-400 font-mono font-medium">
-                      {activeTask.speed}
+                  {isPreCompressing ? (
+                    <span className="text-amber-300/90 font-medium truncate">
+                      {activeTask.statusMessage || 'PC 端预压缩中，请稍候...'}
                     </span>
+                  ) : (
+                    <>
+                      <span>
+                        {formatSize(activeTask.bytesDownloaded)} / {formatSize(activeTask.totalSize || 0)}
+                      </span>
+                      {activeTask.speed && (
+                        <span className="text-emerald-400 font-mono font-medium">
+                          {activeTask.speed}
+                        </span>
+                      )}
+                    </>
                   )}
-                  {isSuccess && <span className="text-emerald-400 font-medium">下载完成</span>}
+                  {isSuccess && (
+                    <button
+                      onClick={() => downloadManager.openDownloadsFolder()}
+                      className="text-emerald-400 font-semibold hover:underline flex items-center gap-1 active:opacity-70"
+                      title="点击调用系统文件管理查看"
+                    >
+                      <span>已存至 Download/ · 点击打开</span>
+                    </button>
+                  )}
                   {isFailed && <span className="text-rose-400 font-medium">下载失败</span>}
                 </div>
               </div>
@@ -89,7 +119,7 @@ export default function DownloadProgressBar() {
                 <button
                   onClick={() => downloadManager.cancelDownload(activeTask.id)}
                   className="p-1.5 rounded-lg hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 transition-colors"
-                  title="取消下载"
+                  title="取消任务"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -113,9 +143,11 @@ export default function DownloadProgressBar() {
                   ? 'bg-emerald-400'
                   : isFailed
                   ? 'bg-rose-500'
+                  : isPreCompressing
+                  ? 'bg-gradient-to-r from-amber-500 via-yellow-300 to-amber-500 animate-pulse w-full'
                   : 'bg-gradient-to-r from-indigo-500 to-emerald-400'
               }`}
-              style={{ width: `${Math.max(2, activeTask.progress)}%` }}
+              style={isPreCompressing ? { width: '100%' } : { width: `${Math.max(2, activeTask.progress)}%` }}
             />
           </div>
         </div>
@@ -140,9 +172,15 @@ export default function DownloadProgressBar() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-gray-200 text-[11px]">{task.fileName}</p>
                   <div className="flex items-center gap-2 text-[10px] text-gray-400">
-                    <span>{task.progress}%</span>
-                    <span>{formatSize(task.bytesDownloaded)}</span>
-                    {task.speed && <span className="text-emerald-400 font-mono">{task.speed}</span>}
+                    {task.status === 'PACKAGING' || (task.progress === 0 && task.status !== 'FAILED' && task.status !== 'SUCCESSFUL') ? (
+                      <span className="text-amber-400 font-medium">预压缩中</span>
+                    ) : (
+                      <>
+                        <span>{task.progress}%</span>
+                        <span>{formatSize(task.bytesDownloaded)}</span>
+                        {task.speed && <span className="text-emerald-400 font-mono">{task.speed}</span>}
+                      </>
+                    )}
                   </div>
                 </div>
                 <button
