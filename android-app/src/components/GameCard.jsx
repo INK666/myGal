@@ -3,7 +3,7 @@ import { Pin } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 import CoverImage from './CoverImage';
 
-export default function GameCard({ game, viewMode = 'grid2', onClick }) {
+function GameCard({ game, viewMode = 'grid2', onSelect }) {
   const { serverUrl, token } = useServer();
 
   const cleanServerUrl = (serverUrl || '').trim().replace(/\/+$/, '');
@@ -26,8 +26,8 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
   if (viewMode === 'list') {
     return (
       <div
-        onClick={() => onClick(game)}
-        className="glass-panel hover:bg-gray-850/80 active-press rounded-2xl p-3 flex items-center gap-3.5 cursor-pointer transition-all border border-white/5 shadow-sm"
+        onClick={() => onSelect(game)}
+        className="cv-auto-list bg-slate-900/75 hover:bg-gray-850/80 active-press rounded-2xl p-3 flex items-center gap-3.5 cursor-pointer transition-colors border border-white/5 shadow-sm"
       >
         {/* Cover Thumbnail */}
         <div className="w-16 h-22 rounded-xl bg-gray-900 overflow-hidden shrink-0 relative border border-white/10 flex items-center justify-center">
@@ -91,8 +91,8 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
   if (viewMode === 'grid3') {
     return (
       <div
-        onClick={() => onClick(game)}
-        className="group relative flex flex-col rounded-2xl overflow-hidden glass-panel active-press cursor-pointer border border-white/5"
+        onClick={() => onSelect(game)}
+        className="group relative flex flex-col rounded-2xl overflow-hidden cv-auto-grid3 bg-slate-900/75 active-press cursor-pointer border border-white/5"
       >
         {/* Cover 2:3 */}
         <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
@@ -114,7 +114,7 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
         </div>
 
         {/* Title */}
-        <div className="p-1.5 bg-gray-950/80 backdrop-blur-md">
+        <div className="p-1.5 bg-gray-950/85">
           <h4 className="text-[11px] font-semibold text-white truncate text-center">
             {game.alias || game.name}
           </h4>
@@ -126,8 +126,8 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
   // --- 双列标准画廊 (Grid 2 Mode - 默认推荐) ---
   return (
     <div
-      onClick={() => onClick(game)}
-      className="group relative flex flex-col rounded-2xl overflow-hidden glass-panel active-press cursor-pointer border border-white/5 shadow-md hover:border-indigo-500/30 transition-all"
+      onClick={() => onSelect(game)}
+      className="group relative flex flex-col rounded-2xl overflow-hidden cv-auto bg-slate-900/75 active-press cursor-pointer border border-white/5 shadow-md hover:border-indigo-500/30 transition-colors"
     >
       {/* Cover 2:3 Aspect */}
       <div className="w-full aspect-[2/3] bg-gray-900 overflow-hidden relative flex items-center justify-center">
@@ -158,14 +158,14 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
             game.tags.slice(0, 2).map((tag, idx) => (
               <span
                 key={idx}
-                className="text-[9px] font-medium px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-md text-gray-200 border border-white/10"
+                className="text-[9px] font-medium px-1.5 py-0.5 rounded-md bg-black/70 text-gray-200 border border-white/10"
               >
                 {tag}
               </span>
             ))
           ) : null}
           {game.tags && game.tags.length > 2 && (
-            <span className="text-[9px] px-1 py-0.5 rounded-md bg-black/60 text-gray-400 border border-white/10">
+            <span className="text-[9px] px-1 py-0.5 rounded-md bg-black/70 text-gray-400 border border-white/10">
               +{game.tags.length - 2}
             </span>
           )}
@@ -186,3 +186,26 @@ export default function GameCard({ game, viewMode = 'grid2', onClick }) {
     </div>
   );
 }
+
+// 只比较卡片实际用到的字段：列表同步/进度刷新导致的父组件重渲染不再波及无关卡片。
+// onSelect 必须是稳定引用（App 传的是 setState 函数），否则 memo 失效。
+function arePropsEqual(prev, next) {
+  if (prev.viewMode !== next.viewMode) return false;
+  if (prev.onSelect !== next.onSelect) return false;
+  const a = prev.game;
+  const b = next.game;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.alias === b.alias &&
+    a.pinned === b.pinned &&
+    a.hasCover === b.hasCover &&
+    a.coverUrl === b.coverUrl &&
+    a.updatedAt === b.updatedAt &&
+    a.tags === b.tags
+  );
+}
+
+export default React.memo(GameCard, arePropsEqual);

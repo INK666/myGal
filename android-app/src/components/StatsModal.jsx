@@ -83,7 +83,7 @@ export default function StatsModal({ isOpen, onClose }) {
         </div>
 
         {/* Content */}
-        <div className="p-5 overflow-y-auto space-y-4 flex-1">
+        <div className="p-5 overflow-y-auto space-y-4 flex-1 min-h-0">
           {loading ? (
             <div className="py-12 flex flex-col items-center justify-center gap-2 text-xs text-gray-400">
               <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />

@@ -21,14 +21,23 @@ import TagManagerModal from './components/TagManagerModal';
 import StatsModal from './components/StatsModal';
 import FileTransferModal from './components/FileTransferModal';
 import DownloadProgressBar from './components/DownloadProgressBar';
+import UploadModal from './components/UploadModal';
 import WallpaperModal, { PRESET_WALLPAPERS } from './components/WallpaperModal';
 import BulkScrapeModal from './components/BulkScrapeModal';
 import {
   getServerCache,
   saveServerCache,
   updateGameInServerCache,
-  preloadCovers
+  preloadCovers,
+  preloadOneCover
 } from './utils/cacheStorage';
+
+// 首屏优先预热的封面数量：只有这批参与进度条，保证列表「秒开」。
+// 大库（数千款）下若全量预热，会持续数十分钟占用网络 + 海量 IndexedDB 写入。
+const COVER_PRELOAD_PRIORITY = 150;
+// 后台补齐的并发与节流：低速慢跑，绝不影响前台滚动与点击
+const COVER_BG_CONCURRENCY = 2;
+const COVER_BG_THROTTLE_MS = 80;
 import {
   pushPendingChangesToPc,
   applyPendingChangesToGames,
@@ -89,6 +98,8 @@ function MainApp() {
   const cachedGamesRef = useRef([]);
   const prevConnectedRef = useRef(false);
   const bottomSentinelRef = useRef(null);
+  // 后台封面补齐的取消令牌：每次重新同步或组件卸载时打断上一轮
+  const bgCoverFillRef = useRef(null);
 
   // 监听待同步离线修改队列变化
   useEffect(() => {
@@ -117,6 +128,7 @@ function MainApp() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [bulkScrapeOpen, setBulkScrapeOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
   const [fileTransferGame, setFileTransferGame] = useState(null);
 
@@ -292,7 +304,52 @@ function MainApp() {
 
   loadGamesRef.current = loadGames;
 
-  // 后台全量同步离线缓存与全库封面预热
+  // 后台低速补齐剩余封面：并发 2 + 每张之间主动让出主线程，
+  // 保证前台滚动/点击完全不受影响；新一轮同步会打断旧的一轮。
+  const startBackgroundCoverFill = useCallback((sUrl, list, tk, skipCount) => {
+    if (bgCoverFillRef.current) {
+      bgCoverFillRef.current.cancelled = true;
+      bgCoverFillRef.current = null;
+    }
+    if (!sUrl || !Array.isArray(list)) return;
+
+    // 与 preloadCovers 内部语义保持一致：先滤掉无封面者，再按「有封面」的序号跳过前 N 个。
+    // 若这里直接按全集切片，一旦调整 COVER_PRELOAD_PRIORITY 就会出现漏网或重复。
+    const withCover = list.filter((g) => g && g.hasCover);
+    const queue = withCover.slice(skipCount);
+    if (queue.length === 0) return;
+
+    const flag = { cancelled: false };
+    bgCoverFillRef.current = flag;
+    let cursor = 0;
+
+    const worker = async () => {
+      while (!flag.cancelled && cursor < queue.length) {
+        const g = queue[cursor++];
+        try {
+          await preloadOneCover(sUrl, g, tk);
+        } catch {
+          // 单张失败跳过，不影响整体
+        }
+        // 主动让出主线程，避免长任务阻塞滚动
+        await new Promise((r) => setTimeout(r, COVER_BG_THROTTLE_MS));
+      }
+      if (bgCoverFillRef.current === flag) bgCoverFillRef.current = null;
+    };
+
+    for (let i = 0; i < COVER_BG_CONCURRENCY; i++) {
+      worker();
+    }
+  }, []);
+
+  // 卸载时打断后台补齐，避免任务挂在已卸载的组件上
+  useEffect(() => {
+    return () => {
+      if (bgCoverFillRef.current) bgCoverFillRef.current.cancelled = true;
+    };
+  }, []);
+
+  // 后台全量同步离线缓存与首屏封面优先预热
   const syncOfflineCache = useCallback(
     async (isManual = false) => {
       if (!connected || !serverUrl || syncInProgressRef.current) return;
@@ -342,7 +399,7 @@ function MainApp() {
             showToast(`已从 PC 同步最新数据 (共 ${allItems.length} 款游戏)`, 'success', 2000);
           }
 
-          // 全量并发预热所有游戏封面 (轻量化 20KB WebP)
+          // 只等首屏这一批封面（轻量化 20KB WebP），保证进度条快速收敛、列表秒开
           setCacheProgress(5);
           await preloadCovers(
             serverUrl,
@@ -350,8 +407,11 @@ function MainApp() {
             token,
             (coverPct) => {
               setCacheProgress(Math.min(99, Math.round(5 + coverPct * 0.94)));
-            }
+            },
+            COVER_PRELOAD_PRIORITY
           );
+          // 剩余封面转入后台低速补齐（不阻塞 UI、不参与进度条）
+          startBackgroundCoverFill(serverUrl, allItems, token, COVER_PRELOAD_PRIORITY);
         } else if (safeTags || safePaths) {
           await saveServerCache(serverUrl, {
             ...(safeTags ? { tags: safeTags } : {}),
@@ -375,7 +435,7 @@ function MainApp() {
         syncInProgressRef.current = false;
       }
     },
-    [connected, serverUrl, token, showToast, updateProfileGameCount]
+    [connected, serverUrl, token, showToast, updateProfileGameCount, startBackgroundCoverFill]
   );
 
   // 感知时机 ①：连接建立的瞬间（首次连上 PC 或断线重连恢复），自动触发后台静默同步
@@ -514,6 +574,7 @@ function MainApp() {
         onOpenTags={() => setTagsOpen(true)}
         onOpenWallpaper={() => setWallpaperOpen(true)}
         onOpenBulkScrape={() => setBulkScrapeOpen(true)}
+        onOpenUpload={() => setUploadOpen(true)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
@@ -536,9 +597,29 @@ function MainApp() {
           if (serverUrl) {
             const pingRes = await testConnection(serverUrl, token, false, true);
             if (pingRes?.success) {
-              showToast('正在从 PC 端同步数据...', 'info', 1500);
+              // 在线：先让 PC 端重新扫描游戏库（收录新增 / 清理已消失），再把最新列表同步到本地
+              showToast('正在刷新 PC 端游戏库...', 'info', 2500);
+              try {
+                const result = await api.refreshPcLibrary();
+                const imported = result?.imported || 0;
+                const deleted = result?.deleted || 0;
+                if (imported || deleted) {
+                  showToast(`PC 端已更新：新增 ${imported}，清理 ${deleted}`, 'success', 2000);
+                }
+              } catch (err) {
+                // 旧版 PC 端没有该接口（404）或扫描失败 → 不阻断流程，退化为直接同步
+                console.warn('PC 端重新扫描未成功，退化为直接同步:', err);
+                showToast(
+                  err?.statusCode === 404
+                    ? 'PC 端版本较旧，已跳过扫描直接同步'
+                    : 'PC 端扫描失败，已直接同步现有数据',
+                  'warning',
+                  2500
+                );
+              }
               await syncOfflineCache(true);
             } else {
+              // 离线：只刷新移动端本地数据
               showToast('未连通 PC 端，已刷新本地离线数据', 'warning', 2500);
               await loadMetadata();
               loadGames(1, false);
@@ -669,7 +750,7 @@ function MainApp() {
                       key={g.id}
                       game={g}
                       viewMode={viewMode}
-                      onClick={(item) => setSelectedGame(item)}
+                      onSelect={setSelectedGame}
                     />
                   ))}
                 </div>
@@ -771,6 +852,9 @@ function MainApp() {
           loadGames(1, false);
         }}
       />
+
+      {/* Upload Modal（全局上传入口） */}
+      <UploadModal isOpen={uploadOpen} onClose={() => setUploadOpen(false)} />
 
       {/* Global Floating Download Progress Bar */}
       <DownloadProgressBar />

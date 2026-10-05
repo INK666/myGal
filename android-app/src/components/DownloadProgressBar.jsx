@@ -13,13 +13,31 @@ export default function DownloadProgressBar() {
     return unsubscribe;
   }, []);
 
+  // 是否有任务仍在进行（决定「结束后自动收起」的时机）
+  const anyRunning = tasks.some((t) => ['RUNNING', 'PENDING', 'PACKAGING'].includes(t.status));
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (anyRunning) {
+      setDismissed(false);
+      return;
+    }
+    if (tasks.length === 0) return;
+    // 全部结束：停留 6 秒让用户看到「已完成/点击打开」，然后自动收起。
+    // （完成态已按需求去掉 X 键，靠这个自动收起避免进度条永远挂着）
+    const timer = setTimeout(() => setDismissed(true), 6000);
+    return () => clearTimeout(timer);
+  }, [anyRunning, tasks.length]);
+
   // 只要有任何任务存在，就显示悬浮条
-  if (!tasks || tasks.length === 0) return null;
+  if (!tasks || tasks.length === 0 || dismissed) return null;
 
   const activeTask = tasks.find((t) => t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PACKAGING') || tasks[0];
-  const isPreCompressing =
-    activeTask?.status === 'PACKAGING' ||
-    ((activeTask?.status === 'RUNNING' || activeTask?.status === 'PENDING') && (activeTask?.progress === 0 || !activeTask?.bytesDownloaded));
+  // 只有服务端确认在打包时才说「预压缩中」。
+  // 原来是「progress===0 就当作预压缩」，导致单文件直传也被显示成预压缩中。
+  const isPreCompressing = activeTask?.status === 'PACKAGING' && activeTask?.packaging !== false;
+  const isConnecting =
+    !isPreCompressing && activeTask?.progress === 0 && !!activeTask?.statusMessage && activeTask?.status !== 'SUCCESSFUL';
   const isRunning = activeTask?.status === 'RUNNING' || activeTask?.status === 'PENDING' || activeTask?.status === 'PACKAGING';
   const isSuccess = activeTask?.status === 'SUCCESSFUL';
   const isFailed = activeTask?.status === 'FAILED';
@@ -73,9 +91,9 @@ export default function DownloadProgressBar() {
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-gray-400 mt-0.5">
-                  {isPreCompressing ? (
-                    <span className="text-amber-300/90 font-medium truncate">
-                      {activeTask.statusMessage || 'PC 端预压缩中，请稍候...'}
+                  {isPreCompressing || isConnecting ? (
+                    <span className={`font-medium truncate ${isPreCompressing ? 'text-amber-300/90' : 'text-gray-300'}`}>
+                      {activeTask.statusMessage || (isPreCompressing ? 'PC 端预压缩中，请稍候...' : '正在连接 PC 端...')}
                     </span>
                   ) : (
                     <>
@@ -123,7 +141,7 @@ export default function DownloadProgressBar() {
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
-              ) : (
+              ) : isSuccess ? null /* 已完成：不提供 X（取消语义对完成态是错的），6 秒后自动收起 */ : (
                 <button
                   onClick={() => downloadManager.removeTask(activeTask.id)}
                   className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"

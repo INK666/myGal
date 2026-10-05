@@ -1,0 +1,15 @@
+{
+  "tickets": [
+    {
+      "ticket": "bZ5koh43-lzEBujECBfDWhnUYfTmqsW3",
+      "fileName": "中海校区2026年8月工资明细.xlsx",
+      "finalName": "中海校区2026年8月工资明细.xlsx",
+      "fileSize": 7565,
+      "partPath": "D:\\galgame\\_incoming\\中海校区2026年8月工资明细.xlsx.bZ5koh43-lzEBujECBfDWhnUYfTmqsW3.part",
+      "finalPath": "D:\\galgame\\_incoming\\中海校区2026年8月工资明细.xlsx",
+      "targetDir": "D:\\galgame\\_incoming",
+      "expiresAt": 1790439434186,
+      "createdAt": 1790437634186
+    }
+  ]
+}

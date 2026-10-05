@@ -1,0 +1,60 @@
+{
+  "game_id": 26,
+  "game_rows": {
+    "game_paths": {
+      "columns": [
+        "id",
+        "game_id",
+        "path",
+        "root_path_id",
+        "created_at"
+      ],
+      "rows": [
+        [
+          907,
+          26,
+          "D:\\BaiduNetdiskDownload\\_incoming",
+          3,
+          "2026-09-26 15:48:14"
+        ],
+        [
+          921,
+          26,
+          "D:\\galgame\\_incoming",
+          1,
+          "2026-09-26 15:48:14"
+        ]
+      ]
+    },
+    "run_history": {
+      "columns": [
+        "id",
+        "game_id",
+        "game_name",
+        "exe_path",
+        "method",
+        "needs_user_confirm",
+        "launched_at",
+        "created_at"
+      ],
+      "rows": [
+        [
+          20,
+          26,
+          "_incoming",
+          "D:\\BaiduNetdiskDownload\\_incoming",
+          "show-item-in-folder",
+          0,
+          1790437765549,
+          "2026-09-26 15:49:25"
+        ]
+      ]
+    }
+  },
+  "settings_rows": [
+    [
+      "apiUploadTargetDir",
+      "D:\\BaiduNetdiskDownload\\_incoming"
+    ]
+  ]
+}

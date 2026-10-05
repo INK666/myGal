@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   X,
   Download,
@@ -31,6 +31,195 @@ import { api } from '../api/client';
 import { useServer } from '../contexts/ServerContext';
 import { downloadManager } from '../utils/downloadManager';
 
+// ===== 模块级纯函数（原为组件内定义，移出以便 FileRow 复用且保持引用稳定）=====
+const formatSize = (bytes) => {
+  if (!bytes && bytes !== 0) return '-';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+};
+
+const formatDate = (mtime) => {
+  if (!mtime) return '-';
+  try {
+    const d = new Date(mtime);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hour = String(d.getHours()).padStart(2, '0');
+    const minute = String(d.getMinutes()).padStart(2, '0');
+    return `${year}/${month}/${day} ${hour}:${minute}`;
+  } catch {
+    return '-';
+  }
+};
+
+// 获取文件对应的图标与分类颜色
+const getFileIcon = (file) => {
+  if (file.isDir) return <Folder className="w-5 h-5 text-amber-400 fill-amber-400/20 shrink-0" />;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+  if (['xp3', 'dat', 'pak', 'arc', 'bin', 'rar', 'zip', '7z', 'tar', 'gz', 'iso'].includes(ext)) {
+    return <FileArchive className="w-5 h-5 text-blue-400 shrink-0" />;
+  }
+  if (['exe', 'bat', 'cmd', 'msi'].includes(ext)) {
+    return <PlaySquare className="w-5 h-5 text-emerald-400 shrink-0" />;
+  }
+  if (['sav', 'ini', 'cfg', 'json', 'xml', 'dat'].includes(ext) || file.path.toLowerCase().includes('save')) {
+    return <Save className="w-5 h-5 text-amber-400 shrink-0" />;
+  }
+  if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'svg', 'ico'].includes(ext)) {
+    return <ImageIcon className="w-5 h-5 text-purple-400 shrink-0" />;
+  }
+  if (['mp3', 'ogg', 'wav', 'flac', 'aac', 'm4a'].includes(ext)) {
+    return <Music className="w-5 h-5 text-pink-400 shrink-0" />;
+  }
+  if (['mp4', 'avi', 'mkv', 'wmv', 'webm', 'mov'].includes(ext)) {
+    return <Video className="w-5 h-5 text-rose-400 shrink-0" />;
+  }
+  if (['txt', 'log', 'md', 'doc', 'pdf'].includes(ext)) {
+    return <FileText className="w-5 h-5 text-gray-300 shrink-0" />;
+  }
+  return <File className="w-5 h-5 text-gray-400 shrink-0" />;
+};
+
+// 列表每批渲染的条目数（长目录分批挂载，避免一次性渲染几百个卡片把 WebView 卡死）
+const FILE_PAGE_SIZE = 60;
+
+// ===== 行组件（React.memo）：下载进度每秒更新时，只有状态真正变化的行才重渲染 =====
+// 注意：downloadManager 会原地修改 task 对象（task.progress = ...），
+// 所以这里必须传原始值（taskId/taskStatus/taskProgress）而不是 task 对象引用，
+// 否则 memo 比较永远相等 → 行 UI 卡在旧状态。
+const FileRow = React.memo(function FileRow({
+  item,
+  isSelected,
+  showFullPath,
+  isSingleFile,
+  taskId,
+  taskStatus,
+  taskProgress,
+  taskPackaging,
+  onToggle,
+  onOpenDir,
+  onDownload
+}) {
+  const isDir = item.isDir;
+
+  // 预压缩只可能是文件夹下载（服务端真在打包）；单文件直传不该显示预压缩中
+  const isItemPreCompressing = taskId && taskStatus === 'PACKAGING' && taskPackaging;
+  const isItemRunning = taskId && (taskStatus === 'RUNNING' || taskStatus === 'PENDING') && !isItemPreCompressing;
+
+  return (
+    <div
+      onClick={() => {
+        if (isDir) {
+          onOpenDir(item.path);
+        } else {
+          onToggle(item.path);
+        }
+      }}
+      className={`p-2.5 rounded-2xl flex items-center justify-between gap-3 cursor-pointer transition-colors active-press border ${
+        isSelected
+          ? 'bg-emerald-950/40 border-emerald-500/40 shadow-sm'
+          : 'bg-slate-900/75 hover:bg-gray-850/70 border-white/5'
+      }`}
+    >
+      {/* 左侧：选择框 + 图标 + 名称/路径 */}
+      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={(e) => onToggle(item.path, e)}
+          className="p-1 text-gray-400 hover:text-emerald-300 shrink-0"
+        >
+          {isSelected ? (
+            <CheckSquare className="w-4 h-4 text-emerald-400 fill-emerald-400/20" />
+          ) : (
+            <Square className="w-4 h-4 text-gray-600 hover:text-gray-400" />
+          )}
+        </button>
+
+        {getFileIcon(item)}
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className={`font-semibold text-xs truncate ${isDir ? 'text-amber-200' : 'text-white'}`}>
+              {item.name}
+            </span>
+            {isDir && item.itemCount > 0 && (
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 font-mono">
+                {item.itemCount} 项
+              </span>
+            )}
+            {!isDir && isSingleFile && (
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-mono">
+                完整文件
+              </span>
+            )}
+          </div>
+
+          {/* 显示下级路径或子文件数 */}
+          <div className="text-[10px] text-gray-500 truncate mt-0.5 font-mono">
+            {showFullPath ? item.path : isDir ? '文件夹' : formatSize(item.size)}
+            {item.mtime && ` · ${formatDate(item.mtime)}`}
+          </div>
+        </div>
+      </div>
+
+      {/* 右侧：操作按钮与大小 */}
+      <div className="flex items-center gap-3 shrink-0">
+        <div className="text-right hidden sm:block">
+          <div className="text-[11px] font-mono text-gray-300">{formatSize(item.size)}</div>
+        </div>
+
+        {isItemPreCompressing ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              downloadManager.cancelDownload(taskId);
+            }}
+            className="p-1.5 px-2 rounded-xl bg-amber-600/30 hover:bg-rose-500/20 text-amber-300 hover:text-rose-300 border border-amber-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
+            title="PC 端预压缩中，点击可取消"
+          >
+            <div className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            <span>预压缩中</span>
+          </button>
+        ) : isItemRunning ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              downloadManager.cancelDownload(taskId);
+            }}
+            className="p-1.5 px-2 rounded-xl bg-indigo-600/30 hover:bg-rose-500/20 text-indigo-300 hover:text-rose-300 border border-indigo-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
+            title="正在下载，点击可取消"
+          >
+            <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            <span>{taskProgress}%</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDownload(item);
+            }}
+            className={`p-2 rounded-xl active-press transition-all ${
+              isDir
+                ? 'bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white'
+                : 'bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white'
+            }`}
+            title={isDir ? '打包下载此文件夹 (.zip)' : '直接下载此文件'}
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export default function FileTransferModal({ game, isOpen, onClose }) {
   const { showToast } = useServer();
   const [allFiles, setAllFiles] = useState([]);
@@ -47,8 +236,16 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
 
   useEffect(() => {
     if (!isOpen || !game?.id) return;
+    // 性能关键：下载期间 downloadManager 每秒 notify 一次。
+    // 只有「本游戏的任务状态签名」真正变化时才 setState，
+    // 否则（如 statusMessage 跳动、其他游戏任务进度）直接跳过，整个弹窗不重渲染。
+    let lastSig = null;
     return downloadManager.subscribe((tasks) => {
-      setDownloadTasks(tasks.filter((t) => t.gameId === game.id));
+      const mine = tasks.filter((t) => t.gameId === game.id);
+      const sig = mine.map((t) => `${t.id}:${t.status}:${t.progress}:${t.bytesDownloaded || 0}`).join('|');
+      if (lastSig !== null && sig === lastSig) return;
+      lastSig = sig;
+      setDownloadTasks(mine);
     });
   }, [isOpen, game?.id]);
 
@@ -78,70 +275,20 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
     }
   };
 
-  const formatSize = (bytes) => {
-    if (!bytes && bytes !== 0) return '-';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-  };
+  // formatSize / formatDate / getFileIcon 已提升到模块级（见文件头部），逻辑与原实现一致
 
-  const formatDate = (mtime) => {
-    if (!mtime) return '-';
-    try {
-      const d = new Date(mtime);
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const hour = String(d.getHours()).padStart(2, '0');
-      const minute = String(d.getMinutes()).padStart(2, '0');
-      return `${year}/${month}/${day} ${hour}:${minute}`;
-    } catch {
-      return '-';
-    }
-  };
-
-  // 获取文件对应的图标与分类颜色
-  const getFileIcon = (file) => {
-    if (file.isDir) return <Folder className="w-5 h-5 text-amber-400 fill-amber-400/20 shrink-0" />;
-    const ext = (file.name.split('.').pop() || '').toLowerCase();
-
-    if (['xp3', 'dat', 'pak', 'arc', 'bin', 'rar', 'zip', '7z', 'tar', 'gz', 'iso'].includes(ext)) {
-      return <FileArchive className="w-5 h-5 text-blue-400 shrink-0" />;
-    }
-    if (['exe', 'bat', 'cmd', 'msi'].includes(ext)) {
-      return <PlaySquare className="w-5 h-5 text-emerald-400 shrink-0" />;
-    }
-    if (['sav', 'ini', 'cfg', 'json', 'xml', 'dat'].includes(ext) || file.path.toLowerCase().includes('save')) {
-      return <Save className="w-5 h-5 text-amber-400 shrink-0" />;
-    }
-    if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'svg', 'ico'].includes(ext)) {
-      return <ImageIcon className="w-5 h-5 text-purple-400 shrink-0" />;
-    }
-    if (['mp3', 'ogg', 'wav', 'flac', 'aac', 'm4a'].includes(ext)) {
-      return <Music className="w-5 h-5 text-pink-400 shrink-0" />;
-    }
-    if (['mp4', 'avi', 'mkv', 'wmv', 'webm', 'mov'].includes(ext)) {
-      return <Video className="w-5 h-5 text-rose-400 shrink-0" />;
-    }
-    if (['txt', 'log', 'md', 'doc', 'pdf'].includes(ext)) {
-      return <FileText className="w-5 h-5 text-gray-300 shrink-0" />;
-    }
-    return <File className="w-5 h-5 text-gray-400 shrink-0" />;
-  };
-
-  // 触发单项下载
-  const triggerSingleDownload = async (relPath, fileName) => {
-    const isDirectory = !fileName ? false : fileName.endsWith('.zip');
+  // 触发单项下载。needPackaging=false 表示单文件直传（PC 端不打包，跳过预压缩等待）
+  const triggerSingleDownload = async (relPath, fileName, needPackaging = true) => {
     const targetName = fileName || relPath.split('/').pop() || (game.alias || game.name || 'download');
     try {
       await downloadManager.startDownload({
         gameId: game.id,
         relPath,
         fileName: targetName,
-        title: `${game.alias || game.name}: ${targetName}`
+        title: `${game.alias || game.name}: ${targetName}`,
+        needPackaging
       });
-      showToast(isDirectory ? `已提交打包下载任务: ${targetName}` : `已加入系统下载队列: ${targetName}`, 'success');
+      showToast(needPackaging ? `已提交打包下载任务: ${targetName}` : `已加入系统下载队列: ${targetName}`, 'success');
     } catch (err) {
       showToast('启动下载失败: ' + (err?.message || String(err)), 'error');
     }
@@ -152,21 +299,31 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
     try {
       const isDirectory = item.isDir;
       const downloadName = isDirectory ? `${item.name}.zip` : item.name;
-      triggerSingleDownload(item.path, downloadName);
+      // 文件夹才需要 PC 端打包成 .zip；单文件直接原样传
+      triggerSingleDownload(item.path, downloadName, isDirectory);
     } catch (err) {
       showToast('下载出错: ' + err.message, 'error');
     }
   };
+
+  // 稳定回调（FileRow 的 memo 依赖引用稳定；handleDownload 依赖 game/showToast，用 ref 转发避免陈旧闭包）
+  const handleDownloadRef = useRef(handleDownload);
+  handleDownloadRef.current = handleDownload;
+  const stableDownload = useCallback((item) => handleDownloadRef.current(item), []);
+  const stableOpenDir = useCallback((p) => {
+    setCurrentPath(p);
+    setSearch('');
+  }, []);
 
   // 一键下载整个游戏（单文件/压缩包直接下载，文件夹打包为 .zip 下载）
   const handleDownloadWholeGame = () => {
     try {
       if (isSingleFile && allFiles.length > 0) {
         const fileObj = allFiles[0];
-        triggerSingleDownload(fileObj.path, fileObj.name);
+        triggerSingleDownload(fileObj.path, fileObj.name, false); // 单文件：直传，不打包
       } else {
         const zipName = `${game.alias || game.name}.zip`;
-        triggerSingleDownload('', zipName);
+        triggerSingleDownload('', zipName, true); // 整个游戏目录：打包成 .zip
       }
     } catch (err) {
       showToast('下载出错: ' + err.message, 'error');
@@ -184,7 +341,8 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       const relPath = pathsToDownload[i];
       const fileObj = allFiles.find((f) => f.path === relPath);
       const name = fileObj ? (fileObj.isDir ? `${fileObj.name}.zip` : fileObj.name) : relPath.split('/').pop();
-      await triggerSingleDownload(relPath, name);
+      // 目录才打包；文件直传（查不到类型时按需打包的旧行为兜底）
+      await triggerSingleDownload(relPath, name, fileObj ? fileObj.isDir : true);
       // 间隔 600ms 防止瞬时迸发
       if (i < pathsToDownload.length - 1) {
         await new Promise((r) => setTimeout(r, 600));
@@ -356,8 +514,52 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
     return currentDirectoryItems.allItems;
   }, [globalSearchResults, currentDirectoryItems]);
 
-  // 勾选/取消勾选单个项目
-  const toggleSelect = (pathKey, e) => {
+  // ---- 长列表分批渲染 ----
+  // 实测：247 项一次性挂载会把 Android WebView 拖死（每行都是带边框/圆角的卡片，
+  // 滚动时大量行同时参与合成 → 掉帧、部分行来不及合成显示为空白）。
+  // 改为「首屏 FILE_PAGE_SIZE 项 + 滚动到底自动续加」，切目录/搜索/排序时重置。
+  const [visibleCount, setVisibleCount] = useState(FILE_PAGE_SIZE);
+  const listRef = useRef(null);
+
+  const visibleItems = useMemo(
+    () => (visibleCount >= displayedItems.length ? displayedItems : displayedItems.slice(0, visibleCount)),
+    [displayedItems, visibleCount]
+  );
+  const hasMoreItems = visibleCount < displayedItems.length;
+
+  // 切目录 / 改搜索 / 改筛选 / 换排序 → 回到首批并滚回顶部
+  useEffect(() => {
+    setVisibleCount(FILE_PAGE_SIZE);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [currentPath, search, filterType, sortField, sortOrder]);
+
+  const growVisible = useCallback(() => {
+    setVisibleCount((c) => (c >= displayedItems.length ? c : Math.min(c + FILE_PAGE_SIZE, displayedItems.length)));
+  }, [displayedItems.length]);
+
+  // 滚动到距底部 320px 以内就续加一批（同一批内重复触发会被 setState 同值 bail out 掉）
+  const handleListScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 320) return;
+    growVisible();
+  }, [growVisible]);
+
+  // 下载任务索引：原实现每行都调一次 downloadTasks.find()，247 行 × 每次渲染 = O(n²)。
+  // 这里一次建 Map，查找变 O(1)；键名与原比较逻辑（relPath / fileName / fileName+'.zip'）完全等价。
+  const taskIndex = useMemo(() => {
+    const m = new Map();
+    for (const t of downloadTasks) {
+      if (t.relPath) m.set(`p:${t.relPath}`, t);
+      if (t.fileName) {
+        m.set(`n:${t.fileName}`, t);
+        if (t.fileName.toLowerCase().endsWith('.zip')) m.set(`n:${t.fileName.slice(0, -4)}`, t);
+      }
+    }
+    return m;
+  }, [downloadTasks]);
+
+  // 勾选/取消勾选单个项目（useCallback 稳定引用：FileRow memo 依赖）
+  const toggleSelect = useCallback((pathKey, e) => {
     e?.stopPropagation();
     setSelectedPaths((prev) => {
       const next = new Set(prev);
@@ -368,7 +570,7 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
       }
       return next;
     });
-  };
+  }, []);
 
   // 全选/反选当前页
   const toggleSelectAll = () => {
@@ -673,8 +875,14 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
           </div>
         </div>
 
-        {/* --- 文件夹与文件列表核心展示区 --- */}
-        <div className="p-3 overflow-y-auto space-y-1.5 flex-1 divide-y divide-white/[0.03]">
+        {/* --- 文件夹与文件列表核心展示区 ---
+             min-h-0 是必需的：flex 子项默认 min-height:auto，长列表会把容器顶开，
+             溢出部分被外层 overflow-hidden 直接裁掉（表现为「底部的文件看不到、也滚不到」）。 */}
+        <div
+          ref={listRef}
+          onScroll={handleListScroll}
+          className="p-3 overflow-y-auto overscroll-contain flex-1 min-h-0 space-y-1.5 divide-y divide-white/[0.03]"
+        >
           {loading ? (
             <div className="py-24 flex flex-col items-center justify-center gap-3 text-xs text-gray-400">
               <div className="w-7 h-7 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -686,146 +894,43 @@ export default function FileTransferModal({ game, isOpen, onClose }) {
               <p>{search ? '未找到匹配的文件或文件夹' : '当前文件列表为空'}</p>
             </div>
           ) : (
-            displayedItems.map((item) => {
-              const isSelected = selectedPaths.has(item.path);
-              const isDir = item.isDir;
+            <>
+              {visibleItems.map((item) => {
+                const itemTask =
+                  taskIndex.get(`p:${item.path}`) ||
+                  taskIndex.get(`n:${item.name}`) ||
+                  taskIndex.get(`n:${item.name}.zip`);
+                return (
+                  <FileRow
+                    key={item.path}
+                    item={item}
+                    isSelected={selectedPaths.has(item.path)}
+                    showFullPath={globalSearchResults !== null}
+                    isSingleFile={isSingleFile}
+                    taskId={itemTask?.id}
+                    taskStatus={itemTask?.status}
+                    taskProgress={itemTask?.progress}
+                    taskPackaging={itemTask ? itemTask.packaging !== false : false}
+                    onToggle={toggleSelect}
+                    onOpenDir={stableOpenDir}
+                    onDownload={stableDownload}
+                  />
+                );
+              })}
 
-              return (
-                <div
-                  key={item.path}
-                  onClick={() => {
-                    if (isDir) {
-                      setCurrentPath(item.path);
-                      setSearch('');
-                    } else {
-                      toggleSelect(item.path);
-                    }
-                  }}
-                  className={`p-2.5 rounded-2xl flex items-center justify-between gap-3 cursor-pointer transition-all active-press border ${
-                    isSelected
-                      ? 'bg-emerald-950/40 border-emerald-500/40 shadow-sm'
-                      : 'glass-panel hover:bg-gray-850/70 border-white/5'
-                  }`}
-                >
-                  {/* 左侧：选择框 + 图标 + 名称/路径 */}
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <button
-                      type="button"
-                      onClick={(e) => toggleSelect(item.path, e)}
-                      className="p-1 text-gray-400 hover:text-emerald-300 shrink-0"
-                    >
-                      {isSelected ? (
-                        <CheckSquare className="w-4 h-4 text-emerald-400 fill-emerald-400/20" />
-                      ) : (
-                        <Square className="w-4 h-4 text-gray-600 hover:text-gray-400" />
-                      )}
-                    </button>
-
-                    {getFileIcon(item)}
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`font-semibold text-xs truncate ${isDir ? 'text-amber-200' : 'text-white'}`}>
-                          {item.name}
-                        </span>
-                        {isDir && item.itemCount > 0 && (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 font-mono">
-                            {item.itemCount} 项
-                          </span>
-                        )}
-                        {!isDir && isSingleFile && (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-mono">
-                            完整文件
-                          </span>
-                        )}
-                      </div>
-
-                      {/* 显示下级路径或子文件数 */}
-                      <div className="text-[10px] text-gray-500 truncate mt-0.5 font-mono">
-                        {globalSearchResults !== null ? item.path : isDir ? '文件夹' : formatSize(item.size)}
-                        {item.mtime && ` · ${formatDate(item.mtime)}`}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 右侧：操作按钮与大小 */}
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right hidden sm:block">
-                      <div className="text-[11px] font-mono text-gray-300">{formatSize(item.size)}</div>
-                    </div>
-
-                    {(() => {
-                      const itemTask = downloadTasks.find(
-                        (t) =>
-                          t.relPath === item.path ||
-                          t.fileName === item.name ||
-                          t.fileName === `${item.name}.zip`
-                      );
-                      const isItemPreCompressing =
-                        itemTask &&
-                        (itemTask.status === 'PACKAGING' ||
-                          ((itemTask.status === 'RUNNING' || itemTask.status === 'PENDING') &&
-                            (itemTask.progress === 0 || !itemTask.bytesDownloaded)));
-                      const isItemRunning =
-                        itemTask &&
-                        (itemTask.status === 'RUNNING' || itemTask.status === 'PENDING');
-
-                      if (isItemPreCompressing) {
-                        return (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              downloadManager.cancelDownload(itemTask.id);
-                            }}
-                            className="p-1.5 px-2 rounded-xl bg-amber-600/30 hover:bg-rose-500/20 text-amber-300 hover:text-rose-300 border border-amber-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
-                            title="PC 端预压缩中，点击可取消"
-                          >
-                            <div className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
-                            <span>预压缩中</span>
-                          </button>
-                        );
-                      }
-
-                      if (isItemRunning) {
-                        return (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              downloadManager.cancelDownload(itemTask.id);
-                            }}
-                            className="p-1.5 px-2 rounded-xl bg-indigo-600/30 hover:bg-rose-500/20 text-indigo-300 hover:text-rose-300 border border-indigo-500/40 hover:border-rose-500/40 text-[10px] font-mono font-bold flex items-center gap-1 active-press transition-colors"
-                            title="正在下载，点击可取消"
-                          >
-                            <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
-                            <span>{itemTask.progress}%</span>
-                          </button>
-                        );
-                      }
-
-                      return (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDownload(item);
-                          }}
-                          className={`p-2 rounded-xl active-press transition-all ${
-                            isDir
-                              ? 'bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white'
-                              : 'bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white'
-                          }`}
-                          title={isDir ? '打包下载此文件夹 (.zip)' : '直接下载此文件'}
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
-                      );
-                    })()}
-                  </div>
+              {/* 分批渲染的进度提示 / 手动续加载兜底（纯滚动也能自动加载） */}
+              {hasMoreItems && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={growVisible}
+                    className="w-full py-2.5 rounded-2xl bg-slate-900/70 border border-white/5 text-[11px] text-gray-400 hover:text-emerald-300 hover:border-emerald-500/30 active-press transition-colors"
+                  >
+                    已显示 {visibleItems.length} / {displayedItems.length} 项 · 继续滚动或点击加载更多
+                  </button>
                 </div>
-              );
-            })
+              )}
+            </>
           )}
         </div>
 

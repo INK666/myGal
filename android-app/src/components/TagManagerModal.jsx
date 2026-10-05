@@ -124,7 +124,7 @@ export default function TagManagerModal({ isOpen, tags = [], onClose, onTagsUpda
         </div>
 
         {/* Tags List */}
-        <div className="p-4 overflow-y-auto space-y-2 flex-1">
+        <div className="p-4 overflow-y-auto space-y-2 flex-1 min-h-0">
           {filteredTags.length === 0 ? (
             <div className="p-8 text-center text-xs text-gray-500">
               {search ? '未找到匹配的标签' : '暂无标签'}

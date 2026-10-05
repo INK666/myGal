@@ -347,7 +347,7 @@ export default function BulkScrapeModal({
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 text-xs">
           {/* 1. 数据源选择 (4 大零配置源) */}
           <div className="p-3.5 rounded-2xl bg-white/5 border border-white/5 space-y-2.5">
             <div className="flex items-center justify-between text-gray-300 font-bold">

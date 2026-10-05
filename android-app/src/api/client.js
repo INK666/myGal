@@ -93,7 +93,10 @@ export class ApiClient {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        const err = new Error(data?.error || `HTTP ${response.status}`);
+        err.statusCode = response.status;
+        err.serverMessage = data?.error || '';
+        throw err;
       }
       return data;
     } catch (error) {
@@ -370,6 +373,49 @@ export class ApiClient {
     if (this.token) params.set('token', this.token);
     const query = params.toString();
     return `${this.serverUrl}/api/games/${gameId}/download${query ? `?${query}` : ''}`;
+  }
+
+  // --- 移动端上传 ---
+  // 申请上传票据（可选 rootPathId 指定落盘根目录；resumeTicket 用于续传认领）
+  async createUploadTicket({ fileName, fileSize, rootPathId = null, resumeTicket = '' }) {
+    const body = { fileName, fileSize };
+    if (rootPathId !== null && rootPathId !== undefined && rootPathId !== '') body.rootPathId = rootPathId;
+    if (resumeTicket) body.resumeTicket = resumeTicket;
+    const res = await this.request('/api/uploads/tickets', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeout: 60000
+    });
+    return res?.data || res;
+  }
+
+  // 查询上传进度（续传前对齐用）
+  async getUploadStatus(ticket) {
+    const res = await this.request(`/api/uploads/${ticket}`);
+    return res?.data || res;
+  }
+
+  // 取消上传（幂等；服务端会清理 .part）
+  async cancelUploadTicket(ticket) {
+    const res = await this.request(`/api/uploads/${ticket}`, { method: 'DELETE' });
+    return res?.data || res;
+  }
+
+  // 探测 PC 端上传开关状态（health 免鉴权可读 allowUpload）
+  async getUploadAvailability() {
+    const res = await this.request('/api/health', { timeout: 8000 });
+    const data = res?.data || res;
+    return { allowUpload: !!data?.allowUpload };
+  }
+
+  // 让 PC 端重新扫描游戏库根目录（收录新增、清理已消失），返回 { imported, deleted }
+  // 大库扫描可能耗时数秒，故给足超时；旧版 PC 端没有此路由会抛 statusCode=404，调用方需降级处理
+  async refreshPcLibrary() {
+    const res = await this.request('/api/library/refresh', {
+      method: 'POST',
+      timeout: 120000
+    });
+    return res?.data || res;
   }
 }
 

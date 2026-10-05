@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ImageOff } from 'lucide-react';
 import { getCoverBlobWithMeta, saveCoverBlob, deleteCoverBlob } from '../utils/cacheStorage';
 
-// 内存 Blob URL 缓存 (严格限制最多保留 35 张当前视口图片，超量自动回收 ObjectURL 释放 RAM)
-const MAX_BLOB_CACHE_SIZE = 35;
+// 内存 Blob URL 缓存 (LRU 上限。大库快速滚动时若窗口过小，屏外封面会被反复
+// revoke/createObjectURL 造成解码抖动；100 张 × ~20KB 仅约 2MB，代价可忽略)
+const MAX_BLOB_CACHE_SIZE = 100;
 const blobCache = new Map();
 
 function getBlobCache(key) {
@@ -216,6 +217,7 @@ export default function CoverImage({
         onError={handleImgError}
         className={`${className} ${loading ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}
         loading="lazy"
+        decoding="async"
       />
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-900/50 animate-pulse">

@@ -168,7 +168,7 @@ export default function WallpaperModal({
         </div>
 
         {/* Content Area */}
-        <div className="p-5 overflow-y-auto space-y-4 flex-1">
+        <div className="p-5 overflow-y-auto space-y-4 flex-1 min-h-0">
           {/* Tab 1: 预设背景 */}
           {activeTab === 'preset' && (
             <div className="space-y-3">

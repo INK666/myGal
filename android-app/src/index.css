@@ -67,3 +67,20 @@
   transform: scale(0.96);
   transition: transform 0.1s ease-in-out;
 }
+
+/* 长列表卡片：屏外元素跳过布局/绘制/合成。
+   大库(数千款)下必需——否则每次布局都要为全部卡片建合成层。
+   contain-intrinsic-size 的 auto 关键字让浏览器记住实测尺寸，滚动条不抖动；
+   初始估算值按各视图模式的实际卡片高度给出，避免首次滚动出现位置跳动。 */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px; /* 双列画廊 */
+}
+.cv-auto-grid3 {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 210px; /* 三列紧凑画廊 */
+}
+.cv-auto-list {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px; /* 列表视图 */
+}

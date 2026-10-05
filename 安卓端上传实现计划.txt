@@ -1,0 +1,252 @@
+这份可以直接交给其他 agent。v2 —— 已合并外部审查修正（入口/Windows IO/Android 权限/分块事务/续传保留）。
+
+# myGal 移动端上传游戏计划（单文件限制版）
+
+## 目标
+
+支持安卓把一个游戏文件（压缩包）上传到 PC，满足：
+
+- 一次只允许选择/上传**一个文件**；引导文案只说"请先压缩后再上传"，不提具体格式（避免误导）
+- 大文件（最大约 7GB 级别）上传可暂停、恢复、取消、重试，断网不从零开始
+- **PC 重启 / 程序重启后仍可续传**（.part 按 mtime 保留 24h，不是一重启就删）
+- 上传期间 PC 主程序不卡、不爆内存
+- 上传完成后文件完整（大小强校验 + 哈希弱校验，见「哈希策略」）
+- **任何结束路径（完成/取消/过期/弃疗）最终都无 .part 残留**
+- 复用现有 Bearer Token + 短时票据鉴权模型，与下载对称
+- 局域网和 HTTPS 内网穿透都可用
+
+## 现状与必须新建的部分（实测，main.js 共 5499 行）
+
+| 已有 | 位置 | 上传能否复用 |
+|---|---|---|
+| Bearer Token 鉴权 `requireApiAuth` | main.js:4041 | ✅ 直接复用 |
+| 下载票据 `downloadTickets` + 5 分钟清理循环 | main.js:4362-4377 | ✅ 上传票据挂进同一循环 |
+| Range 下载 `serveFileWithRange` | main.js:4414 | ❌ 下载专用，上传对称新写 |
+| `readRequestBody`（JSON 内存缓冲，25MB 硬上限） | main.js:4341 | ❌ **绝不能用于上传** |
+| CORS 已允许 PUT，但 Headers 缺 `Content-Range` | main.js:4552 | ⚠️ 需补 `Content-Range`（WebView 调试场景会被预检拦截；原生 OkHttp 不受影响） |
+| 服务器 `requestTimeout` 180s | main.js:5369 | ⚠️ 决定上传必须分块 |
+| 启动清理 / 退出清理模式 `cleanArchiveCache` | main.js:73, 5476, 5489 | ✅ .part 清理照抄此模式（mtime 判断） |
+| 安卓 `NativeDownloaderPlugin`（DownloadManager） | android-app/.../NativeDownloaderPlugin.java | ❌ 只能下载，上传新写插件 |
+| manifest 已有 `POST_NOTIFICATIONS` | AndroidManifest.xml:42 | ✅ 已有；但**无任何 service 声明**，前台服务需补 |
+| gradle 无 okhttp 依赖 | android/app/build.gradle:38-48 | ⚠️ 需显式引入 |
+
+## 核心决策
+
+1. **分块 PUT（每块 16MB）+ 整块事务确认**：绕开 180s 超时；断网时服务端回滚到上一个完整块，永不出现半块脏数据。
+2. **入口是全局的，不挂在单游戏弹窗**：上传的是 PC 上还没有的新游戏，`FileTransferModal`（App.jsx:723，必须先有 game 才能打开）逻辑上进不去。新开全局上传入口。
+3. **安卓侧 ACTION_OPEN_DOCUMENT + 持久 URI 权限 + 原生 OkHttp 前台服务**：WebView fetch 切后台即死；GET_CONTENT 的临时权限在进程重启后失效会崩。
+
+## 第一阶段：PC 端上传 API
+
+### 1.1 上传票据
+
+```http
+POST /api/uploads/tickets
+Authorization: Bearer <api-token>
+Content-Type: application/json
+
+{
+  "fileName": "SomeGame.7z",
+  "fileSize": 3221225472
+}
+```
+
+返回：
+
+```json
+{
+  "success": true,
+  "data": {
+    "ticket": "random-opaque-value",
+    "expiresAt": "2026-09-26T22:45:00Z",
+    "chunkSize": 16777216,
+    "resumeFromBytes": 0,
+    "finalName": "SomeGame.7z",
+    "targetDir": "D:\\Games\\Incoming",
+    "freeSpace": 8121225472
+  }
+}
+```
+
+服务端行为：
+
+- `allowUpload` 开关关闭时全部上传接口返回 403
+- 校验 `fileSize` 不超过上限（默认 **10GB**，覆盖 7GB 场景，设置可调），超过 413
+- 校验目标盘剩余空间 ≥ fileSize × 1.05，不足 507（明确报"空间不够，需要 X GB"）
+- 文件名 sanitize：过滤 `\\/:*?"<>|` 与控制字符（照抄 NativeDownloaderPlugin.java:23 的正则），拒绝 `..`、绝对路径形态
+- **同名冲突**：目标目录已有同名文件时自动追加序号（`SomeGame (1).7z`），`finalName` 返回实际落盘名，绝不覆盖用户现有文件
+- **票据申请即预建 0 字节 `.part` 文件**（`fs.closeSync(fs.openSync(partPath, 'w'))`）——后续分块写入用 `r+` 定位写，不会 ENOENT
+- **续传认领（Ticket 优先，禁止文件名反查）**：
+  - 手机端本地存着原 ticket；PC 重启后服务端从 `upload_state.json` 恢复票据，手机直接 `GET /api/uploads/:ticket` 查 `receivedBytes` 续传——这是主路径
+  - 若 GET 返回 404（票据过期被清）：手机重新 `POST /api/uploads/tickets`，请求体**带上 `resumeTicket`（旧 ticket）**；服务端校验旧 `.part` 存在且其记录的 fileName/fileSize 一致 → 新票据**认领**该 `.part`，返回 `resumeFromBytes` = `.part` 当前 stat.size
+  - **绝不按"同名+同大小"反查磁盘**——用户传过半截 `patch.7z` 弃疗，再传一个同名同大小的新 `patch.7z`，反查会把两段不相干的数据拼一起，文件直接报废
+- 票据有效期 30 分钟；每次分块成功自动续期 30 分钟
+- **票据状态持久化 `upload_state.json`——只存元数据**（ticket、fileName、fileSize、partPath、expiresAt），仅在票据创建/完成/删除/过期时写入，**绝不在每块上传时高频刷盘**（448 块 × 同步写小 JSON 在 Windows 上是文件锁竞争自找麻烦）
+- **`receivedBytes` 以 `.part` 物理大小为唯一权威**：服务端内存维护；重启恢复时直接 `fs.statSync(partPath).size`——整块事务 + truncate 回滚保证下，物理字节数就是绝对真相，零额外磁盘写入
+- 挂进 main.js:4365 现有清理循环；同一时刻最多 2 个活跃上传票据
+
+### 1.2 分块上传接口（整块事务）
+
+```http
+PUT /api/uploads/:ticket
+Authorization: Bearer <api-token>
+Content-Type: application/octet-stream
+Content-Range: bytes 16777216-33554431/3221225472
+Content-Length: 16777216
+
+<16MB 原始字节>
+```
+
+响应：`{ "success": true, "data": { "receivedBytes": 33554432 } }`
+
+服务端行为（**分块事务模型**）：
+
+- **只有整块完整接收并全部落盘后才推进 `receivedBytes` 并返回 200**
+- 块起点必须等于当前 `receivedBytes`（整块边界对齐），不等于返回 `409 + 当前 receivedBytes`
+- **中途断开/写入失败的回滚顺序（Windows 句柄陷阱）**：先 `writeStream.destroy()` 释放底层句柄，**等 destroy 完成后**再 `fs.truncateSync(partPath, lastCommittedBytes)`——Windows 下 writeStream 持句柄时直接 truncate 必报 EBUSY；或直接用已持有的 fd 执行 truncate 更稳
+- **流式写盘 + 背压**：用 `stream.pipeline(req, writeStream)` 或严格检查 `write()` 返回值等 `drain`，绝不让请求体堆积内存
+- 请求体不走 `readRequestBody`，独立二进制流处理
+- 客户端断开：立即销毁 write stream 并回滚
+- **写入时顺便增量哈希**：`crypto.createHash('sha256').update(chunk)`，每块只更新已有哈希状态，零额外磁盘 I/O
+- 收满 `fileSize`：等 writeStream 的 **`close` 事件**（不是 `finish`——Windows 上 fd 异步释放，不等 close 就 rename 必报 EBUSY/EPERM）→ 校验实际大小 → **safeRename**（带 3 次退避重试的原子重命名封装）→ 票据标记 completed → 更新 upload_state.json
+
+### 1.3 进度 / 取消接口
+
+```http
+GET /api/uploads/:ticket     → { "status": "uploading|completed|expired|failed", "receivedBytes": ..., "fileSize": ... }
+DELETE /api/uploads/:ticket  → 立即删票据 + .part（幂等，不存在也 200）
+```
+
+用途：App 重启/网络恢复后对齐续传点；用户取消的唯入口。
+
+### 1.4 PC 端设置项（挂进现有 API 设置页）
+
+- `allowUpload`：允许移动端上传（默认 **关**）
+- `uploadRootDir`：上传根目录（**纯计算，绝不预建目录**）。默认跟随最近添加的 root_path，移动端弹窗里显式选择；兜底 userData/uploads
+- `uploadMaxSize`：单文件上限（默认 10GB）
+
+**落盘位置（v3 变更）**：`<所选根目录>/<文件名含扩展名>/<文件名>`
+即每个上传独占一个**同名文件夹**，不再有 `_incoming` 这类共享暂存目录。理由：
+
+1. 与"根目录下一层 = 一个游戏"的既有扫描约定一致，不会被当成假游戏（`_incoming` 曾因此被自动入库成 game id 26）
+2. 压缩包解压**就地**即成为标准游戏目录，`scan-executables` 递归 6 层能找到 exe，无需再搬文件
+3. 同名文件夹天然避开与已有真游戏重名；`.part` 与半成品互不干扰，取消/失败只清自己那份
+4. 不用为"内部目录"打扫描排除补丁（仍保留 `_incoming` 名字黑名单兜底）
+
+配套规则：目录按需创建（不开启上传时磁盘零痕迹）；取消/过期/失败后若目录已空则立即回收，**有内容一律保留**；`upload_state.json` 放 userData（全局票据表，不属于任何游戏盘）。
+
+完成时主窗口系统通知："SomeGame.7z 已上传完成（3.0 GB），点击打开所在目录"。
+
+### 1.5 CORS 修正
+
+main.js:4552 的 `Access-Control-Allow-Headers` 补上 `Content-Range`（现只有 `Range`，WebView 跨域调试 PUT 预检会被拦）。
+
+## 第二阶段：安卓原生上传插件
+
+新增 `NativeUploaderPlugin.java`（与 NativeDownloaderPlugin 并列）：
+
+**文件选择（权限正确的姿势）：**
+
+- 用 `Intent.ACTION_OPEN_DOCUMENT`（不是 GET_CONTENT——后者拿不到持久权限，进程被系统回收再拉起时读 URI 直接 SecurityException）
+- 拿到 URI 立即 `takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)`
+- **前端 setType 限制 MIME 为文件类型**（`*/*` 并配合选择器行为），阻止选中目录；若仍返回目录形态 URI，toast "请先压缩后再上传"（不提具体格式）
+- 不带 `EXTRA_ALLOW_MULTIPLE`，系统层面单选
+
+**上传引擎：**
+
+- OkHttp + `ForegroundService`（前台服务 + 通知栏进度），切后台/锁屏不断
+- **Manifest 必补**（当前完全没有 service 声明，targetSdk=34 不补必崩）：
+  - `<service android:name=".UploadService" android:foregroundServiceType="dataSync" />`
+  - `<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />`
+  - `<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />`
+  - `POST_NOTIFICATIONS` 已有（Manifest:42），运行时请求别忘
+- **build.gradle dependencies 显式加** `implementation "com.squareup.okhttp3:okhttp:4.12.0"`（当前未声明，build.gradle:38-48）
+- **断点寻址**：`contentResolver.openFileDescriptor(uri, "r")` → `ParcelFileDescriptor` → `FileChannel.position(offset)` O(1) 定位（**不要** `openInputStream().skip()`——那是循环读丢实现，seek 4GB 能卡死，且 skip 返回值不足会错位）
+- **分块上传不要每次 new 16MB 数组**：448 块循环里反复申请/释放 16MB 连续堆内存会频繁触发 GC 卡顿。实现轻量自定义 `RequestBody`：FileChannel + 64KB 小缓冲写入 Okio `BufferedSink`，单次写出限制 16MB，全程堆占用 < 1MB
+- 流程：
+  1. FileChannel 读文件 → 申请票据 → 若 `resumeFromBytes > 0` 直接跳到该偏移续传
+  2. 按 chunkSize 整块读 → PUT；每块成功持久化进度（ticket + receivedBytes）
+  3. 失败指数退避重试（最多 5 次），仍失败→暂停态等手动恢复
+  4. 网络恢复 / App 重启：**先带本地存的旧 ticket 调 GET 查进度**；404（票据过期）才重新 POST（带 `resumeTicket` 认领旧 .part 续传）；拿到 receivedBytes（必为整块边界）→ position() 跳转续传
+  5. 收尾：**完成只认服务端确认**——末块 PUT 响应必须带 `status:"completed"`（服务端 rename 真的成功后才回）；
+     若字节已收满但没拿到确认，客户端主动调 `POST /api/uploads/:ticket/complete`（幂等）请求收尾，
+     仍不通过则报「暂停+原因」，**绝不在服务端未确认时上报已完成**（防「客户端显示完成、PC 端只剩 .part」）
+- 进度事件：`notifyListeners("uploadProgress", ...)`，与 downloadManager 订阅模式对齐
+
+**哈希策略（性能红线）：**
+
+- **手机端绝不全量算 7GB 的 SHA-256**——CPU/闪存扛不住，发烫卡死十几分钟
+- 完整性靠三层：TCP 字节流可靠 + 服务端整块事务 + 最终精确字节数比对
+- 服务端写盘时**增量**算哈希（每块 update 一次哈希状态，零额外 I/O），算完存着；只有当客户端主动提供了哈希时才比对，没提供就只报字节数
+
+**UI 侧（全局入口，不动 FileTransferModal）：**
+
+- `FileTransferModal` 保持专注：已入库游戏的文件下载/存档管理
+- **主界面新增全局入口**（Navbar 右侧「上传」按钮），打开独立的 `UploadModal`——上传的往往是 PC 上还不存在的新游戏，挂在单游戏弹窗里逻辑上就进不去（App.jsx:723 必须先有 game）
+- UploadModal：一个「选择文件上传」大按钮 + 文案"每次只能上传 1 个文件，文件夹请先压缩后再上传" + 任务列表
+- 任务卡片状态机：`申请票据 → 上传中 1.2GB/3.0GB (40%) → 校验中 → 已完成 / 已暂停（可恢复）/ 失败（可重试）`
+- `utils/uploadManager.js` 新建，结构照抄 `downloadManager.js`
+
+## 第三阶段：已砍
+
+自动解压入库不做。理由：目标文件以 7z/rar/分卷为主，tar.exe 覆盖不了全部；7GB 解压需额外 10GB+ 空间，1.05 系数预检直接失真；坑多收益低。做到「文件可靠落盘 + 系统通知 + 一键打开所在目录」为止，解压入库交给用户手动。
+
+## 临时文件清理（所有结束路径最终无残留）
+
+| 结束路径 | 清理动作 |
+|---|---|
+| 正常完成 | safeRename 成正式文件，`.part` 自然消失 |
+| 客户端取消 | `DELETE /api/uploads/:ticket` → 立即删票据 + `.part` |
+| 票据过期（30 分钟无活动） | 清理循环删票据 + `.part` |
+| PC 重启 / 程序重启 | **不立即删**——`.part` 保留，mtime 超 **24 小时**才清（照抄 cleanArchiveCache 的 mtime 模式，main.js:73）。给用户留着重启续传的窗口 |
+| 写入失败（盘满 / IO 错误） | truncate 回滚整块边界 → 票据 failed；.part 留待重试或过期清理 |
+| App 弃疗不再续传 | 30 分钟票据过期 → 最迟 24 小时 .part 过期，双保险兜底 |
+
+规则：
+
+- `.part` 一律放 `uploadTargetDir` 内，命名 `<finalName>.<ticket>.part`（可扫描、可匹配续传）
+- 票据状态持久化 `upload_state.json`，启动时加载恢复活跃票据；`.part` 无对应状态且 mtime > 24h 才删
+- 删除走 safe-delete 封装（防 Windows 文件占用崩溃），占用删不掉记日志下次启动重试
+- 启动（main.js:5476 模式）和退出（main.js:5489 模式）各扫一遍，退出清理只删 mtime > 24h 的
+
+## 安全要求
+
+- 上传接口全部 Bearer Token；票据只绑定一个文件名 + 大小，不可复用
+- 文件名 sanitize + 路径穿越拒绝（`path.resolve` 后校验仍在 `uploadTargetDir` 内）
+- `.part` 先写后 rename，PC 永远不会把半个文件当完整文件
+- 磁盘预检票据申请时一次、每 1GB 复查一次
+- 上传默认仅局域网开关放行；HTTPS 穿透沿用现有外网 Token 机制
+- 审计日志记录票据申请/完成/过期/取消，不记录 Token
+
+## 验收测试
+
+- 7GB 文件全流程（按目标上限场景验收）
+- 传到 40% 断 Wi-Fi，恢复后续传，不重传前 40%，最终字节级一致（`certutil -hashfile` 对照源文件）
+- 传到 40% **杀 PC 进程再启动** → App 带原 ticket 调 GET → 从 40% 续传成功；再验一次票据已过期的分支：新 POST 带 `resumeTicket` 认领 `.part` 续传，最终 `certutil -hashfile` 字节级一致
+- **重名防误拼专项**：传半截 `test.7z`（10MB）弃疗，票据过期后再传一个同名同大小但内容不同的 `test.7z` → 必须全新上传，**绝不拼接旧 .part**
+- 上传中 App 切后台 10 分钟 + 锁屏，进度准确任务仍在
+- App 杀进程重启，任务列表恢复且能继续传（持久 URI 权限不失效——OPEN_DOCUMENT + takePersistableUriPermission 的核心验证点）
+- PC 盘剩 2GB 时申请传 3GB → 申请阶段拒绝，明确提示空间不足
+- 传一半盘满 → 服务端 truncate 回整块边界，任务转"失败可重试"，清出空间后重试成功且文件不损坏
+- 文件名含 `..`、`/`、中文、emoji、与已有文件同名 → 安全落盘、不逃出目录、同名自动变 `(1)` 不覆盖
+- 同时两个上传任务 → 第三个被拒（并发上限 2）
+- 清理专项：正常完成/用户取消/票据过期/盘满失败/弃疗 24h——结束后 `uploadTargetDir` 零 `.part` 残留；重启后 24h 内的 `.part` **必须还在**
+
+## Agent 拆分建议
+
+1. `PC 上传服务 agent`：票据 + 分块事务 PUT + 进度/取消 + 设置项 + 通知 + CORS 补头（main.js 4341-4400 区域附近新增，不动 readRequestBody）
+2. `Android 原生上传 agent`：NativeUploaderPlugin + UploadService（OkHttp + FileChannel 寻址 + Manifest/gradle 补丁）
+3. `Android UI agent`：Navbar 全局上传入口 + UploadModal + uploadManager.js（照抄 downloadManager 模式）
+4. `测试 agent`：7GB 构造、断网/杀进程/PC 重启续传/盘满/恶意文件名/清理专项、certutil 哈希对照
+
+## 实施顺序
+
+PC API（第一阶段，curl 可自测）→ 原生插件 + UI（第二阶段）→ 完。
+
+第一阶段自测：
+```bash
+curl -X PUT http://pc:37689/api/uploads/<ticket> \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Range: bytes 0-16777215/3221225472" \
+  --data-binary @chunk0.bin
+```

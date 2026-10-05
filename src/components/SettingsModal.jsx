@@ -97,7 +97,8 @@ function SettingsModal({
       if (result?.success) {
         setApiSettings(result.settings || next);
         setApiStatus(result.status || null);
-        showStatus('success', '数据 API 设置已保存并重启');
+        // restarted 由主进程给出：只改了「免重启」项（如允许移动端上传）时不会重启服务，文案如实反映
+        showStatus('success', result.restarted === false ? '数据 API 设置已保存（无需重启，即时生效）' : '数据 API 设置已保存并重启');
       } else {
         setApiStatus(result?.status || null);
         showStatus('error', '数据 API 启动失败：' + (result?.error || '未知错误'));
@@ -987,7 +988,7 @@ function SettingsModal({
               {/* 折叠内容区域 */}
               {apiSectionExpanded && (
                 <div className="p-4 pt-1 border-t border-gray-800/80 space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 pt-3">
                     <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-gray-900/40 border border-gray-800/80 cursor-pointer hover:border-gray-700 transition-colors">
                       <span className="text-sm text-gray-300">启用 API 服务</span>
                       <input
@@ -1012,6 +1013,15 @@ function SettingsModal({
                         type="checkbox"
                         checked={apiSettings.exposeFullPath !== false}
                         onChange={(e) => setApiSettings({ ...apiSettings, exposeFullPath: e.target.checked })}
+                        className="h-4 w-4 accent-indigo-500 rounded"
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-gray-900/40 border border-gray-800/80 cursor-pointer hover:border-gray-700 transition-colors">
+                      <span className="text-sm text-gray-300" title="开启后手机端可把压缩包上传到 PC 的根目录">允许移动端上传</span>
+                      <input
+                        type="checkbox"
+                        checked={apiSettings.allowUpload === true}
+                        onChange={(e) => setApiSettings({ ...apiSettings, allowUpload: e.target.checked })}
                         className="h-4 w-4 accent-indigo-500 rounded"
                       />
                     </label>

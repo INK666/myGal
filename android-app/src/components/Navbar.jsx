@@ -14,7 +14,8 @@ import {
   X,
   Palette,
   CloudUpload,
-  Sparkles
+  Sparkles,
+  Upload
 } from 'lucide-react';
 import { useServer } from '../contexts/ServerContext';
 
@@ -24,6 +25,7 @@ export default function Navbar({
   onOpenTags,
   onOpenWallpaper,
   onOpenBulkScrape,
+  onOpenUpload,
   searchQuery,
   onSearchChange,
   viewMode,
@@ -139,6 +141,13 @@ export default function Navbar({
             title="移动端批量刮削与策略"
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+          </button>
+          <button
+            onClick={onOpenUpload}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-white bg-gray-900/60 hover:bg-gray-800 border border-white/5 active-press transition-all"
+            title="上传游戏到 PC"
+          >
+            <Upload className="w-3.5 h-3.5 text-green-400" />
           </button>
         </div>
       </div>

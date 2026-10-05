@@ -65,7 +65,12 @@ class DownloadManager {
     return false;
   }
 
-  async startDownload({ gameId, relPath = '', fileName = '', title = '' }) {
+  /**
+   * 开始下载。
+   * needPackaging=false（单文件直传）时会跳过 PC 端打包探测，直接走下载票据——
+   * 单文件本来就不需要预压缩，只有文件夹才需要打包成 .zip。
+   */
+  async startDownload({ gameId, relPath = '', fileName = '', title = '', needPackaging = true }) {
     const rawFileName = fileName || relPath.split('/').pop() || 'game_download';
     const finalFileName = this.sanitizeFileName(rawFileName);
     const finalTitle = title || finalFileName;
@@ -85,6 +90,7 @@ class DownloadManager {
       status: 'PENDING',
       statusMessage: '',
       error: null,
+      packaging: needPackaging !== false, // 只有文件夹下载才可能是真打包
       startedAt: Date.now()
     };
 
@@ -92,31 +98,40 @@ class DownloadManager {
     this.notify();
 
     try {
-      // 1. 尝试触发或检测 PC 端后台异步打包状态
+      // 1. 文件夹下载：先探测/触发 PC 端后台打包；单文件直接跳过（服务端本来就是直传）
       let downloadUrl = '';
       let archiveFilename = finalFileName;
 
-      task.status = 'PACKAGING';
-      task.statusMessage = '正在连接 PC 端并检测预压缩状态...';
-      this.notify();
-
       let prepareRes = null;
-      try {
-        const rawPrep = await api.prepareArchive(gameId, relPath);
-        prepareRes = rawPrep?.data || rawPrep;
-      } catch (prepErr) {
-        console.warn('[DownloadManager] prepareArchive 调用失败，尝试直接下载:', prepErr);
+      if (needPackaging === false) {
+        task.status = 'RUNNING';
+        task.packaging = false;
+        task.statusMessage = '正在连接 PC 端...';
+        this.notify();
+      } else {
+        task.status = 'PACKAGING';
+        task.packaging = true;
+        task.statusMessage = '正在连接 PC 端并检测预压缩状态...';
+        this.notify();
+
+        try {
+          const rawPrep = await api.prepareArchive(gameId, relPath);
+          prepareRes = rawPrep?.data || rawPrep;
+        } catch (prepErr) {
+          console.warn('[DownloadManager] prepareArchive 调用失败，尝试直接下载:', prepErr);
+        }
       }
 
       if (prepareRes && prepareRes.status === 'packaging') {
         task.status = 'PACKAGING';
+        task.packaging = true;
         task.statusMessage = 'PC 端预压缩中，请稍候...';
         this.notify();
 
-        // 轮询打包状态，最长等待 20 分钟 (800 次 * 1.5s)
+        // 轮询打包状态，最长等待 20 分钟 (400 次 * 3s)
         let ready = false;
-        for (let i = 0; i < 800; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
+        for (let i = 0; i < 400; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
           // 如果用户中途取消了任务，退出
           const current = this.tasks.get(taskId);
           if (!current || current.status === 'CANCELLED') return current;
@@ -133,7 +148,7 @@ class DownloadManager {
             } else if (statusRes && statusRes.status === 'error') {
               throw new Error('PC 端预压缩失败: ' + (statusRes.error || '未知错误'));
             } else if (statusRes && statusRes.status === 'packaging') {
-              const sec = Math.round((statusRes.elapsedMs || (i * 1500)) / 1000);
+              const sec = Math.round((statusRes.elapsedMs || (i * 3000)) / 1000);
               task.statusMessage = `PC 端预压缩中 (${sec}s)...`;
               this.notify();
             }
@@ -149,6 +164,8 @@ class DownloadManager {
         downloadUrl = prepareRes.downloadUrl;
         archiveFilename = prepareRes.filename || finalFileName;
         task.totalSize = prepareRes.size || 0;
+        // PC 端明确是直传（单文件/压缩包）→ 不是打包，UI 不该显示「预压缩中」
+        if (prepareRes.isDirect) task.packaging = false;
       }
 
       // 如果未走 prepareArchive 或没有获得下载链接，回退到短时票据或普通下载
@@ -169,6 +186,7 @@ class DownloadManager {
       }
 
       task.status = 'RUNNING';
+      task.packaging = false; // 已进入真正下载阶段
       task.statusMessage = '';
       task.fileName = archiveFilename;
       this.notify();
@@ -212,7 +230,8 @@ class DownloadManager {
 
   ensurePolling() {
     if (this.pollTimer) return;
-    this.pollTimer = setInterval(() => this.pollProgress(), 1000);
+    // 3 秒一次：下载进度不需要秒级刷新，而高频 notify 会让文件列表反复重渲染（闪屏源头）
+    this.pollTimer = setInterval(() => this.pollProgress(), 3000);
   }
 
   stopPollingIfIdle() {
@@ -246,7 +265,7 @@ class DownloadManager {
           const last = this.lastBytesMap.get(task.id);
           if (last) {
             const timeDiff = (now - last.time) / 1000;
-            if (timeDiff >= 0.8) {
+            if (timeDiff >= 2.5) { // 与 3s 轮询间隔匹配（间隔太短会把瞬时抖动当成速度）
               const bytesDiff = Math.max(0, bytes - last.bytes);
               const speedBps = bytesDiff / timeDiff;
               task.speed = this.formatBytes(speedBps) + '/s';
@@ -317,7 +336,13 @@ class DownloadManager {
   }
 
   removeTask(taskId) {
-    this.cancelDownload(taskId);
+    const task = this.tasks.get(taskId);
+    // 只对「运行中」的任务真正取消；已完成/失败/已取消的只是移除记录。
+    // （原来无条件调 cancelDownload，会对已成功完成的任务再发一次系统取消，
+    //   状态也被改写成 CANCELLED——这是一个真实的逻辑坑）
+    if (task && (task.status === 'RUNNING' || task.status === 'PENDING' || task.status === 'PACKAGING')) {
+      this.cancelDownload(taskId);
+    }
     this.tasks.delete(taskId);
     this.lastBytesMap.delete(taskId);
     this.notify();

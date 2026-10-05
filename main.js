@@ -8,6 +8,8 @@ const { spawn } = require('child_process');
 const { Worker } = require('worker_threads');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
+const uploader = require('./uploader');
+const UPLOAD_STATE_FILE = 'upload_state.json';
 
 const isDev = process.argv.includes('--dev') || !app.isPackaged;
 
@@ -1739,7 +1741,18 @@ ipcMain.handle('clear-project-background', async () => {
   }
 });
 
-ipcMain.handle('import-games', async (event, rootPathId = null) => {
+// 根目录下不允许被收进游戏库的内部目录名（上传等功能的内部产物）
+const INTERNAL_DIR_NAMES = new Set(['_incoming']);
+
+// 进行中的游戏库重扫（Promise 去重）：大库扫描要数秒，用户连点刷新时只跑一次，避免重复扫描
+let libraryRefreshInFlight = null;
+
+/**
+ * 重新扫描所有根目录：新增的收录入库、已消失的标记删除，并回收封面。
+ * 抽成普通函数，供 IPC（PC 端 UI 的「刷新游戏库」）与 HTTP API（移动端刷新）共用。
+ * 本函数不依赖 event，可安全地在 IPC / HTTP 两种上下文里调用。
+ */
+async function runImportGames(rootPathId = null) {
   let rootPaths = [];
   const allDbRoots = db.prepare('SELECT id, path FROM root_paths').all();
   
@@ -1825,6 +1838,8 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
           const gameItems = entries
             .filter(entry => {
               if (entry.isDirectory()) {
+                // 内部目录不当作游戏收录（历史遗留的上传暂存目录 _incoming 等）
+                if (INTERNAL_DIR_NAMES.has(entry.name)) return false;
                 return true;
               }
               if (entry.isFile()) {
@@ -2105,7 +2120,10 @@ ipcMain.handle('import-games', async (event, rootPathId = null) => {
   coversToDelete.forEach(p => safeUnlinkCover(p));
 
   return { success: true, imported: totalImported, deleted: totalDeleted, importedGameIds };
-});
+}
+
+// PC 端 UI 的「刷新游戏库」入口：保持原有 IPC 契约不变
+ipcMain.handle('import-games', async (event, rootPathId = null) => runImportGames(rootPathId));
 
 ipcMain.handle('reset-database', async () => {
   try {
@@ -3826,7 +3844,10 @@ const apiSettingKeys = {
   port: 'apiPort',
   token: 'apiToken',
   exposeFullPath: 'apiExposeFullPath',
-  allowRemoteLaunch: 'apiAllowRemoteLaunch'
+  allowRemoteLaunch: 'apiAllowRemoteLaunch',
+  allowUpload: 'apiAllowUpload',
+  uploadTargetDir: 'apiUploadTargetDir',
+  uploadMaxSize: 'apiUploadMaxSize'
 };
 
 const readApiSetting = (key, defaultValue = '') => {
@@ -3865,6 +3886,26 @@ const ensureApiSettings = () => {
   if (!readApiSetting(apiSettingKeys.token, '')) writeApiSetting(apiSettingKeys.token, createApiToken());
 };
 
+// 上传根目录（父目录）：**纯计算，绝不创建任何目录**
+// 文件最终落 <上传根目录>/<文件名含扩展名>/<文件名>
+// 只有真正申请票据时才建目录 —— 功能没开启时磁盘上不该出现任何多余文件夹
+const getUploadRootFromDb = () => {
+  const custom = readApiSetting(apiSettingKeys.uploadTargetDir, '');
+  if (custom) return custom;
+  // 默认跟随最近添加的根目录（移动端弹窗里也会让用户显式选择）
+  try {
+    const first = db.prepare('SELECT path FROM root_paths ORDER BY created_at DESC LIMIT 1').get();
+    if (first?.path) return first.path;
+  } catch {}
+  // 兜底：用户数据目录（不落在游戏盘上）
+  return path.join(app.getPath('userData'), 'uploads');
+};
+
+const getUploadMaxSizeFromDb = () => {
+  const parsed = Number.parseInt(readApiSetting(apiSettingKeys.uploadMaxSize, String(10 * 1024 * 1024 * 1024)), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 1024 * 1024 * 1024; // 默认 10GB
+};
+
 const getApiSettingsFromDb = () => {
   ensureApiSettings();
   const port = Number.parseInt(readApiSetting(apiSettingKeys.port, '37689'), 10);
@@ -3875,7 +3916,10 @@ const getApiSettingsFromDb = () => {
     port: Number.isFinite(port) && port > 0 && port <= 65535 ? port : 37689,
     token: readApiSetting(apiSettingKeys.token, ''),
     exposeFullPath: toBoolSetting(readApiSetting(apiSettingKeys.exposeFullPath, 'true'), true),
-    allowRemoteLaunch: toBoolSetting(readApiSetting(apiSettingKeys.allowRemoteLaunch, 'true'), true)
+    allowRemoteLaunch: toBoolSetting(readApiSetting(apiSettingKeys.allowRemoteLaunch, 'true'), true),
+    allowUpload: toBoolSetting(readApiSetting(apiSettingKeys.allowUpload, 'false'), false),
+    uploadRootDir: getUploadRootFromDb(),
+    uploadMaxSize: getUploadMaxSizeFromDb()
   };
 };
 
@@ -4374,6 +4418,10 @@ setInterval(() => {
   }
   // 顺便做一次过期临时打包缓存安全清理 (超过 12 小时的缓存自动清理)
   cleanArchiveCache(12 * 60 * 60 * 1000);
+  // 上传票据过期清理 + 24h 无主 .part 扫描（挂同一循环，5 分钟一次）
+  try { uploader.cleanupExpired(); } catch (err) {
+    console.warn('[uploader] 清理循环异常:', err?.message || err);
+  }
 }, 5 * 60 * 1000).unref();
 
 const createArchiveWithTar = (sourceDir, targetZipPath) => new Promise((resolve, reject) => {
@@ -4549,7 +4597,7 @@ const handleApiRequest = async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With, Range');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With, Range, Content-Range');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Disposition, ETag');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
   if (req.method === 'OPTIONS') {
@@ -4568,6 +4616,7 @@ const handleApiRequest = async (req, res) => {
           apiVersion: 2,
           authenticated: requireApiAuth(req, settings),
           allowRemoteLaunch: !!settings.allowRemoteLaunch,
+          allowUpload: !!settings.allowUpload,
           exposeFullPath: !!settings.exposeFullPath
         },
         error: null
@@ -4601,6 +4650,90 @@ const handleApiRequest = async (req, res) => {
 
     const exposeFullPath = !!settings.exposeFullPath;
     const baseUrl = getApiBaseUrl(req, settings);
+
+    // ========== 移动端上传：票据 + 分块事务 + 进度 + 取载 ==========
+    // POST /api/uploads/tickets —— 申请上传票据（allowUpload 关闭时全拒绝）
+    if (url.pathname === '/api/uploads/tickets' && req.method === 'POST') {
+      if (!settings.allowUpload) {
+        sendApiError(res, 403, 'PC 端未开启上传功能');
+        return;
+      }
+      const body = await readRequestBody(req);
+      // 支持选择根目录：rootPathId 对应 root_paths 表，文件落 <该根目录>/<文件名>/<文件名>
+      let uploadSettings = settings;
+      if (body.rootPathId !== undefined && body.rootPathId !== null && String(body.rootPathId) !== '') {
+        const parsedRootId = Number.parseInt(String(body.rootPathId), 10);
+        if (!Number.isFinite(parsedRootId)) {
+          sendApiError(res, 400, 'rootPathId 不合法');
+          return;
+        }
+        const rootRow = db.prepare('SELECT * FROM root_paths WHERE id = ?').get(parsedRootId);
+        if (!rootRow?.path || !fs.existsSync(rootRow.path)) {
+          sendApiError(res, 404, '根目录不存在或不可用');
+          return;
+        }
+        // 同名文件夹由 uploader 在建票据时创建（取消/失败会回收空壳）
+        uploadSettings = { ...settings, uploadRootDir: rootRow.path };
+      }
+      const result = uploader.createTicket({
+        fileName: body.fileName,
+        fileSize: Number(body.fileSize),
+        resumeTicket: body.resumeTicket ? String(body.resumeTicket) : ''
+      }, uploadSettings);
+      if (result.error) {
+        sendApiError(res, result.status || 400, result.error);
+        return;
+      }
+      // 只回传文件夹名（不暴露完整 PC 路径），移动端用来提示"已保存到 <根目录>/<folderName>/"
+      const { targetDir: _privateDir, ...ticketInfo } = result;
+      sendApiJson(res, 200, {
+        success: true,
+        data: { ...ticketInfo, folderName: _privateDir ? path.basename(_privateDir) : '' },
+        error: null
+      });
+      return;
+    }
+
+    // POST /api/uploads/:ticket/complete —— 主动收尾（幂等）
+    // 客户端在「字节已收满但没拿到 status:completed 确认」时调用，服务端执行 rename 并回权威状态。
+    // 这样「完成」的判定只认服务端，避免出现客户端显示已完成、PC 端却留着 .part 的假成功。
+    const uploadCompleteMatch = url.pathname.match(/^\/api\/uploads\/([a-zA-Z0-9_-]+)\/complete$/);
+    if (uploadCompleteMatch && req.method === 'POST') {
+      if (!settings.allowUpload) {
+        sendApiError(res, 403, 'PC 端未开启上传功能');
+        return;
+      }
+      const result = await uploader.completeTicket(uploadCompleteMatch[1]);
+      sendApiJson(res, result.status, result.body);
+      return;
+    }
+
+    const uploadTicketMatch = url.pathname.match(/^\/api\/uploads\/([a-zA-Z0-9_-]+)$/);
+    if (uploadTicketMatch) {
+      const ticketId = uploadTicketMatch[1];
+      if (!settings.allowUpload) {
+        sendApiError(res, 403, 'PC 端未开启上传功能');
+        return;
+      }
+      if (req.method === 'PUT') {
+        // 分块事务上传：二进制流式写盘，绝不走 readRequestBody
+        uploader.handleChunkUpload(req, res, ticketId, sendApiJson, sendApiError);
+        return;
+      }
+      if (req.method === 'GET') {
+        const result = uploader.getTicketStatus(ticketId);
+        sendApiJson(res, result.status, result.body);
+        return;
+      }
+      if (req.method === 'DELETE') {
+        const result = uploader.cancelTicket(ticketId);
+        sendApiJson(res, result.status, result.body);
+        return;
+      }
+      sendApiError(res, 405, 'Method not allowed');
+      return;
+    }
+    // ================================================================
 
     // --- GET /api/stats ---
     if (url.pathname === '/api/stats' && req.method === 'GET') {
@@ -4710,6 +4843,34 @@ const handleApiRequest = async (req, res) => {
         launchedAt: item.launched_at
       }));
       sendApiJson(res, 200, { success: true, data: { items, total, limit, offset }, error: null });
+      return;
+    }
+
+    // --- POST /api/library/refresh ---
+    // 移动端刷新入口：先让 PC 端重新扫描游戏库根目录（收录新增、清理已消失），
+    // 移动端随后再拉取最新列表。大库扫描可能耗时数秒，故与只读接口分开。
+    // 并发去重：扫描进行中时后来的请求复用同一个 Promise，不重复扫描。
+    if (url.pathname === '/api/library/refresh' && req.method === 'POST') {
+      if (!libraryRefreshInFlight) {
+        libraryRefreshInFlight = runImportGames(null).finally(() => {
+          libraryRefreshInFlight = null;
+        });
+      }
+      let result = null;
+      try {
+        result = await libraryRefreshInFlight;
+      } catch (err) {
+        console.warn('[library-refresh] 扫描失败:', err?.message || err);
+      }
+      if (result?.success) {
+        sendApiJson(res, 200, {
+          success: true,
+          data: { imported: result.imported || 0, deleted: result.deleted || 0 },
+          error: null
+        });
+      } else {
+        sendApiError(res, 500, result?.error || 'PC 端扫描游戏库失败');
+      }
       return;
     }
 
@@ -5337,18 +5498,43 @@ const handleApiRequest = async (req, res) => {
   }
 };
 
+// 关闭 HTTP 服务。
+// 坑：server.close() 的回调要等**所有已建立的连接**都关闭才触发，而它本身不会去关它们。
+// 移动端 App 会保持 keep-alive 长连接，空闲连接最长要挂到 keepAliveTimeout(120s) 才被回收，
+// 于是 await stopApiServer() 长时间不 resolve → 设置页「保存并重启」按钮卡在「保存中…」。
+// 所以这里必须：① 关掉监听后立刻断开空闲连接；② 给进行中的请求一个宽限窗口后强制断开；
+// ③ 无论如何都兜底 resolve，绝不允许永久挂起。
+const API_STOP_GRACE_MS = 2000; // 进行中请求（上传/刷新库）的自然收尾宽限
+
 const stopApiServer = () => new Promise((resolve) => {
-  if (!apiServer) {
+  const server = apiServer;
+  if (!server) {
     apiServerState = { running: false, error: '', host: '', port: 0, startedAt: 0 };
     resolve();
     return;
   }
-  const server = apiServer;
   apiServer = null;
-  server.close(() => {
+
+  let settled = false;
+  let graceTimer = null;
+  let bailTimer = null;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (graceTimer) clearTimeout(graceTimer);
+    if (bailTimer) clearTimeout(bailTimer);
     apiServerState = { running: false, error: '', host: '', port: 0, startedAt: 0 };
     resolve();
-  });
+  };
+
+  server.close(finish);
+  try { server.closeIdleConnections?.(); } catch {}
+
+  graceTimer = setTimeout(() => {
+    try { server.closeAllConnections?.(); } catch {}
+    // 再给 close 回调一点触发时间；仍没来就直接放行
+    bailTimer = setTimeout(finish, 500);
+  }, API_STOP_GRACE_MS);
 });
 
 const startApiServer = async () => {
@@ -5357,6 +5543,43 @@ const startApiServer = async () => {
   } catch {}
 
   const settings = getApiSettingsFromDb();
+
+  // 上传服务初始化：状态文件统一放用户数据目录
+  // （票据表是全局的，不属于任何游戏盘；这里只登记路径，**不创建目录**——真正申请票据时才建）
+  uploader.setStateFile(path.join(app.getPath('userData'), 'uploads', UPLOAD_STATE_FILE));
+  uploader.setCallbacks({
+    onComplete: ({ fileName, filePath, fileSize, targetDir }) => {
+      // 系统通知 + 点击打开所在目录
+      try {
+        const { Notification } = require('electron');
+        if (Notification.isSupported()) {
+          const sizeGb = (fileSize / (1024 * 1024 * 1024)).toFixed(2);
+          const n = new Notification({
+            title: '游戏上传完成',
+            body: `${fileName}（${sizeGb} GB）已上传完成，点击打开所在目录`
+          });
+          n.on('click', () => shell.showItemInFolder(filePath));
+          n.show();
+        }
+      } catch {}
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('upload-completed', { fileName, filePath, targetDir, fileSize });
+      }
+    },
+    onAudit: (event, detail) => {
+      console.log(`[uploader-audit] ${event}: ${detail}`);
+    }
+  });
+  try {
+    uploader.loadPersistedState();
+    // 启动即清一轮：过期票据与僵死票据（用户删了 .part 的）立刻释放并发额度，
+    // 不能等 5 分钟循环的首次执行——否则重启后头 5 分钟会一直误报「上传任务已满」。
+    // cleanupExpired 内部已包含 sweepOrphanParts（24h 无主 .part 扫描）。
+    uploader.cleanupExpired();
+  } catch (err) {
+    console.warn('[uploader] 启动恢复失败:', err?.message || err);
+  }
+
   if (!settings.enabled) {
     await stopApiServer();
     return { success: true, status: getApiServerStatus() };
@@ -5430,18 +5653,50 @@ ipcMain.handle('save-api-settings', async (event, nextSettings = {}) => {
   const port = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : current.port;
   const exposeFullPath = typeof nextSettings.exposeFullPath === 'boolean' ? nextSettings.exposeFullPath : current.exposeFullPath;
   const allowRemoteLaunch = typeof nextSettings.allowRemoteLaunch === 'boolean' ? nextSettings.allowRemoteLaunch : current.allowRemoteLaunch;
+  const allowUpload = typeof nextSettings.allowUpload === 'boolean' ? nextSettings.allowUpload : current.allowUpload;
+  // 上传根目录：只在**用户真的改过**时才落库
+  // （历史 bug：设置页回传整个 settings 对象，把后端算出来的默认目录当成"用户显式配置"写死了）
+  const storedUploadRoot = readApiSetting(apiSettingKeys.uploadTargetDir, '');
+  const incomingUploadRoot = typeof nextSettings.uploadTargetDir === 'string' ? nextSettings.uploadTargetDir.trim() : '';
+  const uploadRootChanged = !!incomingUploadRoot && incomingUploadRoot !== storedUploadRoot;
+  const parsedMaxSize = Number.parseInt(String(nextSettings.uploadMaxSize ?? ''), 10);
+  const uploadMaxSize = Number.isFinite(parsedMaxSize) && parsedMaxSize > 0 ? parsedMaxSize : current.uploadMaxSize;
 
   writeApiSetting(apiSettingKeys.enabled, enabled ? 'true' : 'false');
   writeApiSetting(apiSettingKeys.host, host);
   writeApiSetting(apiSettingKeys.port, String(port));
   writeApiSetting(apiSettingKeys.exposeFullPath, exposeFullPath ? 'true' : 'false');
   writeApiSetting(apiSettingKeys.allowRemoteLaunch, allowRemoteLaunch ? 'true' : 'false');
+  writeApiSetting(apiSettingKeys.allowUpload, allowUpload ? 'true' : 'false');
+  if (uploadRootChanged) writeApiSetting(apiSettingKeys.uploadTargetDir, incomingUploadRoot);
+  if (Number.isFinite(parsedMaxSize) && parsedMaxSize > 0) writeApiSetting(apiSettingKeys.uploadMaxSize, String(uploadMaxSize));
   if (!current.token) writeApiSetting(apiSettingKeys.token, createApiToken());
+
+  // 只有「监听参数」变化才需要重启 HTTP 服务。
+  // allowUpload / exposeFullPath / allowRemoteLaunch / 上传目录 / 大小上限 都是**每个请求实时从 DB 读**的
+  // （见 handleApiRequest 开头的 getApiSettingsFromDb()），保存后下一次请求立即生效，重启纯属多余。
+  // 少重启一次就少一次「关服务 → 断连接 → 重新监听」的窗口：既不会因为移动端连着而让设置页卡住，
+  // 也不会把正在上传的连接掐断。仅当服务本该在跑却没跑起来时，借保存的机会把它拉起来。
+  const needsRestart = enabled !== current.enabled
+    || host !== current.host
+    || port !== current.port
+    || (!apiServerState.running && enabled);
+
+  if (!needsRestart) {
+    return {
+      success: true,
+      error: '',
+      restarted: false,
+      settings: getApiSettingsFromDb(),
+      status: getApiServerStatus()
+    };
+  }
 
   const result = await startApiServer();
   return {
     success: result.success,
     error: result.error || '',
+    restarted: true,
     settings: getApiSettingsFromDb(),
     status: getApiServerStatus()
   };

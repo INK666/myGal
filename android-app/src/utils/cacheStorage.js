@@ -474,7 +474,42 @@ export async function clearAllCache() {
 }
 
 /**
- * 批量并发全量预热封面图片缓存（带并发控制与进度回调，默认无上限全量预热，统一保存到 Library 命名空间）
+ * 预热单张封面：本地缺失或版本过期时拉取 20KB 轻量化缩略图并写入 IndexedDB。
+ * 抽成独立函数，供「首屏优先预热」与「后台低速补齐」两条路径复用。
+ * @returns {Promise<boolean>} 是否实际拉取并缓存成功
+ */
+export async function preloadOneCover(serverUrl, g, token = '') {
+  if (!g || !g.hasCover) return false;
+  const cleanServerUrl = normalizeServerKey(serverUrl);
+  if (!cleanServerUrl) return false;
+  const rawServerUrl = String(serverUrl || '').trim().replace(/\/+$/, '');
+
+  const version = g.updatedAt ? new Date(g.updatedAt).getTime() : '';
+  const vParam = version ? `&v=${version}` : '';
+  const coverUrl = g.coverUrl
+    ? (token && !g.coverUrl.includes('token=')
+        ? `${g.coverUrl}${g.coverUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+        : g.coverUrl)
+    : `${rawServerUrl}/api/covers/${g.id}?thumb=1&token=${encodeURIComponent(token || '')}${vParam}`;
+
+  const existing = await getCoverBlobWithMeta(cleanServerUrl, g.id, token);
+  const versionStr = version ? String(version) : '';
+
+  // 本地已有且版本一致 → 无需重新拉取
+  if (existing && (!versionStr || existing.version === versionStr)) return false;
+
+  const resp = await fetch(coverUrl, { mode: 'cors' });
+  if (!resp.ok) return false;
+  const blob = await resp.blob();
+  if (!blob || blob.size === 0) return false;
+  await saveCoverBlob(cleanServerUrl, g.id, blob, versionStr, token);
+  return true;
+}
+
+/**
+ * 批量并发预热封面图片缓存（带并发控制与进度回调，统一保存到 Library 命名空间）
+ * 注意：大数据量库（数千款）务必传 limit，只预热首屏可见范围；
+ * 剩余部分交给后台低速补齐（见 preloadOneCover），否则会长时间占满网络与 IndexedDB 写入。
  * @param {string} serverUrl 服务器地址
  * @param {Array} games 游戏对象列表
  * @param {string} [token] 认证 token
@@ -509,27 +544,7 @@ export async function preloadCovers(serverUrl, games, token = '', onProgress = n
       const g = gamesWithCover[idx];
 
       try {
-        const version = g.updatedAt ? new Date(g.updatedAt).getTime() : '';
-        const vParam = version ? `&v=${version}` : '';
-        const coverUrl = g.coverUrl
-          ? (token && !g.coverUrl.includes('token=')
-              ? `${g.coverUrl}${g.coverUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
-              : g.coverUrl)
-          : `${rawServerUrl}/api/covers/${g.id}?thumb=1&token=${encodeURIComponent(token || '')}${vParam}`;
-
-        const existing = await getCoverBlobWithMeta(cleanServerUrl, g.id, token);
-        const versionStr = version ? String(version) : '';
-
-        // 若本地不存在或版本过旧，则请求 20KB 轻量化缩略图并缓存
-        if (!existing || (versionStr && existing.version !== versionStr)) {
-          const resp = await fetch(coverUrl, { mode: 'cors' });
-          if (resp.ok) {
-            const blob = await resp.blob();
-            if (blob && blob.size > 0) {
-              await saveCoverBlob(cleanServerUrl, g.id, blob, versionStr, token);
-            }
-          }
-        }
+        await preloadOneCover(rawServerUrl || serverUrl, g, token);
       } catch {
         // 单张预热失败不中断整体进度
       } finally {
