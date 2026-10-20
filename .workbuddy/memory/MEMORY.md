@@ -25,11 +25,13 @@
 
 ## 移动端 ↔ PC 端 数据同步语义
 
+- **自动同步（进 App / 断线重连，`syncOfflineCache(false)`，App.jsx:443）**：**只拉 PC 数据库已有数据**（getTags/getRootPaths/getAllGames），**不调** `/api/library/refresh`、不让 PC 重扫文件系统。所以 PC 端刚拖进根目录的新游戏，进 App 看不到——必须手动刷新（或 PC 端 UI 点刷新）才会被收录。这是刻意的：重扫真读文件系统，大库（4T）每次连接都扫会拖死 PC。
 - **移动端刷新（Navbar 刷新按钮 → `App.jsx` 的 `onRefreshList`）**：
   - **在线 → 先让 PC 端重扫游戏库（`POST /api/library/refresh`），成功后再 `syncOfflineCache(true)` 拉最新列表。**
   - 离线 → 只刷移动端本地（`loadMetadata()` + `loadGames(1, false)`），不发任何 PC 请求。
   - PC 端该接口内部调 `runImportGames(null)` —— 即原 `ipcMain.handle('import-games')` 抽出来的**普通函数**（该 handler 不依赖 `event`，可跨 IPC/HTTP 复用），并用模块级 `libraryRefreshInFlight` 做 **Promise 去重**（连点刷新不重复扫描大库）。
   - 移动端**必须对 404 / 任何失败降级为「直接同步」**：老版本 PC 端没有这个路由，不能因为扫描失败阻断刷新。`api.refreshPcLibrary()` 的超时设 **120s**（默认 8s 远不够大库扫描）。
+- **搜索口径必须两端一致（4 字段：name / alias / path / tags）**。移动端搜索是**纯本地全量过滤**（`filterOfflineGames`，先过滤全量缓存再前端分页切片），不走 PC 搜索接口；PC 端走 `search-games` → `queryApiGames` 的 SQL。**曾漏 tags 导致移动端搜不到标签**（2026-10-13 修复）。移动端 `g.tags` 是**字符串数组**（PC `processGames` 把 `GROUP_CONCAT` 的逗号串 `split(',')` 了），但 `App.jsx` 的标签自愈逻辑兼容 `{name}` 对象元素，匹配时两种都要处理。
 
 ## PC 端主进程（Electron）行为约定
 
@@ -74,3 +76,4 @@
   2. 卡片外层加 `content-visibility:auto`：index.css 里 `.cv-auto`(320px) / `.cv-auto-grid3`(210px) / `.cv-auto-list`(96px)，`contain-intrinsic-size` 用 `auto <估算>` 让浏览器记住实测高度。**没有这一条，滚动到几百项时合成层会爆**。
   3. **封面预热必须有上限**：`preloadCovers(serverUrl, games, token, onProgress, limit)` 只等首屏 `COVER_PRELOAD_PRIORITY`(=150) 张（进度条只反映这批 → 列表秒开），剩余交给 `startBackgroundCoverFill`（并发 2 + 80ms 节流 + `bgCoverFillRef` 可取消）。**绝不要不传 limit 全量预热** —— 原实现就是全量，几千款游戏会持续几十分钟占满网络 + 海量 IndexedDB 写入。
   - `preloadOneCover(serverUrl, g, token)` = 抽出的单张预热逻辑，两条路径共用。**注意两个阶段的切片语义必须一致（都是「先滤掉无封面者再按序号跳过」），否则改 limit 时会漏网或重复。**
+- **CoverImage 必须「缓存优先、网络兜底」**（2026-10-05 修复）：`useState` 初始值**绝不要 `return src`** —— `<img>` 一旦挂上 http 地址浏览器立刻发请求，离线时 N 张卡 = N 个挂起的废请求（img 请求是渲染引擎行为，JS 拦不住，组件不知道离线）。正确顺序：初始 `imageSrc=null`（只显示 spinner）→ effect 里先查内存 blobCache → 再查 IndexedDB（命中即用 blob）→ 都未命中才 `setImageSrc(src)` 走网络。版本不一致走 **stale-while-revalidate**（先显示旧缓存 + 后台静默刷新），**不要弃用缓存直接走网络**（离线必裂开）。render 时 `imageSrc &&` 才渲染 `<img>`（`src={null}` 的 img 会请求当前页）。另：`blobCache`（模块级 Map）重启必清空，冷启动所有封面都要过 IndexedDB，首次 `indexedDB.open()` 的磁盘 I/O 会让封面「晚一拍」——这是正常现象不是丢缓存。

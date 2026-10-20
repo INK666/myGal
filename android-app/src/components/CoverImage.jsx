@@ -55,7 +55,10 @@ export default function CoverImage({
     if (!src) return null;
     const cached = getBlobCache(src);
     if (cached) return cached;
-    return src;
+    // 不直接把网络 URL 顶进 <img>：<img> 一旦挂上 http 地址浏览器就会立刻发请求，
+    // 离线时就是 N 个注定挂起的废请求。先空着（只显示加载占位），
+    // 等 IndexedDB 查询结果再决定用缓存还是走网络（缓存优先，网络兜底）。
+    return null;
   });
   const [hasError, setHasError] = useState(!src);
   const [loading, setLoading] = useState(Boolean(src) && !getBlobCache(src));
@@ -97,15 +100,17 @@ export default function CoverImage({
         try {
           const cached = await getCoverBlobWithMeta(serverUrl, gameId);
           if (cached?.blob && !isCancelled) {
-            // 如果服务端有新版本号且与缓存版本不一致，则不使用过期缓存，触发网络获取
-            if (currentVersion && cached.version && cached.version !== currentVersion) {
-              return false;
-            }
             const objectUrl = URL.createObjectURL(cached.blob);
             setBlobCache(src, objectUrl);
             setImageSrc(objectUrl);
             setHasError(false);
             setLoading(false);
+            // 版本不一致（服务端有新版）：先展示旧缓存，再后台静默刷新（stale-while-revalidate）。
+            // 在线则换为新图；离线/失败则保留旧图 —— 不再弃用缓存直接裂开。
+            if (currentVersion && cached.version && cached.version !== currentVersion) {
+              retryWithFetchRef.current = true;
+              fetchAndCacheBlob(src);
+            }
             return true;
           }
         } catch {}
@@ -209,16 +214,18 @@ export default function CoverImage({
 
   return (
     <div className="w-full h-full relative overflow-hidden bg-gray-900">
-      <img
-        key={imageSrc}
-        src={imageSrc}
-        alt={alt}
-        onLoad={handleImgLoad}
-        onError={handleImgError}
-        className={`${className} ${loading ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}
-        loading="lazy"
-        decoding="async"
-      />
+      {imageSrc && (
+        <img
+          key={imageSrc}
+          src={imageSrc}
+          alt={alt}
+          onLoad={handleImgLoad}
+          onError={handleImgError}
+          className={`${className} ${loading ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}
+          loading="lazy"
+          decoding="async"
+        />
+      )}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-900/50 animate-pulse">
           <div className="w-4 h-4 rounded-full border-2 border-indigo-500/40 border-t-indigo-400 animate-spin" />

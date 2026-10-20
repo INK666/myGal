@@ -153,15 +153,22 @@ function MainApp() {
       if (!Array.isArray(allCachedGames)) return [];
       let filtered = [...allCachedGames];
 
-      // 关键词过滤
+      // 关键词过滤（名称 / 别名 / 路径 / 标签，口径与 PC 端 search-games 一致）
       if (debouncedQuery) {
         const q = debouncedQuery.toLowerCase();
-        filtered = filtered.filter(
-          (g) =>
-            (g.name && g.name.toLowerCase().includes(q)) ||
-            (g.alias && g.alias.toLowerCase().includes(q)) ||
-            (g.path && g.path.toLowerCase().includes(q))
-        );
+        filtered = filtered.filter((g) => {
+          if (g.name && g.name.toLowerCase().includes(q)) return true;
+          if (g.alias && g.alias.toLowerCase().includes(q)) return true;
+          if (g.path && g.path.toLowerCase().includes(q)) return true;
+          // 标签匹配：兼容字符串数组与 { name } 对象数组两种历史格式
+          if (Array.isArray(g.tags)) {
+            return g.tags.some((t) => {
+              const name = typeof t === 'string' ? t : t?.name;
+              return name && String(name).toLowerCase().includes(q);
+            });
+          }
+          return false;
+        });
       }
 
       // 标签过滤

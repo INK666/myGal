@@ -161,7 +161,7 @@ export default function Navbar({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="搜索游戏、别名、目录..."
+            placeholder="搜索游戏、别名、标签、目录..."
             className="w-full bg-gray-900/90 border border-white/10 rounded-lg pl-8 pr-7 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
           />
           {searchQuery && (
